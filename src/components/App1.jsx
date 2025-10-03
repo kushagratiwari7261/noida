@@ -21,6 +21,7 @@ function App() {
 
   const LIMIT = 20;
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001';
+  console.log('API_BASE:', API_BASE);
   const searchTimeoutRef = useRef(null);
   const refreshIntervalRef = useRef(null);
   const emailsRef = useRef(emails);
@@ -143,16 +144,19 @@ function App() {
   // Force fetch emails
   const forceFetchEmails = async () => {
     if (isFetchingRef.current) return;
-    
+
     isFetchingRef.current = true;
     setFetching(true);
     setFetchStatus('fetching');
     setError('');
-    
+
     try {
       addLog('⚡ Starting force fetch...', 'info');
-      
-      const response = await fetch(`${API_BASE}/api/force-fetch`, {
+
+      const fetchUrl = `${API_BASE}/api/force-fetch`;
+      console.log('Fetching:', fetchUrl);
+
+      const response = await fetch(fetchUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
