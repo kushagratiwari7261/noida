@@ -22,6 +22,9 @@ function App() {
   const LIMIT = 20;
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001';
   console.log('API_BASE:', API_BASE);
+  console.log('VITE_API_BASE env:', import.meta.env.VITE_API_BASE);
+  console.log('PROD env:', import.meta.env.PROD);
+  console.log('MODE env:', import.meta.env.MODE);
   const searchTimeoutRef = useRef(null);
   const refreshIntervalRef = useRef(null);
   const emailsRef = useRef(emails);
