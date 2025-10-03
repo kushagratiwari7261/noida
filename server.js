@@ -1,19 +1,21 @@
-import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { MongoClient } from "mongodb";
-import fs from "fs";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
 
+// Load environment variables locally (not needed in Vercel)
+if (process.env.NODE_ENV !== 'production') {
+  const dotenv = await import('dotenv');
+  dotenv.config();
+}
+
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-dotenv.config();
 
 // Initialize Express app
 const app = express();
@@ -135,13 +137,6 @@ class IMAPConnection {
 
 const imapManager = new IMAPConnection();
 
-const attachmentsDir = path.join(__dirname, 'attachments');
-const tempDir = path.join(__dirname, 'temp');
-
-// Create directories if they don't exist (for local development)
-if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
-if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-
 // Database connections
 let mongoClient = null;
 let isMongoConnected = false;
@@ -165,22 +160,28 @@ const supabase = createClient(
   }
 );
 
-async function connectMongo() {
+async function ensureMongoConnection() {
+  if (isMongoConnected && db) return db;
+
   if (!mongoClient) {
     console.log("⚠️ MongoDB URI not provided, skipping MongoDB connection");
-    return;
+    return null;
   }
-  
+
   try {
-    await mongoClient.connect();
-    db = mongoClient.db("imapdb");
-    isMongoConnected = true;
-    console.log("✅ MongoDB connected");
-    
-    await setupIndexes();
+    if (!isMongoConnected) {
+      await mongoClient.connect();
+      db = mongoClient.db("imapdb");
+      isMongoConnected = true;
+      console.log("✅ MongoDB connected");
+
+      await setupIndexes();
+    }
+    return db;
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
-    setTimeout(connectMongo, 5000);
+    isMongoConnected = false;
+    return null;
   }
 }
 
@@ -198,8 +199,7 @@ async function setupIndexes() {
   }
 }
 
-// Initialize MongoDB connection
-connectMongo();
+// MongoDB connection will be established lazily when needed
 
 function openInbox(cb) {
   imapManager.connection.openBox("INBOX", true, cb);
@@ -235,8 +235,9 @@ async function checkDuplicate(messageId) {
 
     console.log(`🔍 Checking duplicate for messageId: ${messageId.substring(0, 50)}...`);
 
+    const mongoDb = await ensureMongoConnection();
     const [mongoDuplicate, supabaseDuplicate] = await Promise.allSettled([
-      isMongoConnected && db ? db.collection("emails").findOne({ messageId: messageId }) : Promise.resolve(null),
+      mongoDb ? mongoDb.collection("emails").findOne({ messageId: messageId }) : Promise.resolve(null),
       supabase.from('emails').select('message_id').eq('message_id', messageId).maybeSingle()
     ]);
 
@@ -407,14 +408,15 @@ app.post("/api/simple-fetch", async (req, res) => {
             const saveOps = newEmails.map(async (email) => {
               try {
                 // MongoDB upsert
-                if (isMongoConnected && db) {
-                  await db.collection("emails").updateOne(
+                const mongoDb = await ensureMongoConnection();
+                if (mongoDb) {
+                  await mongoDb.collection("emails").updateOne(
                     { messageId: email.messageId },
                     { $set: email },
                     { upsert: true }
                   );
                 }
-                
+
                 // Supabase upsert
                 const supabaseData = {
                   message_id: email.messageId,
@@ -428,9 +430,9 @@ app.post("/api/simple-fetch", async (req, res) => {
                   created_at: new Date(),
                   updated_at: new Date()
                 };
-                
+
                 await supabase.from('emails').upsert(supabaseData);
-                
+
                 return true;
               } catch (saveErr) {
                 console.error(`❌ Error saving email:`, saveErr);
@@ -598,8 +600,9 @@ app.post("/api/fetch-latest", async (req, res) => {
             const saveOps = newEmails.map(async (email) => {
               try {
                 // MongoDB upsert
-                if (isMongoConnected && db) {
-                  await db.collection("emails").updateOne(
+                const mongoDb = await ensureMongoConnection();
+                if (mongoDb) {
+                  await mongoDb.collection("emails").updateOne(
                     { messageId: email.messageId },
                     { $set: email },
                     { upsert: true }
@@ -774,14 +777,15 @@ app.post("/api/force-fetch", async (req, res) => {
             const saveOps = newEmails.map(async (email) => {
               try {
                 // MongoDB upsert
-                if (isMongoConnected && db) {
-                  await db.collection("emails").updateOne(
+                const mongoDb = await ensureMongoConnection();
+                if (mongoDb) {
+                  await mongoDb.collection("emails").updateOne(
                     { messageId: email.messageId },
                     { $set: email },
                     { upsert: true }
                   );
                 }
-                
+
                 // Supabase upsert
                 const supabaseData = {
                   message_id: email.messageId,
@@ -795,9 +799,9 @@ app.post("/api/force-fetch", async (req, res) => {
                   created_at: new Date(),
                   updated_at: new Date()
                 };
-                
+
                 await supabase.from('emails').upsert(supabaseData);
-                
+
                 return true;
               } catch (saveErr) {
                 console.error(`❌ Error force saving email:`, saveErr);
@@ -846,7 +850,8 @@ app.post("/api/force-fetch", async (req, res) => {
 // Get emails from MongoDB with performance optimizations
 app.get("/api/emails", async (req, res) => {
   try {
-    if (!isMongoConnected || !db) {
+    const mongoDb = await ensureMongoConnection();
+    if (!mongoDb) {
       // Fallback to Supabase if MongoDB not available
       const { search = "", sort = "date_desc", page = 1, limit = 20 } = req.query;
       const pageNum = Math.max(1, parseInt(page));
@@ -1049,8 +1054,9 @@ app.get("/api/check-new-emails", async (req, res) => {
             serverCount = box.messages.total;
             
             // Get our current count from databases
+            const mongoDb = await ensureMongoConnection();
             const [mongoCount, supabaseCount] = await Promise.allSettled([
-              isMongoConnected && db ? db.collection("emails").countDocuments() : 0,
+              mongoDb ? mongoDb.collection("emails").countDocuments() : 0,
               supabase.from('emails').select('message_id', { count: 'exact', head: true })
             ]);
             
@@ -1086,7 +1092,8 @@ app.get("/api/check-new-emails", async (req, res) => {
 // Health check endpoint
 app.get("/api/health", async (req, res) => {
   try {
-    const mongoStatus = isMongoConnected ? "connected" : "disconnected";
+    const mongoDb = await ensureMongoConnection();
+    const mongoStatus = mongoDb ? "connected" : "disconnected";
     
     const { data: supabaseData, error: supabaseError } = await supabase
       .from('emails')
@@ -1138,14 +1145,15 @@ app.post("/api/clear-cache", (req, res) => {
 // NEW: Debug endpoint for duplicates
 app.get("/api/debug/emails", async (req, res) => {
   try {
+    const mongoDb = await ensureMongoConnection();
     const [mongoEmails, supabaseEmails] = await Promise.allSettled([
-      isMongoConnected && db ? db.collection("emails").find({}).sort({ date: -1 }).limit(10).toArray() : [],
+      mongoDb ? mongoDb.collection("emails").find({}).sort({ date: -1 }).limit(10).toArray() : [],
       supabase.from('emails').select('*').order('date', { ascending: false }).limit(10)
     ]);
 
     res.json({
       mongo: {
-        connected: isMongoConnected,
+        connected: mongoDb ? true : false,
         count: mongoEmails.status === 'fulfilled' ? mongoEmails.value.length : 0,
         emails: mongoEmails.status === 'fulfilled' ? mongoEmails.value : []
       },
@@ -1187,22 +1195,50 @@ app.get("/", (req, res) => {
 });
 
 // Serve static files from the React app build directory (for production/Vercel)
-app.use(express.static(path.join(__dirname, 'dist')));
+const distPath = path.join(__dirname, 'dist');
+console.log('Serving static files from:', distPath);
+app.use(express.static(distPath));
 
 // Handle client-side routing - serve index.html for all non-API routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  const indexPath = path.join(__dirname, 'dist', 'index.html');
+  console.log('Serving index.html from:', indexPath);
+  res.sendFile(indexPath);
 });
 
-// Vercel serverless function handler
-export default app;
+// Vercel serverless function handler with error handling
+export default (req, res) => {
+  try {
+    return app(req, res);
+  } catch (error) {
+    console.error('Serverless function error:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: error.message
+    });
+  }
+};
 
-// Start Express server only in development
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
+// Start Express server only in development and when not in Vercel
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 Enhanced backend server running on port ${PORT}`);
     console.log(`📧 Email API endpoints available at http://localhost:${PORT}/api`);
     console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+
+  // Handle port already in use errors gracefully
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`❌ Port ${PORT} is already in use. Trying port ${Number(PORT) + 1}...`);
+      const newPort = Number(PORT) + 1;
+      app.listen(newPort, () => {
+        console.log(`🚀 Server running on port ${newPort} instead`);
+        console.log(`📧 Email API endpoints available at http://localhost:${newPort}/api`);
+      });
+    } else {
+      console.error('Server error:', err);
+    }
   });
 }
 
