@@ -13,6 +13,8 @@ if (process.env.NODE_ENV !== 'production') {
   dotenv.config();
 }
 
+console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "MONGO_URI:", !!process.env.MONGO_URI, "SUPABASE_URL:", !!process.env.SUPABASE_URL);
+
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -305,6 +307,7 @@ async function processAttachments(attachments) {
 
 // NEW: Simple fetch that bypasses all duplicate checks
 app.post("/api/simple-fetch", async (req, res) => {
+  console.log("🔍 DEBUG: /api/simple-fetch called");
   try {
     await imapManager.connect();
     
@@ -481,6 +484,7 @@ app.post("/api/simple-fetch", async (req, res) => {
 
 // FIXED: Enhanced latest email fetch
 app.post("/api/fetch-latest", async (req, res) => {
+  console.log("🔍 DEBUG: /api/fetch-latest called");
   try {
     await imapManager.connect();
     
@@ -674,6 +678,7 @@ app.post("/api/fetch-latest", async (req, res) => {
 
 // FIXED: Enhanced force fetch
 app.post("/api/force-fetch", async (req, res) => {
+  console.log("🔍 DEBUG: /api/force-fetch called");
   try {
     await imapManager.connect();
     
