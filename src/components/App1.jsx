@@ -56,6 +56,7 @@ function App() {
 
   // Optimized email fetching
   const loadEmails = useCallback(async (overridePage, showLoading = true, forceRefresh = false) => {
+    console.log('loadEmails called - page:', overridePage || page, 'forceRefresh:', forceRefresh);
     if (showLoading) setLoading(true);
     const pageToLoad = overridePage || page;
     
@@ -102,7 +103,8 @@ function App() {
       }
 
       const data = await response.json();
-      
+
+      console.log('loadEmails data received - emails count:', data.emails?.length);
       console.log('📧 Loaded emails:', data.emails?.length || 0);
       
       if (data.emails && Array.isArray(data.emails)) {
@@ -164,15 +166,20 @@ function App() {
       });
 
       const result = await response.json();
-      
+
+      console.log('Force fetch response status:', response.status);
+      console.log('Force fetch result:', result);
+
       if (response.ok && result.success) {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         const addedCount = result.added || result.count || result.newEmails || 0;
         setNewEmailCount(addedCount);
+        console.log('Force fetch added count:', addedCount);
         addLog(`✅ Force fetch successful: ${addedCount} emails processed`, 'success');
         
         setTimeout(() => {
+          console.log('About to reload emails after force fetch');
           setPage(1);
           loadEmails(1, true);
         }, 1500);
