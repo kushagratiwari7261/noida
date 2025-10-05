@@ -13,7 +13,7 @@ function App() {
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
 
-  const API_BASE = 'http://localhost:3001';
+  const API_BASE = '';
 
   // Simple attachment URL processor
   const processAttachmentUrl = (attachment) => {
