@@ -13,7 +13,7 @@ if (process.env.NODE_ENV !== 'production') {
   dotenv.config();
 }
 
-console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "MONGO_URI:", !!process.env.MONGO_URI, "SUPABASE_URL:", !!process.env.SUPABASE_URL);
+console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "MONGO_URI:", !!process.env.MONGO_URI, "SUPABASE_URL:", !!process.env.SUPABASE_URL, "SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
 
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -27,6 +27,12 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// === ADD THIS: Explicit API route handler ===
+app.use('/api', (req, res, next) => {
+  // Let the API routes handle /api requests
+  next();
+});
 
 // Simple in-memory cache
 const cache = new Map();
@@ -154,11 +160,21 @@ if (process.env.MONGO_URI) {
   });
 }
 
+// FIXED: Use SUPABASE_SERVICE_KEY instead of SUPABASE_KEY
 const supabase = createClient(
-  process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL, 
-  process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY, 
+  process.env.SUPABASE_URL, 
+  process.env.SUPABASE_SERVICE_KEY, // CHANGED: Use service role key
   {
-    auth: { persistSession: false }
+    auth: { 
+      persistSession: false,
+      autoRefreshToken: false
+    },
+    global: {
+      headers: {
+        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+        'apikey': process.env.SUPABASE_SERVICE_KEY
+      }
+    }
   }
 );
 
@@ -207,6 +223,30 @@ function openInbox(cb) {
   imapManager.connection.openBox("INBOX", true, cb);
 }
 
+// Add missing checkDuplicate function
+async function checkDuplicate(messageId) {
+  try {
+    // Check MongoDB
+    const mongoDb = await ensureMongoConnection();
+    if (mongoDb) {
+      const existing = await mongoDb.collection("emails").findOne({ messageId });
+      if (existing) return true;
+    }
+
+    // Check Supabase
+    const { data, error } = await supabase
+      .from('emails')
+      .select('message_id')
+      .eq('message_id', messageId)
+      .single();
+
+    return !!data;
+  } catch (error) {
+    console.error("❌ Duplicate check error:", error);
+    return false;
+  }
+}
+
 function getFromCache(key) {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -227,83 +267,211 @@ function clearCache() {
   cache.clear();
 }
 
-// FIXED: Improved duplicate detection with better logging
-async function checkDuplicate(messageId) {
-  try {
-    if (!messageId) {
-      console.log("⚠️ No messageId provided for duplicate check");
-      return false;
-    }
-
-    console.log(`🔍 Checking duplicate for messageId: ${messageId.substring(0, 50)}...`);
-
-    const mongoDb = await ensureMongoConnection();
-    const [mongoDuplicate, supabaseDuplicate] = await Promise.allSettled([
-      mongoDb ? mongoDb.collection("emails").findOne({ messageId: messageId }) : Promise.resolve(null),
-      supabase.from('emails').select('message_id').eq('message_id', messageId).maybeSingle()
-    ]);
-
-    const mongoResult = mongoDuplicate.status === 'fulfilled' ? mongoDuplicate.value : null;
-    const supabaseResult = supabaseDuplicate.status === 'fulfilled' ? supabaseDuplicate.value : null;
-
-    const isDuplicate = !!(mongoResult || (supabaseResult && supabaseResult.message_id));
-
-    if (isDuplicate) {
-      console.log(`   ⚠️ Duplicate found: ${messageId.substring(0, 30)}...`);
-    } else {
-      console.log(`   ✅ No duplicate: ${messageId.substring(0, 30)}...`);
-    }
-
-    return isDuplicate;
-  } catch (error) {
-    console.error("❌ Duplicate check error:", error);
-    return false;
-  }
-}
-
+// ENHANCED: Updated processAttachments function with better error handling
 async function processAttachments(attachments) {
-  if (!attachments || attachments.length === 0) return [];
+  if (!attachments || attachments.length === 0) {
+    console.log("📎 No attachments found or empty array");
+    return [];
+  }
 
-  const attachmentPromises = attachments.map(async (att) => {
+  console.log(`📎 Processing ${attachments.length} attachments`);
+
+  const attachmentPromises = attachments.map(async (att, index) => {
     try {
-      const originalFilename = att.filename || `unnamed_${Date.now()}.bin`;
-      const safeFilename = originalFilename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      
-      const supabasePath = `emails/${Date.now()}_${safeFilename}`;
-      const { data, error } = await supabase.storage
-        .from("attachments")
-        .upload(supabasePath, att.content, {
-          contentType: att.contentType || 'application/octet-stream',
-        });
+      console.log(`   🔍 Attachment ${index + 1}:`, {
+        filename: att.filename,
+        contentType: att.contentType,
+        size: att.content?.length || 0,
+        hasContent: !!att.content
+      });
 
-      if (error) {
-        console.error("❌ Supabase upload error:", error.message);
+      // Validate attachment content
+      if (!att.content) {
+        console.log(`   ❌ Attachment ${index + 1} has no content, skipping`);
         return null;
       }
 
-      const publicUrl = supabase.storage
+      const originalFilename = att.filename || `unnamed_${Date.now()}_${index}.bin`;
+      const safeFilename = originalFilename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      
+      const supabasePath = `emails/${Date.now()}_${Math.random().toString(36).substring(2, 10)}_${safeFilename}`;
+      
+      console.log(`   📤 Uploading to Supabase: ${supabasePath}`);
+
+      // Convert content to Buffer if it's not already
+      let contentBuffer;
+      if (Buffer.isBuffer(att.content)) {
+        contentBuffer = att.content;
+      } else if (typeof att.content === 'string') {
+        contentBuffer = Buffer.from(att.content, 'utf8');
+      } else {
+        contentBuffer = Buffer.from(att.content);
+      }
+
+      // Enhanced upload with better error handling
+      const { data, error } = await supabase.storage
         .from("attachments")
-        .getPublicUrl(data.path).data.publicUrl;
+        .upload(supabasePath, contentBuffer, {
+          contentType: att.contentType || 'application/octet-stream',
+          upsert: false, // Changed to false to avoid conflicts
+          cacheControl: '3600'
+        });
+
+      if (error) {
+        console.error(`   ❌ Supabase upload error for ${safeFilename}:`, {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        });
+        
+        // Try with a different path if there's a conflict
+        const altPath = `emails/alt_${Date.now()}_${Math.random().toString(36).substring(2, 15)}_${safeFilename}`;
+        console.log(`   🔄 Retrying with alternative path: ${altPath}`);
+        
+        const { data: retryData, error: retryError } = await supabase.storage
+          .from("attachments")
+          .upload(altPath, contentBuffer, {
+            contentType: att.contentType || 'application/octet-stream',
+            upsert: false
+          });
+          
+        if (retryError) {
+          console.error(`   ❌ Retry also failed:`, retryError.message);
+          return null;
+        }
+        
+        // Use retry data if successful
+        const { data: publicUrlData } = supabase.storage
+          .from("attachments")
+          .getPublicUrl(retryData.path);
+
+        console.log(`   ✅ Successfully uploaded (retry): ${safeFilename}`);
+        console.log(`   🔗 Public URL: ${publicUrlData.publicUrl}`);
+        
+        return {
+          filename: safeFilename,
+          url: publicUrlData.publicUrl,
+          type: att.contentType || 'application/octet-stream',
+          supabasePath: retryData.path,
+          size: contentBuffer.length
+        };
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from("attachments")
+        .getPublicUrl(data.path);
+
+      console.log(`   ✅ Successfully uploaded: ${safeFilename}`);
+      console.log(`   🔗 Public URL: ${publicUrlData.publicUrl}`);
 
       return {
         filename: safeFilename,
-        url: publicUrl,
+        url: publicUrlData.publicUrl,
         type: att.contentType || 'application/octet-stream',
         supabasePath: data.path,
-        size: att.content?.length || 0
+        size: contentBuffer.length
       };
 
     } catch (attErr) {
-      console.error("❌ Attachment processing error:", attErr.message);
+      console.error(`   ❌ Attachment processing error for index ${index}:`, attErr.message);
       return null;
     }
   });
 
   const results = await Promise.allSettled(attachmentPromises);
-  return results
+  
+  const successfulAttachments = results
     .filter(result => result.status === 'fulfilled' && result.value !== null)
     .map(result => result.value);
+
+  console.log(`📎 Completed processing: ${successfulAttachments.length}/${attachments.length} successful`);
+  
+  return successfulAttachments;
 }
+
+// NEW: Storage setup and debug endpoint
+app.get("/api/debug-storage-setup", async (req, res) => {
+  try {
+    console.log("🛠️ Setting up and debugging storage...");
+    
+    // Test 1: Check current buckets
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    if (bucketsError) {
+      console.log("❌ Cannot list buckets:", bucketsError);
+    } else {
+      console.log("✅ Available buckets:", buckets);
+    }
+
+    // Test 2: Create attachments bucket if it doesn't exist
+    if (!buckets?.find(b => b.name === 'attachments')) {
+      console.log("🛠️ Creating attachments bucket...");
+      const { data: newBucket, error: createError } = await supabase.storage.createBucket('attachments', {
+        public: true,
+        fileSizeLimit: 52428800 // 50MB
+      });
+      
+      if (createError) {
+        console.log("❌ Failed to create bucket:", createError);
+      } else {
+        console.log("✅ Created attachments bucket:", newBucket);
+      }
+    }
+
+    // Test 3: Test upload
+    console.log("📤 Testing upload...");
+    const testContent = "Test file for storage setup";
+    const testPath = `test-${Date.now()}.txt`;
+    
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("attachments")
+      .upload(testPath, testContent, {
+        contentType: 'text/plain',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.log("❌ Upload test failed:", uploadError);
+    } else {
+      console.log("✅ Upload test successful!");
+      
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from("attachments")
+        .getPublicUrl(uploadData.path);
+      console.log("🔗 Public URL:", urlData.publicUrl);
+      
+      // Clean up
+      await supabase.storage.from("attachments").remove([testPath]);
+    }
+
+    // Test 4: List files
+    const { data: files, error: filesError } = await supabase.storage
+      .from("attachments")
+      .list();
+    
+    if (filesError) {
+      console.log("❌ Cannot list files:", filesError);
+    } else {
+      console.log(`✅ Files in bucket: ${files?.length || 0}`);
+    }
+
+    res.json({
+      status: "Storage debug completed",
+      buckets: bucketsError ? { error: bucketsError.message } : buckets,
+      uploadTest: uploadError ? { error: uploadError.message } : { success: true },
+      files: filesError ? { error: filesError.message } : { count: files?.length || 0 }
+    });
+
+  } catch (error) {
+    console.error("❌ Storage debug failed:", error);
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
 
 // NEW: Simple fetch that bypasses all duplicate checks
 app.post("/api/simple-fetch", async (req, res) => {
@@ -852,6 +1020,103 @@ app.post("/api/force-fetch", async (req, res) => {
   }
 });
 
+// Add this debug endpoint
+app.get("/api/debug-storage-deep", async (req, res) => {
+  try {
+    console.log("🔍 Deep debugging Supabase storage...");
+    
+    // Test 1: Verify credentials
+    console.log("🔑 Testing credentials...");
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    
+    console.log("📋 URL exists:", !!supabaseUrl);
+    console.log("📋 Key exists:", !!supabaseKey);
+    if (supabaseKey) {
+      console.log("📋 Key starts with:", supabaseKey.substring(0, 20) + "...");
+      // Decode JWT to check role
+      try {
+        const payload = JSON.parse(Buffer.from(supabaseKey.split('.')[1], 'base64').toString());
+        console.log("📋 JWT Role:", payload.role);
+        console.log("📋 JWT Issuer:", payload.iss);
+      } catch (e) {
+        console.log("📋 Cannot decode JWT");
+      }
+    }
+
+    // Test 2: Test basic auth
+    console.log("🔐 Testing authentication...");
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) {
+      console.log("❌ Auth error:", authError.message);
+    } else {
+      console.log("✅ Auth successful");
+    }
+
+    // Test 3: Try different storage methods
+    console.log("📦 Testing storage listBuckets...");
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    if (bucketsError) {
+      console.log("❌ listBuckets error:", {
+        message: bucketsError.message,
+        status: bucketsError.status,
+        name: bucketsError.name
+      });
+    } else {
+      console.log("✅ listBuckets success, buckets:", buckets);
+    }
+
+    // Test 4: Try to access attachments bucket directly
+    console.log("📁 Testing direct bucket access...");
+    const { data: files, error: filesError } = await supabase.storage
+      .from("attachments")
+      .list();
+    
+    if (filesError) {
+      console.log("❌ Direct bucket access error:", filesError.message);
+    } else {
+      console.log("✅ Direct bucket access success, files:", files?.length || 0);
+    }
+
+    // Test 5: Try to create a bucket (should fail if it exists)
+    console.log("🛠️ Testing bucket creation...");
+    const { data: createTest, error: createError } = await supabase.storage.createBucket('test-temp-bucket', {
+      public: true
+    });
+    
+    if (createError) {
+      console.log("ℹ️ Create test (expected if no permissions):", createError.message);
+    } else {
+      console.log("✅ Created test bucket");
+      // Clean up
+      await supabase.storage.deleteBucket('test-temp-bucket');
+    }
+
+    res.json({
+      status: "Debug completed",
+      credentials: {
+        url: !!supabaseUrl,
+        key: !!supabaseKey,
+        keyPreview: supabaseKey ? supabaseKey.substring(0, 20) + "..." : null
+      },
+      authentication: authError ? { error: authError.message } : { success: true },
+      storage: {
+        listBuckets: bucketsError ? { error: bucketsError.message } : { buckets: buckets },
+        directAccess: filesError ? { error: filesError.message } : { fileCount: files?.length || 0 },
+        bucketCreation: createError ? { error: createError.message } : { success: true }
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Deep debug failed:", error);
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
 // Get emails from MongoDB with performance optimizations
 app.get("/api/emails", async (req, res) => {
   try {
@@ -1187,17 +1452,21 @@ app.get("/", (req, res) => {
       "POST /api/simple-fetch": "Simple fetch (bypass ALL checks)",
       "GET /api/check-new-emails": "Check for new emails count",
       "GET /api/debug/emails": "Debug email data",
-      "POST /api/clear-cache": "Clear all caches"
+      "POST /api/clear-cache": "Clear all caches",
+      "GET /api/debug-storage-setup": "Debug and setup storage" // NEW
     },
     features: [
       "ES Modules compatible",
       "Vercel serverless ready",
       "Enhanced duplicate detection",
       "Better error handling",
-      "Multi-database support"
+      "Multi-database support",
+      "Fixed Supabase storage" // NEW
     ]
   });
 });
+
+// ========== MOVED: Static files serving and catch-all route ==========
 
 // Serve static files from the React app build directory (for production/Vercel)
 const distPath = path.join(__dirname, 'dist');
@@ -1205,10 +1474,17 @@ console.log('Serving static files from:', distPath);
 app.use(express.static(distPath));
 
 // Handle client-side routing - serve index.html for all non-API routes
+// THIS MUST BE THE LAST ROUTE
 app.get('*', (req, res) => {
-  const indexPath = path.join(__dirname, 'dist', 'index.html');
-  console.log('Serving index.html from:', indexPath);
-  res.sendFile(indexPath);
+  // Only serve index.html for non-API routes
+  if (!req.path.startsWith('/api')) {
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    console.log('Serving index.html for:', req.path);
+    res.sendFile(indexPath);
+  } else {
+    // If it's an API route that doesn't exist, return 404
+    res.status(404).json({ error: 'API endpoint not found' });
+  }
 });
 
 // Vercel serverless function handler with error handling
