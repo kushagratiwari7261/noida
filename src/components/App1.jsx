@@ -74,10 +74,10 @@ function App() {
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
-    
+
     try {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
-      
+
       // Clear cache first if force refresh
       if (forceRefresh) {
         try {
@@ -98,13 +98,41 @@ function App() {
       ].join('&');
 
       const response = await fetch(`${API_BASE}/api/emails?${queries}`);
-      
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `HTTP error! status: ${response.status}`;
+
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json();
+            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
+          } catch (jsonErr) {
+            console.error('❌ Failed to parse error response as JSON:', jsonErr);
+          }
+        } else {
+          try {
+            const textResponse = await response.text();
+            errorMessage += ` - ${textResponse.substring(0, 200)}`;
+            console.error('❌ Server returned non-JSON response:', textResponse);
+          } catch (textErr) {
+            console.error('❌ Failed to read error response as text:', textErr);
+          }
+        }
+
+        throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      console.log('📧 Backend response:', data);
+      let data;
+      try {
+        data = await response.json();
+        console.log('📧 Backend response:', data);
+      } catch (jsonErr) {
+        console.error('❌ Failed to parse response as JSON:', jsonErr);
+        const textResponse = await response.text();
+        console.error('❌ Raw response text:', textResponse);
+        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
+      }
       
       let emailsToProcess = [];
       
@@ -155,11 +183,11 @@ function App() {
   // Fetch new emails - NO DATABASE RELOAD
   const fetchNewEmails = async () => {
     if (fetching) return;
-    
+
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-    
+
     try {
       console.log('🔄 Starting smart fetch...');
       const response = await fetch(`${API_BASE}/api/fetch-latest`, {
@@ -169,8 +197,40 @@ function App() {
         },
       });
 
-      const result = await response.json();
-      console.log('📨 Fetch result:', result);
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `HTTP error! status: ${response.status}`;
+
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json();
+            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
+          } catch (jsonErr) {
+            console.error('❌ Failed to parse error response as JSON:', jsonErr);
+          }
+        } else {
+          try {
+            const textResponse = await response.text();
+            errorMessage += ` - ${textResponse.substring(0, 200)}`;
+            console.error('❌ Server returned non-JSON response:', textResponse);
+          } catch (textErr) {
+            console.error('❌ Failed to read error response as text:', textErr);
+          }
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      let result;
+      try {
+        result = await response.json();
+        console.log('📨 Fetch result:', result);
+      } catch (jsonErr) {
+        console.error('❌ Failed to parse fetch response as JSON:', jsonErr);
+        const textResponse = await response.text();
+        console.error('❌ Raw fetch response text:', textResponse);
+        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
+      }
       
       if (response.ok && result.success) {
         setFetchStatus('success');
@@ -205,11 +265,11 @@ function App() {
   // Force fetch emails - NO DATABASE RELOAD
   const forceFetchEmails = async () => {
     if (fetching) return;
-    
+
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-    
+
     try {
       console.log('⚡ Starting force fetch...');
       const response = await fetch(`${API_BASE}/api/force-fetch`, {
@@ -219,8 +279,40 @@ function App() {
         },
       });
 
-      const result = await response.json();
-      console.log('📨 Force fetch result:', result);
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `HTTP error! status: ${response.status}`;
+
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json();
+            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
+          } catch (jsonErr) {
+            console.error('❌ Failed to parse error response as JSON:', jsonErr);
+          }
+        } else {
+          try {
+            const textResponse = await response.text();
+            errorMessage += ` - ${textResponse.substring(0, 200)}`;
+            console.error('❌ Server returned non-JSON response:', textResponse);
+          } catch (textErr) {
+            console.error('❌ Failed to read error response as text:', textErr);
+          }
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      let result;
+      try {
+        result = await response.json();
+        console.log('📨 Force fetch result:', result);
+      } catch (jsonErr) {
+        console.error('❌ Failed to parse force fetch response as JSON:', jsonErr);
+        const textResponse = await response.text();
+        console.error('❌ Raw force fetch response text:', textResponse);
+        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
+      }
       
       if (response.ok && result.success) {
         setFetchStatus('success');
@@ -255,11 +347,11 @@ function App() {
   // Simple fetch emails - NO DATABASE RELOAD
   const simpleFetchEmails = async () => {
     if (fetching) return;
-    
+
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-    
+
     try {
       console.log('🚀 Starting simple fetch...');
       const response = await fetch(`${API_BASE}/api/simple-fetch`, {
@@ -269,8 +361,40 @@ function App() {
         },
       });
 
-      const result = await response.json();
-      console.log('📨 Simple fetch result:', result);
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        let errorMessage = `HTTP error! status: ${response.status}`;
+
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const errorData = await response.json();
+            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
+          } catch (jsonErr) {
+            console.error('❌ Failed to parse error response as JSON:', jsonErr);
+          }
+        } else {
+          try {
+            const textResponse = await response.text();
+            errorMessage += ` - ${textResponse.substring(0, 200)}`;
+            console.error('❌ Server returned non-JSON response:', textResponse);
+          } catch (textErr) {
+            console.error('❌ Failed to read error response as text:', textErr);
+          }
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      let result;
+      try {
+        result = await response.json();
+        console.log('📨 Simple fetch result:', result);
+      } catch (jsonErr) {
+        console.error('❌ Failed to parse simple fetch response as JSON:', jsonErr);
+        const textResponse = await response.text();
+        console.error('❌ Raw simple fetch response text:', textResponse);
+        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
+      }
       
       if (response.ok && result.success) {
         setFetchStatus('success');
@@ -305,15 +429,15 @@ function App() {
   // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
     if (fetching) return;
-    
+
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-    
+
     try {
       console.log('🔄 Force refreshing emails...');
       await loadEmails(true, true);
-      
+
       setFetchStatus('success');
       setLastFetchTime(new Date());
       console.log('✅ Force refresh completed');
