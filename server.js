@@ -15,15 +15,6 @@ if (process.env.NODE_ENV !== 'production') {
 
 console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "MONGO_URI:", !!process.env.MONGO_URI, "SUPABASE_URL:", !!process.env.SUPABASE_URL, "SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
 
-// Check for required environment variables
-const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
-const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
-
-if (missingVars.length > 0) {
-  console.error("❌ Missing required environment variables:", missingVars);
-  console.error("Please set these in your Vercel dashboard or .env file");
-}
-
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -170,32 +161,22 @@ if (process.env.MONGO_URI) {
 }
 
 // FIXED: Use SUPABASE_SERVICE_KEY instead of SUPABASE_KEY
-let supabase = null;
-try {
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
-    supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY, // CHANGED: Use service role key
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false
-        },
-        global: {
-          headers: {
-            'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
-            'apikey': process.env.SUPABASE_SERVICE_KEY
-          }
-        }
+const supabase = createClient(
+  process.env.SUPABASE_URL, 
+  process.env.SUPABASE_SERVICE_KEY, // CHANGED: Use service role key
+  {
+    auth: { 
+      persistSession: false,
+      autoRefreshToken: false
+    },
+    global: {
+      headers: {
+        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+        'apikey': process.env.SUPABASE_SERVICE_KEY
       }
-    );
-    console.log("✅ Supabase client created");
-  } else {
-    console.error("❌ Supabase environment variables not set");
+    }
   }
-} catch (error) {
-  console.error("❌ Failed to create Supabase client:", error.message);
-}
+);
 
 async function ensureMongoConnection() {
   if (isMongoConnected && db) return db;
@@ -253,17 +234,13 @@ async function checkDuplicate(messageId) {
     }
 
     // Check Supabase
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('emails')
-        .select('message_id')
-        .eq('message_id', messageId)
-        .single();
+    const { data, error } = await supabase
+      .from('emails')
+      .select('message_id')
+      .eq('message_id', messageId)
+      .single();
 
-      if (!error && data) return true;
-    }
-
-    return false;
+    return !!data;
   } catch (error) {
     console.error("❌ Duplicate check error:", error);
     return false;
@@ -612,22 +589,20 @@ app.post("/api/simple-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
-                if (supabase) {
-                  const supabaseData = {
-                    message_id: email.messageId,
-                    subject: email.subject,
-                    from_text: email.from,
-                    to_text: email.to,
-                    date: email.date,
-                    text_content: email.text,
-                    html_content: email.html,
-                    attachments: email.attachments,
-                    created_at: new Date(),
-                    updated_at: new Date()
-                  };
+                const supabaseData = {
+                  message_id: email.messageId,
+                  subject: email.subject,
+                  from_text: email.from,
+                  to_text: email.to,
+                  date: email.date,
+                  text_content: email.text,
+                  html_content: email.html,
+                  attachments: email.attachments,
+                  created_at: new Date(),
+                  updated_at: new Date()
+                };
 
-                  await supabase.from('emails').upsert(supabaseData);
-                }
+                await supabase.from('emails').upsert(supabaseData);
 
                 return true;
               } catch (saveErr) {
@@ -807,22 +782,20 @@ app.post("/api/fetch-latest", async (req, res) => {
                 }
                 
                 // Supabase upsert
-                if (supabase) {
-                  const supabaseData = {
-                    message_id: email.messageId,
-                    subject: email.subject,
-                    from_text: email.from,
-                    to_text: email.to,
-                    date: email.date,
-                    text_content: email.text,
-                    html_content: email.html,
-                    attachments: email.attachments,
-                    created_at: new Date(),
-                    updated_at: new Date()
-                  };
-
-                  await supabase.from('emails').upsert(supabaseData);
-                }
+                const supabaseData = {
+                  message_id: email.messageId,
+                  subject: email.subject,
+                  from_text: email.from,
+                  to_text: email.to,
+                  date: email.date,
+                  text_content: email.text,
+                  html_content: email.html,
+                  attachments: email.attachments,
+                  created_at: new Date(),
+                  updated_at: new Date()
+                };
+                
+                await supabase.from('emails').upsert(supabaseData);
                 
                 return true;
               } catch (saveErr) {
@@ -987,22 +960,20 @@ app.post("/api/force-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
-                if (supabase) {
-                  const supabaseData = {
-                    message_id: email.messageId,
-                    subject: email.subject,
-                    from_text: email.from,
-                    to_text: email.to,
-                    date: email.date,
-                    text_content: email.text,
-                    html_content: email.html,
-                    attachments: email.attachments,
-                    created_at: new Date(),
-                    updated_at: new Date()
-                  };
+                const supabaseData = {
+                  message_id: email.messageId,
+                  subject: email.subject,
+                  from_text: email.from,
+                  to_text: email.to,
+                  date: email.date,
+                  text_content: email.text,
+                  html_content: email.html,
+                  attachments: email.attachments,
+                  created_at: new Date(),
+                  updated_at: new Date()
+                };
 
-                  await supabase.from('emails').upsert(supabaseData);
-                }
+                await supabase.from('emails').upsert(supabaseData);
 
                 return true;
               } catch (saveErr) {
@@ -1152,10 +1123,6 @@ app.get("/api/emails", async (req, res) => {
     const mongoDb = await ensureMongoConnection();
     if (!mongoDb) {
       // Fallback to Supabase if MongoDB not available
-      if (!supabase) {
-        return res.status(500).json({ error: "No database connections available. Please check environment variables." });
-      }
-
       const { search = "", sort = "date_desc", page = 1, limit = 20 } = req.query;
       const pageNum = Math.max(1, parseInt(page));
       const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
@@ -1397,22 +1364,15 @@ app.get("/api/health", async (req, res) => {
   try {
     const mongoDb = await ensureMongoConnection();
     const mongoStatus = mongoDb ? "connected" : "disconnected";
-
-    let supabaseStatus = "not_configured";
-    if (supabase) {
-      try {
-        const { data: supabaseData, error: supabaseError } = await supabase
-          .from('emails')
-          .select('count')
-          .limit(1)
-          .single();
-
-        supabaseStatus = supabaseError ? "disconnected" : "connected";
-      } catch (supabaseErr) {
-        supabaseStatus = "error";
-      }
-    }
-
+    
+    const { data: supabaseData, error: supabaseError } = await supabase
+      .from('emails')
+      .select('count')
+      .limit(1)
+      .single();
+    
+    const supabaseStatus = supabaseError ? "disconnected" : "connected";
+    
     let imapStatus = "disconnected";
     try {
       const imapAlive = await imapManager.checkConnection();
