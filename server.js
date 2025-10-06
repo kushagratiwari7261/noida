@@ -244,6 +244,7 @@ async function checkDuplicate(messageId) {
     }
 
     return false;
+    
   } catch (error) {
     console.error("❌ Duplicate check error:", error);
     return false;
