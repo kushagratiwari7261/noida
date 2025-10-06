@@ -346,20 +346,42 @@ async function ensureStorageBucket() {
       // Update bucket to ensure it's public
       const { error: updateError } = await supabase.storage.updateBucket('attachments', {
         public: true,
-        fileSizeLimit: 52428800
+        fileSizeLimit: 52428800,
+        corsRules: [{
+          allowedOrigins: ['*'],
+          allowedMethods: ['GET', 'HEAD'],
+          allowedHeaders: ['*'],
+          maxAgeSeconds: 3600
+        }]
       });
 
       if (updateError) {
-        console.log("⚠️ Could not update bucket settings:", updateError.message);
-        console.log("⚠️ Update error details:", {
+        console.error("❌ Failed to update bucket to public:", updateError.message);
+        console.error("❌ Update error details:", {
           message: updateError.message,
           status: updateError.status,
           details: updateError.details
         });
+        return false;
       } else {
         console.log("✅ Bucket updated to public");
       }
     }
+
+    // Verify bucket is actually public after setup
+    const { data: verifyBuckets, error: verifyError } = await supabase.storage.listBuckets();
+    if (verifyError) {
+      console.error("❌ Cannot verify bucket public status:", verifyError.message);
+      return false;
+    }
+
+    const verifiedBucket = verifyBuckets?.find(b => b.name === 'attachments');
+    if (!verifiedBucket || !verifiedBucket.public) {
+      console.error("❌ Bucket is not public after setup attempt");
+      return false;
+    }
+
+    console.log("✅ Verified bucket is public");
 
     // Test public URL access
     const testPath = `test-access-${Date.now()}.txt`;
@@ -1747,6 +1769,14 @@ async function initializeApp() {
 
 // Call initialization
 initializeApp();
+
+// Local development server
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}
 
 // Vercel serverless function handler with error handling
 export default (req, res) => {
