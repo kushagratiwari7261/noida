@@ -32,6 +32,50 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 const cache = new Map();
 const CACHE_TTL = 120000; // 2 minutes
 
+// FIXED: Enhanced Supabase client initialization
+let supabase = null;
+
+const initializeSupabase = () => {
+  try {
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+      console.log("🔧 Initializing Supabase client...");
+      console.log("📋 SUPABASE_URL:", process.env.SUPABASE_URL);
+      console.log("📋 SUPABASE_SERVICE_KEY length:", process.env.SUPABASE_SERVICE_KEY?.length);
+      
+      supabase = createClient(
+        process.env.SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_KEY,
+        {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false
+          },
+          global: {
+            headers: {
+              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+              'apikey': process.env.SUPABASE_SERVICE_KEY
+            }
+          }
+        }
+      );
+      console.log("✅ Supabase client created successfully");
+      return true;
+    } else {
+      console.error("❌ Supabase environment variables not set");
+      console.error("❌ SUPABASE_URL:", !!process.env.SUPABASE_URL);
+      console.error("❌ SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
+      return false;
+    }
+  } catch (error) {
+    console.error("❌ Failed to create Supabase client:", error.message);
+    console.error("❌ Error details:", error);
+    return false;
+  }
+};
+
+// Initialize Supabase immediately
+initializeSupabase();
+
 // Enhanced IMAP Connection Manager
 class IMAPConnection {
   constructor() {
@@ -154,29 +198,6 @@ if (process.env.MONGO_URI) {
   });
 }
 
-// Supabase client - FIXED: Proper initialization
-let supabase = null;
-try {
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
-    console.log("🔧 Creating Supabase client...");
-    supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY,
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false
-        }
-      }
-    );
-    console.log("✅ Supabase client created successfully");
-  } else {
-    console.error("❌ Supabase environment variables not set");
-  }
-} catch (error) {
-  console.error("❌ Failed to create Supabase client:", error.message);
-}
-
 async function ensureMongoConnection() {
   if (isMongoConnected && db) return db;
 
@@ -274,7 +295,10 @@ async function ensureStorageBucket() {
 
     if (!supabase) {
       console.error("❌ Supabase client not available");
-      return false;
+      const initialized = initializeSupabase();
+      if (!initialized) {
+        return false;
+      }
     }
 
     // Check if bucket exists
@@ -282,10 +306,11 @@ async function ensureStorageBucket() {
 
     if (bucketsError) {
       console.error("❌ Cannot list buckets:", bucketsError);
+      console.error("❌ Bucket error details:", bucketsError.message);
       return false;
     }
 
-    console.log("📋 Available buckets:", buckets?.map(b => b.name) || []);
+    console.log("📋 Available buckets:", buckets?.map(b => ({ name: b.name, public: b.public })) || []);
 
     const attachmentsBucket = buckets?.find(b => b.name === 'attachments');
 
@@ -299,6 +324,7 @@ async function ensureStorageBucket() {
 
       if (createError) {
         console.error("❌ Failed to create bucket:", createError);
+        console.error("❌ Create bucket error details:", createError.message);
         return false;
       }
       console.log("✅ Created attachments bucket");
@@ -317,10 +343,41 @@ async function ensureStorageBucket() {
       }
     }
 
+    // Test upload to verify everything works
+    console.log("🧪 Testing upload...");
+    const testContent = "Test file for storage verification";
+    const testPath = `test-${Date.now()}.txt`;
+    
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("attachments")
+      .upload(testPath, testContent, {
+        contentType: 'text/plain',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error("❌ Test upload failed:", uploadError);
+      return false;
+    }
+
+    console.log("✅ Test upload successful");
+
+    // Get public URL and verify it's accessible
+    const { data: urlData } = supabase.storage
+      .from("attachments")
+      .getPublicUrl(uploadData.path);
+
+    console.log("🔗 Public URL:", urlData.publicUrl);
+
+    // Clean up test file
+    await supabase.storage.from("attachments").remove([testPath]);
+
+    console.log("✅ Storage setup completed successfully");
     return true;
 
   } catch (error) {
     console.error("❌ Storage setup failed:", error);
+    console.error("❌ Storage error details:", error.message);
     return false;
   }
 }
@@ -363,7 +420,10 @@ async function processAttachments(attachments) {
   // Ensure storage is ready
   if (!supabase) {
     console.error("❌ Supabase client not available");
-    return [];
+    const initialized = initializeSupabase();
+    if (!initialized) {
+      return [];
+    }
   }
 
   const storageReady = await ensureStorageBucket();
@@ -589,7 +649,14 @@ app.get("/api/test-attachment-urls", async (req, res) => {
     console.log("🧪 Testing attachment URL generation...");
     
     if (!supabase) {
-      return res.status(500).json({ error: "Supabase client not available" });
+      console.error("❌ Supabase client not available, reinitializing...");
+      const initialized = initializeSupabase();
+      if (!initialized) {
+        return res.status(500).json({ 
+          error: "Supabase client not available",
+          details: "Failed to initialize Supabase client. Check environment variables."
+        });
+      }
     }
 
     // Test file content
@@ -607,7 +674,9 @@ app.get("/api/test-attachment-urls", async (req, res) => {
     if (uploadError) {
       return res.status(500).json({ 
         error: "Upload failed", 
-        details: uploadError.message 
+        details: uploadError.message,
+        supabaseUrl: process.env.SUPABASE_URL,
+        hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY
       });
     }
 
@@ -616,17 +685,20 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       .from("attachments")
       .getPublicUrl(uploadData.path);
 
+    console.log("🔗 Generated URL:", urlData.publicUrl);
+
     // Test if URL is accessible
     let urlAccessible = false;
     let testResponse = null;
     try {
       testResponse = await fetch(urlData.publicUrl);
       urlAccessible = testResponse.ok;
+      console.log("✅ URL accessibility test:", urlAccessible);
     } catch (fetchError) {
-      console.log("URL access test failed:", fetchError.message);
+      console.log("❌ URL access test failed:", fetchError.message);
     }
 
-    // Clean up
+    // Clean up test file
     await supabase.storage.from("attachments").remove([testPath]);
 
     res.json({
@@ -641,7 +713,11 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       },
       supabase: {
         url: process.env.SUPABASE_URL,
-        hasClient: !!supabase
+        hasClient: !!supabase,
+        serviceKeyLength: process.env.SUPABASE_SERVICE_KEY?.length
+      },
+      environment: {
+        node_env: process.env.NODE_ENV
       }
     });
 
@@ -649,67 +725,62 @@ app.get("/api/test-attachment-urls", async (req, res) => {
     console.error("❌ Attachment URL test failed:", error);
     res.status(500).json({ 
       error: error.message,
-      stack: error.stack 
+      stack: error.stack,
+      supabaseStatus: supabase ? "initialized" : "not initialized"
     });
   }
 });
 
-// NEW: Debug attachments endpoint
-app.get("/api/debug/attachments", async (req, res) => {
+// NEW: Debug Supabase connection
+app.get("/api/debug-supabase", async (req, res) => {
   try {
-    const mongoDb = await ensureMongoConnection();
-    const emailWithAttachments = await mongoDb.collection("emails").findOne({ 
-      "attachments.0": { $exists: true } 
-    });
-
-    if (!emailWithAttachments) {
-      return res.json({ 
-        message: "No emails with attachments found in MongoDB",
-        sampleStructure: {
-          id: "string",
-          filename: "string",
-          url: "string",
-          publicUrl: "string", 
-          contentType: "string",
-          size: "number",
-          isImage: "boolean"
-        }
-      });
-    }
-
-    // Also check Supabase
-    let supabaseAttachments = [];
-    if (supabase) {
-      const { data: supabaseEmail, error } = await supabase
-        .from('emails')
-        .select('attachments')
-        .not('attachments', 'is', null)
-        .limit(1)
-        .single();
-
-      if (!error && supabaseEmail) {
-        supabaseAttachments = supabaseEmail.attachments || [];
+    console.log("🔧 Debugging Supabase connection...");
+    
+    if (!supabase) {
+      console.log("❌ Supabase client not available, attempting to initialize...");
+      const initialized = initializeSupabase();
+      if (!initialized) {
+        return res.status(500).json({
+          error: "Supabase client initialization failed",
+          environment: {
+            SUPABASE_URL: !!process.env.SUPABASE_URL,
+            SUPABASE_SERVICE_KEY: !!process.env.SUPABASE_SERVICE_KEY,
+            NODE_ENV: process.env.NODE_ENV
+          }
+        });
       }
     }
+
+    // Test storage
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    // Test auth
+    const { data: authData, error: authError } = await supabase.auth.getUser();
 
     res.json({
-      mongoDb: {
-        emailId: emailWithAttachments.messageId,
-        subject: emailWithAttachments.subject,
-        attachmentsCount: emailWithAttachments.attachments.length,
-        sampleAttachment: emailWithAttachments.attachments[0]
-      },
       supabase: {
-        attachmentsCount: supabaseAttachments.length,
-        sampleAttachment: supabaseAttachments[0] || null
+        initialized: !!supabase,
+        url: process.env.SUPABASE_URL,
+        serviceKeyLength: process.env.SUPABASE_SERVICE_KEY?.length
       },
       storage: {
-        supabaseUrl: process.env.SUPABASE_URL,
-        bucket: 'attachments'
+        buckets: bucketsError ? { error: bucketsError.message } : buckets,
+        bucketsCount: buckets?.length || 0
+      },
+      auth: {
+        user: authError ? { error: authError.message } : "Authenticated"
+      },
+      environment: {
+        NODE_ENV: process.env.NODE_ENV
       }
     });
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("❌ Supabase debug failed:", error);
+    res.status(500).json({
+      error: error.message,
+      supabaseInitialized: !!supabase
+    });
   }
 });
 
@@ -1188,111 +1259,22 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// NEW: Force re-process all emails with attachments
-app.post("/api/reprocess-attachments", async (req, res) => {
-  try {
-    console.log("🔄 Reprocessing all emails to fix attachments...");
-    
-    const mongoDb = await ensureMongoConnection();
-    if (!mongoDb) {
-      return res.status(500).json({ error: "MongoDB not available" });
-    }
-
-    // Get all emails with attachments
-    const emails = await mongoDb.collection("emails").find({}).toArray();
-    console.log(`📧 Found ${emails.length} emails to reprocess`);
-
-    let updatedCount = 0;
-    let errorCount = 0;
-
-    for (const email of emails) {
-      try {
-        // Skip emails without attachments
-        if (!email.attachments || email.attachments.length === 0) {
-          continue;
-        }
-
-        console.log(`   🔄 Reprocessing email: ${email.subject}`);
-        
-        // Re-process each attachment to ensure proper URLs
-        const reprocessedAttachments = email.attachments.map(att => {
-          // If attachment already has a proper URL, keep it
-          if (att.url && att.url.startsWith('http')) {
-            return att;
-          }
-
-          // If attachment has a path but no URL, generate the URL
-          if (att.path && supabase) {
-            const { data: urlData } = supabase.storage
-              .from("attachments")
-              .getPublicUrl(att.path);
-
-            return {
-              ...att,
-              url: urlData.publicUrl,
-              publicUrl: urlData.publicUrl,
-              downloadUrl: urlData.publicUrl,
-              previewUrl: urlData.publicUrl
-            };
-          }
-
-          // If we can't fix it, return as-is
-          return att;
-        });
-
-        // Update the email with fixed attachments
-        await mongoDb.collection("emails").updateOne(
-          { _id: email._id },
-          { 
-            $set: { 
-              attachments: reprocessedAttachments,
-              hasAttachments: reprocessedAttachments.length > 0,
-              attachmentsCount: reprocessedAttachments.length
-            } 
-          }
-        );
-
-        updatedCount++;
-        console.log(`   ✅ Fixed attachments for: ${email.subject}`);
-
-      } catch (emailError) {
-        errorCount++;
-        console.error(`   ❌ Error reprocessing email ${email.subject}:`, emailError.message);
-      }
-    }
-
-    clearCache();
-
-    res.json({
-      success: true,
-      message: `Reprocessed ${updatedCount} emails, ${errorCount} errors`,
-      updated: updatedCount,
-      errors: errorCount
-    });
-
-  } catch (error) {
-    console.error("❌ Reprocess attachments error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Fixed Attachments",
-    version: "2.2.0",
+    message: "Email IMAP Backend Server - Fixed Supabase Attachments",
+    version: "2.3.0",
     environment: process.env.NODE_ENV || 'development',
     endpoints: {
       "GET /api/health": "Check service status",
       "GET /api/emails": "Get emails with enhanced attachments",
       "POST /api/fetch-emails": "Fetch new emails (mode: latest, force, simple)",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
-      "GET /api/debug/attachments": "Debug attachment structure",
-      "POST /api/reprocess-attachments": "Fix all existing attachments",
+      "GET /api/debug-supabase": "Debug Supabase connection",
       "POST /api/clear-cache": "Clear cache"
     },
     features: [
-      "Fixed Supabase attachment URLs",
+      "Fixed Supabase client initialization",
       "Enhanced attachment structure for frontend",
       "Better error handling",
       "Multiple URL fallbacks",
