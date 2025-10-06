@@ -292,6 +292,79 @@ function clearCache() {
 
 // ENHANCED: Updated processAttachments function with better error handling
 // FIXED: Enhanced processAttachments function with better URL handling
+async function ensureStorageBucket() {
+  try {
+    console.log("🛠️ Ensuring storage bucket exists and is properly configured...");
+    
+    // Check if bucket exists
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    if (bucketsError) {
+      console.error("❌ Cannot list buckets:", bucketsError);
+      return false;
+    }
+
+    const attachmentsBucket = buckets?.find(b => b.name === 'attachments');
+    
+    if (!attachmentsBucket) {
+      console.log("📦 Creating attachments bucket...");
+      const { data: newBucket, error: createError } = await supabase.storage.createBucket('attachments', {
+        public: true,
+        fileSizeLimit: 52428800, // 50MB
+        allowedMimeTypes: ['image/*', 'application/pdf', 'text/*', 'application/*']
+      });
+      
+      if (createError) {
+        console.error("❌ Failed to create bucket:", createError);
+        return false;
+      }
+      console.log("✅ Created attachments bucket");
+    } else {
+      console.log("✅ Attachments bucket exists");
+      
+      // Update bucket to ensure it's public
+      const { error: updateError } = await supabase.storage.updateBucket('attachments', {
+        public: true,
+        fileSizeLimit: 52428800
+      });
+      
+      if (updateError) {
+        console.log("⚠️ Could not update bucket settings:", updateError.message);
+      }
+    }
+
+    // Test public URL access
+    const testPath = `test-access-${Date.now()}.txt`;
+    const testContent = "Test file for URL access";
+    
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("attachments")
+      .upload(testPath, testContent);
+    
+    if (uploadError) {
+      console.error("❌ Test upload failed:", uploadError);
+      return false;
+    }
+
+    // Get public URL and test it
+    const { data: urlData } = supabase.storage
+      .from("attachments")
+      .getPublicUrl(uploadData.path);
+
+    console.log("🔗 Public URL test:", urlData.publicUrl);
+    
+    // Clean up test file
+    await supabase.storage.from("attachments").remove([testPath]);
+    
+    return true;
+  } catch (error) {
+    console.error("❌ Storage setup failed:", error);
+    return false;
+  }
+}
+
+
+
 async function processAttachments(attachments) {
   if (!attachments || attachments.length === 0) {
     console.log("📎 No attachments found");
@@ -532,6 +605,7 @@ app.post("/api/simple-fetch", async (req, res) => {
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
 // In your email processing functions, ensure consistent data structure:
+// FIXED: Use consistent attachment structure
 const emailData = {
   messageId: messageId,
   subject: parsed.subject || '(No Subject)',
@@ -540,21 +614,20 @@ const emailData = {
   date: parsed.date || new Date(),
   text: parsed.text || "",
   html: parsed.html || "",
-  // FIXED: Ensure attachments array has proper structure
+  // FIXED: Consistent attachment structure for frontend
   attachments: attachmentLinks.map(att => ({
     id: `${messageId}_${att.filename}`,
     name: att.filename,
-    url: att.url, // This is crucial for frontend
+    url: att.url,
     type: att.contentType,
     size: att.size,
-    // Additional fields for frontend convenience
     displayName: att.originalFilename || att.filename,
     isImage: att.isImage,
     extension: att.extension
   })),
-  processedAt: new Date()
+  processedAt: new Date(),
+  simpleFetched: true
 };
-
             newEmails.push(emailData);
             processedCount++;
             console.log(`   ✅ Simple added: ${parsed.subject}`);
@@ -773,18 +846,28 @@ app.post("/api/fetch-latest", async (req, res) => {
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-            const emailData = {
-              messageId: messageId,
-              subject: parsed.subject || '(No Subject)',
-              from: parsed.from?.text || "",
-              to: parsed.to?.text || "",
-              date: parsed.date || new Date(),
-              text: parsed.text || "",
-              html: parsed.html || "",
-              attachments: attachmentLinks,
-              processedAt: new Date(),
-              latestFetched: true
-            };
+           const emailData = {
+  messageId: messageId,
+  subject: parsed.subject || '(No Subject)',
+  from: parsed.from?.text || "",
+  to: parsed.to?.text || "",
+  date: parsed.date || new Date(),
+  text: parsed.text || "",
+  html: parsed.html || "",
+  // FIXED: Consistent attachment structure for frontend
+  attachments: attachmentLinks.map(att => ({
+    id: `${messageId}_${att.filename}`,
+    name: att.filename,
+    url: att.url,
+    type: att.contentType,
+    size: att.size,
+    displayName: att.originalFilename || att.filename,
+    isImage: att.isImage,
+    extension: att.extension
+  })),
+  processedAt: new Date(),
+  latestFetched: true
+};
 
             newEmails.push(emailData);
             processedCount++;
@@ -953,19 +1036,28 @@ app.post("/api/force-fetch", async (req, res) => {
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-            const emailData = {
-              messageId: messageId,
-              subject: parsed.subject || '(No Subject)',
-              from: parsed.from?.text || "",
-              to: parsed.to?.text || "",
-              date: parsed.date || new Date(),
-              text: parsed.text || "",
-              html: parsed.html || "",
-              attachments: attachmentLinks,
-              processedAt: new Date(),
-              forceFetched: true
-            };
-
+          const emailData = {
+  messageId: messageId,
+  subject: parsed.subject || '(No Subject)',
+  from: parsed.from?.text || "",
+  to: parsed.to?.text || "",
+  date: parsed.date || new Date(),
+  text: parsed.text || "",
+  html: parsed.html || "",
+  // FIXED: Consistent attachment structure for frontend
+  attachments: attachmentLinks.map(att => ({
+    id: `${messageId}_${att.filename}`,
+    name: att.filename,
+    url: att.url,
+    type: att.contentType,
+    size: att.size,
+    displayName: att.originalFilename || att.filename,
+    isImage: att.isImage,
+    extension: att.extension
+  })),
+  processedAt: new Date(),
+  forceFetched: true
+};
             newEmails.push(emailData);
             processedCount++;
             console.log(`   ✅ Force added: ${parsed.subject}`);
@@ -1171,93 +1263,7 @@ app.get("/api/debug-storage-deep", async (req, res) => {
     });
   }
 });
-// FIXED: Enhanced Storage Setup Function
-async function ensureStorageBucket() {
-  try {
-    console.log("🛠️ Ensuring storage bucket exists and is properly configured...");
-    
-    // Check if bucket exists
-    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
-    
-    if (bucketsError) {
-      console.error("❌ Cannot list buckets:", bucketsError);
-      return false;
-    }
 
-    const attachmentsBucket = buckets?.find(b => b.name === 'attachments');
-    
-    if (!attachmentsBucket) {
-      console.log("📦 Creating attachments bucket...");
-      const { data: newBucket, error: createError } = await supabase.storage.createBucket('attachments', {
-        public: true,
-        fileSizeLimit: 52428800, // 50MB
-        allowedMimeTypes: ['image/*', 'application/pdf', 'text/*', 'application/*']
-      });
-      
-      if (createError) {
-        console.error("❌ Failed to create bucket:", createError);
-        return false;
-      }
-      console.log("✅ Created attachments bucket");
-    } else {
-      console.log("✅ Attachments bucket exists");
-      
-      // Update bucket to ensure it's public
-      const { error: updateError } = await supabase.storage.updateBucket('attachments', {
-        public: true,
-        fileSizeLimit: 52428800
-      });
-      
-      if (updateError) {
-        console.log("⚠️ Could not update bucket settings:", updateError.message);
-      }
-    }
-
-    // Test public URL access
-    const testPath = `test-access-${Date.now()}.txt`;
-    const testContent = "Test file for URL access";
-    
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from("attachments")
-      .upload(testPath, testContent);
-    
-    if (uploadError) {
-      console.error("❌ Test upload failed:", uploadError);
-      return false;
-    }
-
-    // Get public URL and test it
-    const { data: urlData } = supabase.storage
-      .from("attachments")
-      .getPublicUrl(uploadData.path);
-
-    console.log("🔗 Public URL test:", urlData.publicUrl);
-    
-    // Clean up test file
-    await supabase.storage.from("attachments").remove([testPath]);
-    
-    return true;
-  } catch (error) {
-    console.error("❌ Storage setup failed:", error);
-    return false;
-  }
-}
-
-
-// Call this when your server starts
-async function initializeApp() {
-  console.log("🚀 Initializing application...");
-  
-  // Ensure storage is ready
-  if (supabase) {
-    await ensureStorageBucket();
-  }
-  
-  console.log("✅ Application initialized");
-}
-
-// Call initialization
-initializeApp();
 // Get emails from MongoDB with performance optimizations
 app.get("/api/emails", async (req, res) => {
   try {
@@ -1638,6 +1644,20 @@ app.get('*', (req, res) => {
     res.status(404).json({ error: 'API endpoint not found' });
   }
 });
+// Call this when your server starts
+async function initializeApp() {
+  console.log("🚀 Initializing application...");
+  
+  // Ensure storage is ready
+  if (supabase) {
+    await ensureStorageBucket();
+  }
+  
+  console.log("✅ Application initialized");
+}
+
+// Call initialization
+initializeApp();
 
 // Vercel serverless function handler with error handling
 export default (req, res) => {
@@ -1651,40 +1671,3 @@ export default (req, res) => {
     });
   }
 };
-
-// Start Express server only in development and when not in Vercel
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  const server = app.listen(PORT, () => {
-    console.log(`🚀 Enhanced backend server running on port ${PORT}`);
-    console.log(`📧 Email API endpoints available at http://localhost:${PORT}/api`);
-    console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  });
-
-  // Handle port already in use errors gracefully
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`❌ Port ${PORT} is already in use. Trying port ${Number(PORT) + 1}...`);
-      const newPort = Number(PORT) + 1;
-      app.listen(newPort, () => {
-        console.log(`🚀 Server running on port ${newPort} instead`);
-        console.log(`📧 Email API endpoints available at http://localhost:${newPort}/api`);
-      });
-    } else {
-      console.error('Server error:', err);
-    }
-  });
-}
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('🛑 Shutting down gracefully...');
-  
-  await imapManager.disconnect();
-  
-  if (isMongoConnected && mongoClient) {
-    await mongoClient.close();
-  }
-  
-  clearCache();
-  process.exit(0);
-});
