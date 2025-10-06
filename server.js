@@ -496,12 +496,17 @@ async function processAttachments(attachments) {
 
       console.log(`   ✅ Upload successful: ${safeFilename}`);
 
-      // FIXED: Get public URL - this is the key fix
-      const { data: urlData } = supabase.storage
+      // FIXED: Get signed URL for secure access (works even if bucket is not public)
+      const { data: signedUrlData, error: signedError } = await supabase.storage
         .from("attachments")
-        .getPublicUrl(data.path);
+        .createSignedUrl(data.path, 31536000); // 1 year expiration
 
-      console.log(`   🔗 Generated URL: ${urlData.publicUrl}`);
+      if (signedError) {
+        console.error(`   ❌ Signed URL generation failed:`, signedError.message);
+        return null;
+      }
+
+      console.log(`   🔗 Generated signed URL: ${signedUrlData.signedUrl}`);
 
       // Enhanced attachment object for frontend
       const attachmentResult = {
@@ -514,11 +519,11 @@ async function processAttachments(attachments) {
         name: originalFilename,
         displayName: originalFilename,
         
-        // URL information - FIXED: Provide multiple URL options
-        url: urlData.publicUrl,
-        publicUrl: urlData.publicUrl,
-        downloadUrl: urlData.publicUrl,
-        previewUrl: urlData.publicUrl,
+        // URL information - FIXED: Provide multiple URL options with signed URL
+        url: signedUrlData.signedUrl,
+        publicUrl: signedUrlData.signedUrl,
+        downloadUrl: signedUrlData.signedUrl,
+        previewUrl: signedUrlData.signedUrl,
         
         // File metadata
         contentType: att.contentType || 'application/octet-stream',
@@ -680,22 +685,29 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       });
     }
 
-    // Get public URL
-    const { data: urlData } = supabase.storage
+    // Get signed URL
+    const { data: signedUrlData, error: signedError } = await supabase.storage
       .from("attachments")
-      .getPublicUrl(uploadData.path);
+      .createSignedUrl(uploadData.path, 3600); // 1 hour for test
 
-    console.log("🔗 Generated URL:", urlData.publicUrl);
+    if (signedError) {
+      return res.status(500).json({
+        error: "Signed URL generation failed",
+        details: signedError.message
+      });
+    }
 
-    // Test if URL is accessible
+    console.log("🔗 Generated signed URL:", signedUrlData.signedUrl);
+
+    // Test if signed URL is accessible
     let urlAccessible = false;
     let testResponse = null;
     try {
-      testResponse = await fetch(urlData.publicUrl);
+      testResponse = await fetch(signedUrlData.signedUrl);
       urlAccessible = testResponse.ok;
-      console.log("✅ URL accessibility test:", urlAccessible);
+      console.log("✅ Signed URL accessibility test:", urlAccessible);
     } catch (fetchError) {
-      console.log("❌ URL access test failed:", fetchError.message);
+      console.log("❌ Signed URL access test failed:", fetchError.message);
     }
 
     // Clean up test file
@@ -706,7 +718,7 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       test: {
         filename: testFilename,
         path: uploadData.path,
-        publicUrl: urlData.publicUrl,
+        signedUrl: signedUrlData.signedUrl,
         urlAccessible: urlAccessible,
         status: testResponse?.status,
         bucket: 'attachments'
@@ -1262,23 +1274,24 @@ app.post("/api/clear-cache", (req, res) => {
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Fixed Supabase Attachments",
-    version: "2.3.0",
+    message: "Email IMAP Backend Server - Signed URL Attachments",
+    version: "2.4.0",
     environment: process.env.NODE_ENV || 'development',
     endpoints: {
       "GET /api/health": "Check service status",
-      "GET /api/emails": "Get emails with enhanced attachments",
+      "GET /api/emails": "Get emails with signed attachment URLs",
       "POST /api/fetch-emails": "Fetch new emails (mode: latest, force, simple)",
-      "GET /api/test-attachment-urls": "Test attachment URL generation",
+      "GET /api/test-attachment-urls": "Test signed attachment URL generation",
       "GET /api/debug-supabase": "Debug Supabase connection",
       "POST /api/clear-cache": "Clear cache"
     },
     features: [
-      "Fixed Supabase client initialization",
+      "Signed URLs for secure attachment access",
+      "Works with private or public buckets",
       "Enhanced attachment structure for frontend",
       "Better error handling",
-      "Multiple URL fallbacks",
-      "Tracking pixel filtering"
+      "Tracking pixel filtering",
+      "Vercel serverless compatible"
     ]
   });
 });
