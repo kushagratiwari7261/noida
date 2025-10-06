@@ -15,17 +15,38 @@ function App() {
 
   const API_BASE = '';
 
-  // Simple attachment URL processor
+  // Enhanced attachment URL processor
   const processAttachmentUrl = (attachment) => {
-    // Return the URL as-is since backend provides full URLs
-    return attachment.url;
+    // Try multiple URL properties from backend
+    const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
+    
+    if (!url) {
+      console.warn('❌ No URL found for attachment:', attachment);
+      return null;
+    }
+
+    // Ensure URL is properly formatted
+    let processedUrl = url;
+    
+    // If URL is relative, make it absolute (shouldn't happen with Supabase)
+    if (processedUrl.startsWith('/')) {
+      processedUrl = `${window.location.origin}${processedUrl}`;
+    }
+
+    console.log('🔗 Processed attachment URL:', {
+      original: url,
+      processed: processedUrl,
+      filename: attachment.filename
+    });
+
+    return processedUrl;
   };
 
-  // Fixed process email data with direct attachment handling
+  // Enhanced process email data with better attachment handling
   const processEmailData = (email) => {
     const processedEmail = {
-      id: email._id || email.id,
-      _id: email._id || email.id,
+      id: email._id || email.id || email.messageId || email.message_id,
+      _id: email._id || email.id || email.messageId || email.message_id,
       messageId: email.messageId || email.message_id,
       subject: email.subject || '(No Subject)',
       from: email.from || email.from_text,
@@ -37,40 +58,70 @@ function App() {
       text_content: email.text_content || email.text,
       html: email.html || email.html_content,
       html_content: email.html_content || email.html,
-      attachments: []
+      attachments: [],
+      hasAttachments: email.hasAttachments || false,
+      attachmentsCount: email.attachmentsCount || 0
     };
 
-    // Process attachments - handle both direct attachments and recentEmailsWithAttachments structure
+    // Process attachments - handle both direct attachments and enhanced structure
     if (Array.isArray(email.attachments) && email.attachments.length > 0) {
       processedEmail.attachments = email.attachments.map((att, index) => {
-        // Use the direct URL from the backend response
+        // Use the enhanced URL processor
         const attachmentUrl = processAttachmentUrl(att);
         
+        // Determine file type and properties
+        const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
+        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
+        const isImage = att.isImage || mimeType.startsWith('image/');
+        const isPDF = att.isPdf || mimeType === 'application/pdf';
+        const isText = mimeType.startsWith('text/');
+        const isAudio = mimeType.startsWith('audio/');
+        const isVideo = mimeType.startsWith('video/');
+
         const processedAtt = {
-          id: att.id || att.filename || `att-${email.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
-          filename: att.filename || `attachment-${index}`,
-          url: attachmentUrl, // Use the direct URL
-          type: att.type || att.contentType || att.mimeType || 'application/octet-stream',
+          id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
+          filename: filename,
+          name: att.name || filename,
+          originalFilename: att.originalFilename || filename,
+          url: attachmentUrl,
+          publicUrl: att.publicUrl || attachmentUrl,
+          downloadUrl: att.downloadUrl || attachmentUrl,
+          previewUrl: att.previewUrl || (isImage ? attachmentUrl : null),
+          type: mimeType,
+          contentType: mimeType,
+          mimeType: mimeType,
           size: att.size || 0,
-          mimeType: att.type || att.contentType || att.mimeType || 'application/octet-stream',
+          extension: att.extension || filename.split('.').pop() || 'bin',
+          isImage: isImage,
+          isPdf: isPDF,
+          isText: isText,
+          isAudio: isAudio,
+          isVideo: isVideo,
+          path: att.path,
+          displayName: att.displayName || filename,
           originalData: att
         };
 
-        console.log('📎 Processed attachment:', {
+        console.log('📎 Enhanced attachment processed:', {
           filename: processedAtt.filename,
           url: processedAtt.url,
           type: processedAtt.type,
-          size: processedAtt.size
+          size: processedAtt.size,
+          isImage: processedAtt.isImage,
+          isPdf: processedAtt.isPdf
         });
 
         return processedAtt;
-      }).filter(att => att.filename && att.url);
+      }).filter(att => att.filename && att.url); // Only keep attachments with filename and URL
+
+      processedEmail.hasAttachments = processedEmail.attachments.length > 0;
+      processedEmail.attachmentsCount = processedEmail.attachments.length;
     }
 
     return processedEmail;
   };
 
-  // Enhanced load emails function to handle different response structures
+  // Enhanced load emails function
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -100,49 +151,19 @@ function App() {
       const response = await fetch(`${API_BASE}/api/emails?${queries}`);
 
       if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        let errorMessage = `HTTP error! status: ${response.status}`;
-
-        if (contentType && contentType.includes('application/json')) {
-          try {
-            const errorData = await response.json();
-            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
-          } catch (jsonErr) {
-            console.error('❌ Failed to parse error response as JSON:', jsonErr);
-          }
-        } else {
-          try {
-            const textResponse = await response.text();
-            errorMessage += ` - ${textResponse.substring(0, 200)}`;
-            console.error('❌ Server returned non-JSON response:', textResponse);
-          } catch (textErr) {
-            console.error('❌ Failed to read error response as text:', textErr);
-          }
-        }
-
-        throw new Error(errorMessage);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      let data;
-      try {
-        data = await response.json();
-        console.log('📧 Backend response:', data);
-      } catch (jsonErr) {
-        console.error('❌ Failed to parse response as JSON:', jsonErr);
-        const textResponse = await response.text();
-        console.error('❌ Raw response text:', textResponse);
-        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
-      }
+      const data = await response.json();
+      console.log('📧 Backend response:', data);
       
       let emailsToProcess = [];
       
-      // Handle different response structures
-      if (data.recentEmailsWithAttachments && Array.isArray(data.recentEmailsWithAttachments)) {
-        console.log('📧 Using recentEmailsWithAttachments structure');
-        emailsToProcess = data.recentEmailsWithAttachments;
-      } else if (data.emails && Array.isArray(data.emails)) {
-        console.log('📧 Using emails structure');
+      // Handle response structure
+      if (data.emails && Array.isArray(data.emails)) {
         emailsToProcess = data.emails;
+      } else if (Array.isArray(data)) {
+        emailsToProcess = data;
       } else {
         console.log('❌ No emails found in response');
         setEmails([]);
@@ -163,6 +184,7 @@ function App() {
             filename: att.filename,
             url: att.url,
             type: att.type,
+            isImage: att.isImage,
             size: att.size
           })));
         }
@@ -180,8 +202,8 @@ function App() {
     }
   };
 
-  // Fetch new emails - NO DATABASE RELOAD
-  const fetchNewEmails = async () => {
+  // Enhanced fetch function using the new unified endpoint
+  const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
     setFetching(true);
@@ -189,57 +211,34 @@ function App() {
     setError(null);
 
     try {
-      console.log('🔄 Starting smart fetch...');
-      const response = await fetch(`${API_BASE}/api/fetch-latest`, {
+      console.log(`🔄 Starting ${mode} fetch...`);
+      
+      const response = await fetch(`${API_BASE}/api/fetch-emails`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          mode: mode,
+          count: mode === 'force' ? 10 : 20
+        })
       });
 
       if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        let errorMessage = `HTTP error! status: ${response.status}`;
-
-        if (contentType && contentType.includes('application/json')) {
-          try {
-            const errorData = await response.json();
-            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
-          } catch (jsonErr) {
-            console.error('❌ Failed to parse error response as JSON:', jsonErr);
-          }
-        } else {
-          try {
-            const textResponse = await response.text();
-            errorMessage += ` - ${textResponse.substring(0, 200)}`;
-            console.error('❌ Server returned non-JSON response:', textResponse);
-          } catch (textErr) {
-            console.error('❌ Failed to read error response as text:', textErr);
-          }
-        }
-
-        throw new Error(errorMessage);
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      let result;
-      try {
-        result = await response.json();
-        console.log('📨 Fetch result:', result);
-      } catch (jsonErr) {
-        console.error('❌ Failed to parse fetch response as JSON:', jsonErr);
-        const textResponse = await response.text();
-        console.error('❌ Raw fetch response text:', textResponse);
-        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
-      }
+      const result = await response.json();
+      console.log(`📨 ${mode} fetch result:`, result);
       
       if (response.ok && result.success) {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // ONLY immediate update - no database reload
-        if (result.emails && result.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.emails.length, 'new emails');
-          const processedNewEmails = result.emails.map(processEmailData);
+        // Update with new emails immediately
+        if (result.data && result.data.emails && result.data.emails.length > 0) {
+          console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
+          const processedNewEmails = result.data.emails.map(processEmailData);
           
           setEmails(prevEmails => {
             const existingIds = new Set(prevEmails.map(email => email.messageId));
@@ -250,181 +249,22 @@ function App() {
         
       } else {
         setFetchStatus('error');
-        setError(result.error || 'Failed to fetch emails');
-        console.error('❌ Fetch failed:', result.error);
+        setError(result.error || `Failed to ${mode} fetch emails`);
+        console.error(`❌ ${mode} fetch failed:`, result.error);
       }
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
-      console.error('❌ Fetch failed:', err);
+      console.error(`❌ ${mode} fetch failed:`, err);
     } finally {
       setFetching(false);
     }
   };
 
-  // Force fetch emails - NO DATABASE RELOAD
-  const forceFetchEmails = async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('⚡ Starting force fetch...');
-      const response = await fetch(`${API_BASE}/api/force-fetch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        let errorMessage = `HTTP error! status: ${response.status}`;
-
-        if (contentType && contentType.includes('application/json')) {
-          try {
-            const errorData = await response.json();
-            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
-          } catch (jsonErr) {
-            console.error('❌ Failed to parse error response as JSON:', jsonErr);
-          }
-        } else {
-          try {
-            const textResponse = await response.text();
-            errorMessage += ` - ${textResponse.substring(0, 200)}`;
-            console.error('❌ Server returned non-JSON response:', textResponse);
-          } catch (textErr) {
-            console.error('❌ Failed to read error response as text:', textErr);
-          }
-        }
-
-        throw new Error(errorMessage);
-      }
-
-      let result;
-      try {
-        result = await response.json();
-        console.log('📨 Force fetch result:', result);
-      } catch (jsonErr) {
-        console.error('❌ Failed to parse force fetch response as JSON:', jsonErr);
-        const textResponse = await response.text();
-        console.error('❌ Raw force fetch response text:', textResponse);
-        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
-      }
-      
-      if (response.ok && result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        // ONLY immediate update - no database reload
-        if (result.emails && result.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.emails.length, 'new emails');
-          const processedNewEmails = result.emails.map(processEmailData);
-          
-          setEmails(prevEmails => {
-            const existingIds = new Set(prevEmails.map(email => email.messageId));
-            const uniqueNewEmails = processedNewEmails.filter(email => !existingIds.has(email.messageId));
-            return [...uniqueNewEmails, ...prevEmails];
-          });
-        }
-        
-      } else {
-        setFetchStatus('error');
-        setError(result.error || 'Failed to force fetch emails');
-        console.error('❌ Force fetch failed:', result.error);
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Force fetch failed:', err);
-    } finally {
-      setFetching(false);
-    }
-  };
-
-  // Simple fetch emails - NO DATABASE RELOAD
-  const simpleFetchEmails = async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('🚀 Starting simple fetch...');
-      const response = await fetch(`${API_BASE}/api/simple-fetch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        let errorMessage = `HTTP error! status: ${response.status}`;
-
-        if (contentType && contentType.includes('application/json')) {
-          try {
-            const errorData = await response.json();
-            errorMessage += ` - ${errorData.error || JSON.stringify(errorData)}`;
-          } catch (jsonErr) {
-            console.error('❌ Failed to parse error response as JSON:', jsonErr);
-          }
-        } else {
-          try {
-            const textResponse = await response.text();
-            errorMessage += ` - ${textResponse.substring(0, 200)}`;
-            console.error('❌ Server returned non-JSON response:', textResponse);
-          } catch (textErr) {
-            console.error('❌ Failed to read error response as text:', textErr);
-          }
-        }
-
-        throw new Error(errorMessage);
-      }
-
-      let result;
-      try {
-        result = await response.json();
-        console.log('📨 Simple fetch result:', result);
-      } catch (jsonErr) {
-        console.error('❌ Failed to parse simple fetch response as JSON:', jsonErr);
-        const textResponse = await response.text();
-        console.error('❌ Raw simple fetch response text:', textResponse);
-        throw new Error(`Invalid JSON response: ${textResponse.substring(0, 200)}`);
-      }
-      
-      if (response.ok && result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        // ONLY immediate update - no database reload
-        if (result.emails && result.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.emails.length, 'new emails');
-          const processedNewEmails = result.emails.map(processEmailData);
-          
-          setEmails(prevEmails => {
-            const existingIds = new Set(prevEmails.map(email => email.messageId));
-            const uniqueNewEmails = processedNewEmails.filter(email => !existingIds.has(email.messageId));
-            return [...uniqueNewEmails, ...prevEmails];
-          });
-        }
-        
-      } else {
-        setFetchStatus('error');
-        setError(result.error || 'Failed to simple fetch emails');
-        console.error('❌ Simple fetch failed:', result.error);
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Simple fetch failed:', err);
-    } finally {
-      setFetching(false);
-    }
-  };
+  // Individual fetch functions for backward compatibility
+  const fetchNewEmails = () => fetchEmails('latest');
+  const forceFetchEmails = () => fetchEmails('force');
+  const simpleFetchEmails = () => fetchEmails('simple');
 
   // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
@@ -450,7 +290,7 @@ function App() {
     }
   };
 
-  // Enhanced download function for all attachment types
+  // Enhanced download function with better error handling
   const downloadFile = async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', {
@@ -463,7 +303,21 @@ function App() {
         throw new Error('No URL available for download');
       }
 
-      // For all file types, create a download link
+      // Test if URL is accessible
+      try {
+        const testResponse = await fetch(attachment.url, { method: 'HEAD' });
+        if (!testResponse.ok) {
+          console.warn('⚠️ URL might not be directly accessible, opening in new tab');
+          window.open(attachment.url, '_blank');
+          return;
+        }
+      } catch (testError) {
+        console.warn('⚠️ URL test failed, opening in new tab:', testError);
+        window.open(attachment.url, '_blank');
+        return;
+      }
+
+      // Use download attribute for direct download
       const link = document.createElement('a');
       link.href = attachment.url;
       link.download = filename;
@@ -515,17 +369,17 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Enhanced attachment rendering with support for all file types
+  // Enhanced attachment rendering with better image handling
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
     const fileSize = getFileSize(attachment.size);
     const fileIcon = getFileIcon(mimeType, filename);
-    const isImage = mimeType?.startsWith('image/');
-    const isPDF = mimeType === 'application/pdf';
-    const isText = mimeType?.startsWith('text/');
-    const isAudio = mimeType?.startsWith('audio/');
-    const isVideo = mimeType?.startsWith('video/');
+    const isImage = attachment.isImage || mimeType?.startsWith('image/');
+    const isPDF = attachment.isPdf || mimeType === 'application/pdf';
+    const isText = attachment.isText || mimeType?.startsWith('text/');
+    const isAudio = attachment.isAudio || mimeType?.startsWith('audio/');
+    const isVideo = attachment.isVideo || mimeType?.startsWith('video/');
     const isExpandable = isImage || isPDF;
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
     
@@ -633,16 +487,24 @@ function App() {
             </div>
             {isExpanded && (
               <div className="image-overlay" onClick={() => toggleImageExpand(emailIndex, index)}>
-                <img
-                  src={safeUrl}
-                  alt={filename}
-                  className="expanded-image"
-                  crossOrigin="anonymous"
-                  onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.parentElement.innerHTML = '<div class="error-message">Failed to load image</div>';
-                  }}
-                />
+                <div className="expanded-image-container">
+                  <img
+                    src={safeUrl}
+                    alt={filename}
+                    className="expanded-image"
+                    crossOrigin="anonymous"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      e.target.parentElement.innerHTML = '<div class="error-message">Failed to load image</div>';
+                    }}
+                  />
+                  <button 
+                    className="close-expanded-btn"
+                    onClick={() => toggleImageExpand(emailIndex, index)}
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -749,6 +611,7 @@ function App() {
         {!safeUrl && (
           <div className="no-url-warning">
             <p>⚠️ No download URL available for this attachment</p>
+            <p><small>Filename: {filename}</small></p>
           </div>
         )}
       </div>
@@ -762,6 +625,54 @@ function App() {
       [key]: !prev[key]
     }));
   };
+
+  // Enhanced EmailCard component
+  const EmailCard = ({ email, index }) => (
+    <div className="email-card">
+      <div className="email-header">
+        <div className="email-subject">
+          <h3>{email.subject || '(No Subject)'}</h3>
+          {email.hasAttachments && (
+            <span className="attachment-badge">
+              📎 {email.attachmentsCount}
+            </span>
+          )}
+        </div>
+        <span className="email-date">
+          {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
+        </span>
+      </div>
+
+      <div className="email-from">
+        <strong>From:</strong> 
+        <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
+      </div>
+
+      <div
+        className="email-body"
+        dangerouslySetInnerHTML={{
+          __html:
+            email.html_content || email.html ||
+            email.text_content?.replace(/\n/g, '<br/>') ||
+            email.text?.replace(/\n/g, '<br/>') ||
+            '<p className="no-content">(No Content)</p>',
+        }}
+      />
+
+      {email.hasAttachments && (
+        <div className="attachments-section">
+          <div className="attachments-header">
+            <h4>📎 Attachments ({email.attachmentsCount})</h4>
+          </div>
+          <div className="attachments-grid">
+            {email.attachments.map((attachment, attachmentIndex) =>
+              renderAttachment(attachment, attachmentIndex, index)
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   // Load emails when component mounts
   useEffect(() => {
@@ -787,53 +698,6 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [fetchStatus]);
-
-  const EmailCard = ({ email, index }) => (
-    <div className="email-card">
-      <div className="email-header">
-        <div className="email-subject">
-          <h3>{email.subject || '(No Subject)'}</h3>
-          {email.attachments?.length > 0 && (
-            <span className="attachment-badge">
-              📎 {email.attachments.length}
-            </span>
-          )}
-        </div>
-        <span className="email-date">
-          {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
-        </span>
-      </div>
-
-      <div className="email-from">
-        <strong>From:</strong> 
-        <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
-      </div>
-
-      <div
-        className="email-body"
-        dangerouslySetInnerHTML={{
-          __html:
-            email.html_content || email.html ||
-            email.text_content?.replace(/\n/g, '<br/>') ||
-            email.text?.replace(/\n/g, '<br/>') ||
-            '<p className="no-content">(No Content)</p>',
-        }}
-      />
-
-      {email.attachments?.length > 0 && (
-        <div className="attachments-section">
-          <div className="attachments-header">
-            <h4>📎 Attachments ({email.attachments.length})</h4>
-          </div>
-          <div className="attachments-grid">
-            {email.attachments.map((attachment, attachmentIndex) =>
-              renderAttachment(attachment, attachmentIndex, index)
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   const getStatusMessage = () => {
     switch (fetchStatus) {
@@ -867,13 +731,7 @@ function App() {
         <div className="sidebar-content">
           {!sidebarCollapsed && (
             <>
-             
-
-             
-
-            
-
-              
+              {/* Sidebar content can be added here if needed */}
             </>
           )}
         </div>
@@ -966,7 +824,7 @@ function App() {
           </div>
         )}
 
-        {/* Email List - Takes full remaining space */}
+        {/* Email List */}
         <div className="email-content-area">
           {loading && (
             <div className="loading-state">
@@ -993,13 +851,13 @@ function App() {
           {!loading && emails.length > 0 && (
             <div className="email-list">
               {emails.map((email, index) => (
-                <EmailCard key={email._id || email.id || index} email={email} index={index} />
+                <EmailCard key={email.id} email={email} index={index} />
               ))}
             </div>
           )}
         </div>
 
-        {/* Debug Info - Collapsible at bottom */}
+        {/* Debug Info */}
         <div className="debug-info">
           <details>
             <summary>Debug Info</summary>
@@ -1014,12 +872,12 @@ function App() {
               <div className="attachments-debug">
                 <h4>Attachments Debug:</h4>
                 {emails.map((email, idx) => (
-                  email.attachments.length > 0 && (
+                  email.hasAttachments && (
                     <div key={idx}>
-                      <p>Email {idx}: {email.attachments.length} attachments</p>
+                      <p>Email {idx}: {email.attachmentsCount} attachments</p>
                       {email.attachments.map((att, attIdx) => (
                         <div key={attIdx} style={{marginLeft: '20px', fontSize: '12px'}}>
-                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type}
+                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'}
                         </div>
                       ))}
                     </div>
