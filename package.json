@@ -10,7 +10,6 @@
     "preview": "vite preview",
     "start": "node server.js",
     "vercel-build": "npm run build"
-    
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.3.0",
