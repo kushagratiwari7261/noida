@@ -232,15 +232,18 @@ async function checkDuplicate(messageId) {
       const existing = await mongoDb.collection("emails").findOne({ messageId });
       if (existing) return true;
     }
-
     // Check Supabase
-    const { data, error } = await supabase
-      .from('emails')
-      .select('message_id')
-      .eq('message_id', messageId)
-      .single();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('message_id')
+        .eq('message_id', messageId)
+        .single();
 
-    return !!data;
+      if (!error && data) return true;
+    }
+
+    return false;
   } catch (error) {
     console.error("❌ Duplicate check error:", error);
     return false;
@@ -589,6 +592,7 @@ app.post("/api/simple-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
+                 if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -603,6 +607,7 @@ app.post("/api/simple-fetch", async (req, res) => {
                 };
 
                 await supabase.from('emails').upsert(supabaseData);
+              }
 
                 return true;
               } catch (saveErr) {
@@ -782,6 +787,7 @@ app.post("/api/fetch-latest", async (req, res) => {
                 }
                 
                 // Supabase upsert
+                 if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -796,6 +802,7 @@ app.post("/api/fetch-latest", async (req, res) => {
                 };
                 
                 await supabase.from('emails').upsert(supabaseData);
+              }
                 
                 return true;
               } catch (saveErr) {
@@ -960,6 +967,7 @@ app.post("/api/force-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
+                 if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -974,6 +982,7 @@ app.post("/api/force-fetch", async (req, res) => {
                 };
 
                 await supabase.from('emails').upsert(supabaseData);
+              }
 
                 return true;
               } catch (saveErr) {
