@@ -317,42 +317,38 @@ async function ensureStorageBucket() {
       }
     }
 
-    // Test upload to verify everything works
-    console.log("🧪 Testing upload...");
-    const testContent = "Test file for storage verification";
-    const testPath = `test-${Date.now()}.txt`;
-    
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from("attachments")
-      .upload(testPath, testContent, {
-        contentType: 'text/plain',
-        upsert: false
-      });
-
-    if (uploadError) {
-      console.error("❌ Test upload failed:", uploadError);
-      return false;
-    }
-
-    console.log("✅ Test upload successful");
-
-    // Get public URL and verify it's accessible
-    const { data: urlData } = supabase.storage
-      .from("attachments")
-      .getPublicUrl(uploadData.path);
-
-    console.log("🔗 Public URL:", urlData.publicUrl);
-
-    // Clean up test file
-    await supabase.storage.from("attachments").remove([testPath]);
-
-    console.log("✅ Storage setup completed successfully");
     return true;
 
   } catch (error) {
     console.error("❌ Storage setup failed:", error);
     return false;
   }
+}
+
+// Helper function to identify problematic files
+function isProblematicFile(filename, contentType) {
+  if (!filename) return false;
+  
+  const lowerFilename = filename.toLowerCase();
+  const lowerContentType = (contentType || '').toLowerCase();
+  
+  // Skip tracking pixels and analytics files
+  const problematicPatterns = [
+    /tracking/i,
+    /pixel/i,
+    /beacon/i,
+    /analytics/i,
+    /spacer/i,
+    /forward/i,
+    /gem\.gif$/i,
+    /native_forward\.gif$/i,
+    /\.gif$/i, // Skip all GIFs as they're often tracking pixels
+    /signature/i
+  ];
+  
+  return problematicPatterns.some(pattern => 
+    pattern.test(lowerFilename) || pattern.test(lowerContentType)
+  );
 }
 
 // FIXED: Enhanced attachment processing with proper URL generation
@@ -513,32 +509,6 @@ async function processAttachments(attachments) {
   return successfulAttachments;
 }
 
-// Helper function to identify problematic files
-function isProblematicFile(filename, contentType) {
-  if (!filename) return false;
-  
-  const lowerFilename = filename.toLowerCase();
-  const lowerContentType = (contentType || '').toLowerCase();
-  
-  // Skip tracking pixels and analytics files
-  const problematicPatterns = [
-    /tracking/i,
-    /pixel/i,
-    /beacon/i,
-    /analytics/i,
-    /spacer/i,
-    /forward/i,
-    /gem\.gif$/i,
-    /native_forward\.gif$/i,
-    /\.gif$/i, // Skip all GIFs as they're often tracking pixels
-    /signature/i
-  ];
-  
-  return problematicPatterns.some(pattern => 
-    pattern.test(lowerFilename) || pattern.test(lowerContentType)
-  );
-}
-
 // FIXED: Enhanced email data structure for frontend compatibility
 function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
   // Enhanced attachment structure for frontend
@@ -611,7 +581,9 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
   return emailData;
 }
 
-// NEW: Test endpoint to verify attachment URLs
+// ========== API ENDPOINTS ==========
+
+// NEW: Test endpoint to verify attachment URLs - FIXED PATH
 app.get("/api/test-attachment-urls", async (req, res) => {
   try {
     console.log("🧪 Testing attachment URL generation...");
@@ -679,6 +651,65 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       error: error.message,
       stack: error.stack 
     });
+  }
+});
+
+// NEW: Debug attachments endpoint
+app.get("/api/debug/attachments", async (req, res) => {
+  try {
+    const mongoDb = await ensureMongoConnection();
+    const emailWithAttachments = await mongoDb.collection("emails").findOne({ 
+      "attachments.0": { $exists: true } 
+    });
+
+    if (!emailWithAttachments) {
+      return res.json({ 
+        message: "No emails with attachments found in MongoDB",
+        sampleStructure: {
+          id: "string",
+          filename: "string",
+          url: "string",
+          publicUrl: "string", 
+          contentType: "string",
+          size: "number",
+          isImage: "boolean"
+        }
+      });
+    }
+
+    // Also check Supabase
+    let supabaseAttachments = [];
+    if (supabase) {
+      const { data: supabaseEmail, error } = await supabase
+        .from('emails')
+        .select('attachments')
+        .not('attachments', 'is', null)
+        .limit(1)
+        .single();
+
+      if (!error && supabaseEmail) {
+        supabaseAttachments = supabaseEmail.attachments || [];
+      }
+    }
+
+    res.json({
+      mongoDb: {
+        emailId: emailWithAttachments.messageId,
+        subject: emailWithAttachments.subject,
+        attachmentsCount: emailWithAttachments.attachments.length,
+        sampleAttachment: emailWithAttachments.attachments[0]
+      },
+      supabase: {
+        attachmentsCount: supabaseAttachments.length,
+        sampleAttachment: supabaseAttachments[0] || null
+      },
+      storage: {
+        supabaseUrl: process.env.SUPABASE_URL,
+        bucket: 'attachments'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1157,61 +1188,90 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// NEW: Debug attachments endpoint
-app.get("/api/debug/attachments", async (req, res) => {
+// NEW: Force re-process all emails with attachments
+app.post("/api/reprocess-attachments", async (req, res) => {
   try {
+    console.log("🔄 Reprocessing all emails to fix attachments...");
+    
     const mongoDb = await ensureMongoConnection();
-    const emailWithAttachments = await mongoDb.collection("emails").findOne({ 
-      "attachments.0": { $exists: true } 
-    });
-
-    if (!emailWithAttachments) {
-      return res.json({ 
-        message: "No emails with attachments found in MongoDB",
-        sampleStructure: {
-          id: "string",
-          filename: "string",
-          url: "string",
-          publicUrl: "string", 
-          contentType: "string",
-          size: "number",
-          isImage: "boolean"
-        }
-      });
+    if (!mongoDb) {
+      return res.status(500).json({ error: "MongoDB not available" });
     }
 
-    // Also check Supabase
-    let supabaseAttachments = [];
-    if (supabase) {
-      const { data: supabaseEmail, error } = await supabase
-        .from('emails')
-        .select('attachments')
-        .not('attachments', 'is', null)
-        .limit(1)
-        .single();
+    // Get all emails with attachments
+    const emails = await mongoDb.collection("emails").find({}).toArray();
+    console.log(`📧 Found ${emails.length} emails to reprocess`);
 
-      if (!error && supabaseEmail) {
-        supabaseAttachments = supabaseEmail.attachments || [];
+    let updatedCount = 0;
+    let errorCount = 0;
+
+    for (const email of emails) {
+      try {
+        // Skip emails without attachments
+        if (!email.attachments || email.attachments.length === 0) {
+          continue;
+        }
+
+        console.log(`   🔄 Reprocessing email: ${email.subject}`);
+        
+        // Re-process each attachment to ensure proper URLs
+        const reprocessedAttachments = email.attachments.map(att => {
+          // If attachment already has a proper URL, keep it
+          if (att.url && att.url.startsWith('http')) {
+            return att;
+          }
+
+          // If attachment has a path but no URL, generate the URL
+          if (att.path && supabase) {
+            const { data: urlData } = supabase.storage
+              .from("attachments")
+              .getPublicUrl(att.path);
+
+            return {
+              ...att,
+              url: urlData.publicUrl,
+              publicUrl: urlData.publicUrl,
+              downloadUrl: urlData.publicUrl,
+              previewUrl: urlData.publicUrl
+            };
+          }
+
+          // If we can't fix it, return as-is
+          return att;
+        });
+
+        // Update the email with fixed attachments
+        await mongoDb.collection("emails").updateOne(
+          { _id: email._id },
+          { 
+            $set: { 
+              attachments: reprocessedAttachments,
+              hasAttachments: reprocessedAttachments.length > 0,
+              attachmentsCount: reprocessedAttachments.length
+            } 
+          }
+        );
+
+        updatedCount++;
+        console.log(`   ✅ Fixed attachments for: ${email.subject}`);
+
+      } catch (emailError) {
+        errorCount++;
+        console.error(`   ❌ Error reprocessing email ${email.subject}:`, emailError.message);
       }
     }
+
+    clearCache();
 
     res.json({
-      mongoDb: {
-        emailId: emailWithAttachments.messageId,
-        subject: emailWithAttachments.subject,
-        attachmentsCount: emailWithAttachments.attachments.length,
-        sampleAttachment: emailWithAttachments.attachments[0]
-      },
-      supabase: {
-        attachmentsCount: supabaseAttachments.length,
-        sampleAttachment: supabaseAttachments[0] || null
-      },
-      storage: {
-        supabaseUrl: process.env.SUPABASE_URL,
-        bucket: 'attachments'
-      }
+      success: true,
+      message: `Reprocessed ${updatedCount} emails, ${errorCount} errors`,
+      updated: updatedCount,
+      errors: errorCount
     });
+
   } catch (error) {
+    console.error("❌ Reprocess attachments error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1228,6 +1288,7 @@ app.get("/", (req, res) => {
       "POST /api/fetch-emails": "Fetch new emails (mode: latest, force, simple)",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
       "GET /api/debug/attachments": "Debug attachment structure",
+      "POST /api/reprocess-attachments": "Fix all existing attachments",
       "POST /api/clear-cache": "Clear cache"
     },
     features: [
