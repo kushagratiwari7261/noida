@@ -233,15 +233,19 @@ async function checkDuplicate(messageId) {
       if (existing) return true;
     }
 
-    // Check Supabase
-    const { data, error } = await supabase
-      .from('emails')
-      .select('message_id')
-      .eq('message_id', messageId)
-      .single();
+      // Check Supabase
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('message_id')
+        .eq('message_id', messageId)
+        .single();
 
-    return !!data;
-  } catch (error) {
+      if (!error && data) return true;
+    }
+
+    return false;
+  }  catch (error) {
     console.error("❌ Duplicate check error:", error);
     return false;
   }
@@ -528,7 +532,7 @@ app.post("/api/simple-fetch", async (req, res) => {
 
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
-
+            
             const emailData = {
               messageId: messageId,
               subject: parsed.subject || '(No Subject)',
@@ -589,6 +593,7 @@ app.post("/api/simple-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
+                if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -603,7 +608,7 @@ app.post("/api/simple-fetch", async (req, res) => {
                 };
 
                 await supabase.from('emails').upsert(supabaseData);
-
+              }
                 return true;
               } catch (saveErr) {
                 console.error(`❌ Error saving email:`, saveErr);
@@ -782,6 +787,7 @@ app.post("/api/fetch-latest", async (req, res) => {
                 }
                 
                 // Supabase upsert
+                if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -796,6 +802,7 @@ app.post("/api/fetch-latest", async (req, res) => {
                 };
                 
                 await supabase.from('emails').upsert(supabaseData);
+              }
                 
                 return true;
               } catch (saveErr) {
@@ -960,6 +967,7 @@ app.post("/api/force-fetch", async (req, res) => {
                 }
 
                 // Supabase upsert
+                if (supabase) {
                 const supabaseData = {
                   message_id: email.messageId,
                   subject: email.subject,
@@ -974,7 +982,7 @@ app.post("/api/force-fetch", async (req, res) => {
                 };
 
                 await supabase.from('emails').upsert(supabaseData);
-
+              }
                 return true;
               } catch (saveErr) {
                 console.error(`❌ Error force saving email:`, saveErr);
