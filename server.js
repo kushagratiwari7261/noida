@@ -290,8 +290,7 @@ function clearCache() {
   cache.clear();
 }
 
-// ENHANCED: Updated processAttachments function with better error handling
-// FIXED: Enhanced processAttachments function with better URL handling
+// FIXED: Enhanced processAttachments function with consistent structure
 async function ensureStorageBucket() {
   try {
     console.log("🛠️ Ensuring storage bucket exists and is properly configured...");
@@ -363,8 +362,7 @@ async function ensureStorageBucket() {
   }
 }
 
-
-
+// FIXED: Consistent attachment processing function
 async function processAttachments(attachments) {
   if (!attachments || attachments.length === 0) {
     console.log("📎 No attachments found");
@@ -427,7 +425,7 @@ async function processAttachments(attachments) {
         return null;
       }
 
-      // FIXED: Get public URL - this is the key fix
+      // Get public URL
       const { data: urlData } = supabase.storage
         .from("attachments")
         .getPublicUrl(data.path);
@@ -435,15 +433,15 @@ async function processAttachments(attachments) {
       console.log(`   ✅ Upload successful: ${safeFilename}`);
       console.log(`   🔗 Public URL: ${urlData.publicUrl}`);
 
-      // Return consistent attachment object for frontend
+      // FIXED: Return consistent attachment object for ALL endpoints
       return {
+        id: `${Date.now()}_${index}_${safeFilename}`,
         filename: safeFilename,
         originalFilename: originalFilename,
-        url: urlData.publicUrl, // This is what frontend needs
+        url: urlData.publicUrl,
         contentType: att.contentType || 'application/octet-stream',
         size: contentBuffer.length,
         path: data.path,
-        // Add these for better frontend handling
         displayName: originalFilename,
         extension: originalFilename.split('.').pop() || 'bin',
         isImage: (att.contentType || '').startsWith('image/')
@@ -465,6 +463,35 @@ async function processAttachments(attachments) {
   
   return successfulAttachments;
 }
+
+// FIXED: Consistent email data structure function
+function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
+  // FIXED: Use consistent attachment structure for ALL endpoints
+  const attachments = attachmentLinks.map(att => ({
+    id: att.id,
+    filename: att.filename,
+    url: att.url,
+    contentType: att.contentType,
+    size: att.size,
+    displayName: att.displayName,
+    isImage: att.isImage,
+    extension: att.extension
+  }));
+
+  return {
+    messageId: messageId,
+    subject: parsed.subject || '(No Subject)',
+    from: parsed.from?.text || "",
+    to: parsed.to?.text || "",
+    date: parsed.date || new Date(),
+    text: parsed.text || "",
+    html: parsed.html || "",
+    attachments: attachments,
+    processedAt: new Date(),
+    ...options
+  };
+}
+
 // NEW: Storage setup and debug endpoint
 app.get("/api/debug-storage-setup", async (req, res) => {
   try {
@@ -548,7 +575,7 @@ app.get("/api/debug-storage-setup", async (req, res) => {
   }
 });
 
-// NEW: Simple fetch that bypasses all duplicate checks
+// FIXED: Simple fetch with consistent structure
 app.post("/api/simple-fetch", async (req, res) => {
   console.log("🔍 DEBUG: /api/simple-fetch called");
   try {
@@ -604,30 +631,11 @@ app.post("/api/simple-fetch", async (req, res) => {
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-// In your email processing functions, ensure consistent data structure:
-// FIXED: Use consistent attachment structure
-const emailData = {
-  messageId: messageId,
-  subject: parsed.subject || '(No Subject)',
-  from: parsed.from?.text || "",
-  to: parsed.to?.text || "",
-  date: parsed.date || new Date(),
-  text: parsed.text || "",
-  html: parsed.html || "",
-  // FIXED: Consistent attachment structure for frontend
-  attachments: attachmentLinks.map(att => ({
-    id: `${messageId}_${att.filename}`,
-    name: att.filename,
-    url: att.url,
-    type: att.contentType,
-    size: att.size,
-    displayName: att.originalFilename || att.filename,
-    isImage: att.isImage,
-    extension: att.extension
-  })),
-  processedAt: new Date(),
-  simpleFetched: true
-};
+            // FIXED: Use consistent email data structure
+            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+              simpleFetched: true
+            });
+
             newEmails.push(emailData);
             processedCount++;
             console.log(`   ✅ Simple added: ${parsed.subject}`);
@@ -737,6 +745,7 @@ const emailData = {
     });
   }
 });
+
 // Add this endpoint to test attachment URLs
 app.get("/api/debug-attachments", async (req, res) => {
   try {
@@ -774,7 +783,7 @@ app.get("/api/debug-attachments", async (req, res) => {
   }
 });
 
-// FIXED: Enhanced latest email fetch
+// FIXED: Latest email fetch with consistent structure
 app.post("/api/fetch-latest", async (req, res) => {
   console.log("🔍 DEBUG: /api/fetch-latest called");
   try {
@@ -846,28 +855,10 @@ app.post("/api/fetch-latest", async (req, res) => {
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-           const emailData = {
-  messageId: messageId,
-  subject: parsed.subject || '(No Subject)',
-  from: parsed.from?.text || "",
-  to: parsed.to?.text || "",
-  date: parsed.date || new Date(),
-  text: parsed.text || "",
-  html: parsed.html || "",
-  // FIXED: Consistent attachment structure for frontend
-  attachments: attachmentLinks.map(att => ({
-    id: `${messageId}_${att.filename}`,
-    name: att.filename,
-    url: att.url,
-    type: att.contentType,
-    size: att.size,
-    displayName: att.originalFilename || att.filename,
-    isImage: att.isImage,
-    extension: att.extension
-  })),
-  processedAt: new Date(),
-  latestFetched: true
-};
+            // FIXED: Use consistent email data structure
+            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+              latestFetched: true
+            });
 
             newEmails.push(emailData);
             processedCount++;
@@ -980,7 +971,7 @@ app.post("/api/fetch-latest", async (req, res) => {
   }
 });
 
-// FIXED: Enhanced force fetch
+// FIXED: Force fetch with consistent structure
 app.post("/api/force-fetch", async (req, res) => {
   console.log("🔍 DEBUG: /api/force-fetch called");
   try {
@@ -1036,28 +1027,11 @@ app.post("/api/force-fetch", async (req, res) => {
             // Process attachments
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-          const emailData = {
-  messageId: messageId,
-  subject: parsed.subject || '(No Subject)',
-  from: parsed.from?.text || "",
-  to: parsed.to?.text || "",
-  date: parsed.date || new Date(),
-  text: parsed.text || "",
-  html: parsed.html || "",
-  // FIXED: Consistent attachment structure for frontend
-  attachments: attachmentLinks.map(att => ({
-    id: `${messageId}_${att.filename}`,
-    name: att.filename,
-    url: att.url,
-    type: att.contentType,
-    size: att.size,
-    displayName: att.originalFilename || att.filename,
-    isImage: att.isImage,
-    extension: att.extension
-  })),
-  processedAt: new Date(),
-  forceFetched: true
-};
+            // FIXED: Use consistent email data structure
+            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+              forceFetched: true
+            });
+
             newEmails.push(emailData);
             processedCount++;
             console.log(`   ✅ Force added: ${parsed.subject}`);
@@ -1164,6 +1138,45 @@ app.post("/api/force-fetch", async (req, res) => {
       success: false,
       error: error.message 
     });
+  }
+});
+
+// NEW: Debug endpoint for attachment structure
+app.get("/api/debug-attachment-structure", async (req, res) => {
+  try {
+    const mongoDb = await ensureMongoConnection();
+    const email = await mongoDb.collection("emails").findOne({ 
+      "attachments.0": { $exists: true } 
+    });
+
+    if (!email) {
+      return res.json({ 
+        message: "No emails with attachments found",
+        sampleStructure: {
+          attachments: [{
+            id: "string",
+            filename: "string", 
+            url: "string",
+            contentType: "string",
+            size: "number",
+            displayName: "string",
+            isImage: "boolean",
+            extension: "string"
+          }]
+        }
+      });
+    }
+
+    res.json({
+      actualStructure: email.attachments ? email.attachments[0] : null,
+      fullEmail: {
+        messageId: email.messageId,
+        subject: email.subject,
+        attachmentsCount: email.attachments ? email.attachments.length : 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1611,7 +1624,8 @@ app.get("/", (req, res) => {
       "GET /api/check-new-emails": "Check for new emails count",
       "GET /api/debug/emails": "Debug email data",
       "POST /api/clear-cache": "Clear all caches",
-      "GET /api/debug-storage-setup": "Debug and setup storage" // NEW
+      "GET /api/debug-storage-setup": "Debug and setup storage",
+      "GET /api/debug-attachment-structure": "Debug attachment structure" // NEW
     },
     features: [
       "ES Modules compatible",
@@ -1619,7 +1633,8 @@ app.get("/", (req, res) => {
       "Enhanced duplicate detection",
       "Better error handling",
       "Multi-database support",
-      "Fixed Supabase storage" // NEW
+      "Fixed Supabase storage",
+      "Consistent attachment structure" // NEW
     ]
   });
 });
@@ -1644,6 +1659,7 @@ app.get('*', (req, res) => {
     res.status(404).json({ error: 'API endpoint not found' });
   }
 });
+
 // Call this when your server starts
 async function initializeApp() {
   console.log("🚀 Initializing application...");
