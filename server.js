@@ -154,11 +154,11 @@ if (process.env.MONGO_URI) {
   });
 }
 
-// Supabase client
+// Supabase client - FIXED: Proper initialization
 let supabase = null;
 try {
   if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
-    console.log("🔧 Creating Supabase client with service key...");
+    console.log("🔧 Creating Supabase client...");
     supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY,
@@ -267,10 +267,15 @@ function clearCache() {
   cache.clear();
 }
 
-// FIXED: Enhanced storage setup with better error handling
+// FIXED: Enhanced storage setup with proper bucket configuration
 async function ensureStorageBucket() {
   try {
-    console.log("🛠️ Ensuring storage bucket exists...");
+    console.log("🛠️ Ensuring storage bucket exists and is public...");
+
+    if (!supabase) {
+      console.error("❌ Supabase client not available");
+      return false;
+    }
 
     // Check if bucket exists
     const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
@@ -280,6 +285,8 @@ async function ensureStorageBucket() {
       return false;
     }
 
+    console.log("📋 Available buckets:", buckets?.map(b => b.name) || []);
+
     const attachmentsBucket = buckets?.find(b => b.name === 'attachments');
 
     if (!attachmentsBucket) {
@@ -287,7 +294,7 @@ async function ensureStorageBucket() {
       const { data: newBucket, error: createError } = await supabase.storage.createBucket('attachments', {
         public: true,
         fileSizeLimit: 52428800, // 50MB
-        allowedMimeTypes: ['image/*', 'application/pdf', 'text/*', 'application/*']
+        allowedMimeTypes: ['image/*', 'application/pdf', 'text/*', 'application/*', 'audio/*', 'video/*']
       });
 
       if (createError) {
@@ -297,16 +304,58 @@ async function ensureStorageBucket() {
       console.log("✅ Created attachments bucket");
     } else {
       console.log("✅ Attachments bucket exists");
+      
+      // Ensure bucket is public
+      const { error: updateError } = await supabase.storage.updateBucket('attachments', {
+        public: true
+      });
+
+      if (updateError) {
+        console.log("⚠️ Could not update bucket to public:", updateError.message);
+      } else {
+        console.log("✅ Bucket is public");
+      }
     }
 
+    // Test upload to verify everything works
+    console.log("🧪 Testing upload...");
+    const testContent = "Test file for storage verification";
+    const testPath = `test-${Date.now()}.txt`;
+    
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("attachments")
+      .upload(testPath, testContent, {
+        contentType: 'text/plain',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error("❌ Test upload failed:", uploadError);
+      return false;
+    }
+
+    console.log("✅ Test upload successful");
+
+    // Get public URL and verify it's accessible
+    const { data: urlData } = supabase.storage
+      .from("attachments")
+      .getPublicUrl(uploadData.path);
+
+    console.log("🔗 Public URL:", urlData.publicUrl);
+
+    // Clean up test file
+    await supabase.storage.from("attachments").remove([testPath]);
+
+    console.log("✅ Storage setup completed successfully");
     return true;
+
   } catch (error) {
     console.error("❌ Storage setup failed:", error);
     return false;
   }
 }
 
-// FIXED: Enhanced attachment processing with better URL handling
+// FIXED: Enhanced attachment processing with proper URL generation
 async function processAttachments(attachments) {
   if (!attachments || attachments.length === 0) {
     console.log("📎 No attachments found");
@@ -316,6 +365,11 @@ async function processAttachments(attachments) {
   console.log(`📎 Processing ${attachments.length} attachments`);
   
   // Ensure storage is ready
+  if (!supabase) {
+    console.error("❌ Supabase client not available");
+    return [];
+  }
+
   const storageReady = await ensureStorageBucket();
   if (!storageReady) {
     console.error("❌ Storage not ready, skipping attachments");
@@ -330,7 +384,13 @@ async function processAttachments(attachments) {
         size: att.size || att.content?.length || 0
       });
 
-      // Validate attachment
+      // Skip tracking pixels and problematic files
+      if (isProblematicFile(att.filename, att.contentType)) {
+        console.log(`   🚫 Skipping problematic file: ${att.filename}`);
+        return null;
+      }
+
+      // Validate attachment content
       if (!att.content) {
         console.log(`   ❌ Attachment ${index + 1} has no content`);
         return null;
@@ -341,7 +401,10 @@ async function processAttachments(attachments) {
         .replace(/[^a-zA-Z0-9.\-_]/g, '_')
         .substring(0, 100);
 
-      const uniquePath = `emails/${Date.now()}_${Math.random().toString(36).substring(2, 15)}_${safeFilename}`;
+      // Create unique path with timestamp
+      const timestamp = Date.now();
+      const randomId = Math.random().toString(36).substring(2, 15);
+      const uniquePath = `emails/${timestamp}_${randomId}_${safeFilename}`;
 
       console.log(`   📤 Uploading: ${safeFilename} -> ${uniquePath}`);
 
@@ -353,6 +416,12 @@ async function processAttachments(attachments) {
         contentBuffer = Buffer.from(att.content, 'utf8');
       } else {
         contentBuffer = Buffer.from(att.content);
+      }
+
+      // Skip if file is too small (likely tracking pixel)
+      if (contentBuffer.length < 100) {
+        console.log(`   🚫 Skipping small file (likely tracking pixel): ${safeFilename}`);
+        return null;
       }
 
       // Upload to Supabase
@@ -371,30 +440,59 @@ async function processAttachments(attachments) {
 
       console.log(`   ✅ Upload successful: ${safeFilename}`);
 
-      // Get public URL - FIXED: Use proper method
+      // FIXED: Get public URL - this is the key fix
       const { data: urlData } = supabase.storage
         .from("attachments")
         .getPublicUrl(data.path);
 
-      console.log(`   🔗 Public URL generated: ${urlData.publicUrl}`);
+      console.log(`   🔗 Generated URL: ${urlData.publicUrl}`);
 
-      // FIXED: Return consistent attachment object for frontend
+      // Enhanced attachment object for frontend
       const attachmentResult = {
-        id: `${Date.now()}_${index}_${safeFilename}`,
+        // Core identification
+        id: `att_${timestamp}_${index}_${randomId}`,
+        
+        // File information
         filename: safeFilename,
         originalFilename: originalFilename,
-        url: urlData.publicUrl,
-        contentType: att.contentType || 'application/octet-stream',
-        size: contentBuffer.length,
-        path: data.path,
-        displayName: originalFilename,
-        extension: originalFilename.split('.').pop() || 'bin',
-        isImage: (att.contentType || '').startsWith('image/'),
-        // Add these for better frontend compatibility
         name: originalFilename,
+        displayName: originalFilename,
+        
+        // URL information - FIXED: Provide multiple URL options
+        url: urlData.publicUrl,
+        publicUrl: urlData.publicUrl,
+        downloadUrl: urlData.publicUrl,
+        previewUrl: urlData.publicUrl,
+        
+        // File metadata
+        contentType: att.contentType || 'application/octet-stream',
         type: att.contentType || 'application/octet-stream',
-        publicUrl: urlData.publicUrl
+        mimeType: att.contentType || 'application/octet-stream',
+        size: contentBuffer.length,
+        extension: originalFilename.split('.').pop() || 'bin',
+        path: data.path,
+        
+        // Frontend helpers
+        isImage: (att.contentType || '').startsWith('image/'),
+        isPdf: (att.contentType || '') === 'application/pdf',
+        isText: (att.contentType || '').startsWith('text/'),
+        isAudio: (att.contentType || '').startsWith('audio/'),
+        isVideo: (att.contentType || '').startsWith('video/'),
+        
+        // Original data for reference
+        originalData: {
+          filename: att.filename,
+          contentType: att.contentType,
+          size: att.size
+        }
       };
+
+      console.log(`   📋 Final attachment:`, {
+        filename: attachmentResult.filename,
+        url: attachmentResult.url,
+        isImage: attachmentResult.isImage,
+        size: attachmentResult.size
+      });
 
       return attachmentResult;
 
@@ -415,42 +513,68 @@ async function processAttachments(attachments) {
   return successfulAttachments;
 }
 
+// Helper function to identify problematic files
+function isProblematicFile(filename, contentType) {
+  if (!filename) return false;
+  
+  const lowerFilename = filename.toLowerCase();
+  const lowerContentType = (contentType || '').toLowerCase();
+  
+  // Skip tracking pixels and analytics files
+  const problematicPatterns = [
+    /tracking/i,
+    /pixel/i,
+    /beacon/i,
+    /analytics/i,
+    /spacer/i,
+    /forward/i,
+    /gem\.gif$/i,
+    /native_forward\.gif$/i,
+    /\.gif$/i, // Skip all GIFs as they're often tracking pixels
+    /signature/i
+  ];
+  
+  return problematicPatterns.some(pattern => 
+    pattern.test(lowerFilename) || pattern.test(lowerContentType)
+  );
+}
+
 // FIXED: Enhanced email data structure for frontend compatibility
 function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
-  // FIXED: Enhanced attachment structure for frontend
+  // Enhanced attachment structure for frontend
   const attachments = attachmentLinks.map(att => ({
     // Core identification
     id: att.id,
-    messageId: messageId,
     
     // File information
     filename: att.filename,
     originalFilename: att.originalFilename,
+    name: att.name,
     displayName: att.displayName,
-    name: att.name || att.filename,
     
-    // URL and path
+    // URL information - FIXED: Multiple URL options
     url: att.url,
-    publicUrl: att.publicUrl || att.url,
-    path: att.path,
+    publicUrl: att.publicUrl,
+    downloadUrl: att.downloadUrl,
+    previewUrl: att.previewUrl,
     
     // File metadata
     contentType: att.contentType,
-    type: att.type || att.contentType,
+    type: att.type,
+    mimeType: att.mimeType,
     size: att.size,
     extension: att.extension,
+    path: att.path,
     
     // Frontend helpers
     isImage: att.isImage,
-    isPdf: att.contentType === 'application/pdf',
-    isText: att.contentType?.startsWith('text/'),
-    
-    // Download info
-    downloadUrl: att.url, // Same as url for direct download
-    previewUrl: att.isImage ? att.url : null
+    isPdf: att.isPdf,
+    isText: att.isText,
+    isAudio: att.isAudio,
+    isVideo: att.isVideo
   }));
 
-  return {
+  const emailData = {
     // Core email data
     messageId: messageId,
     subject: parsed.subject || '(No Subject)',
@@ -474,21 +598,34 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
     
     // Frontend helpers
     id: messageId, // For React keys
-    read: false, // For frontend state
     
     ...options
   };
+
+  console.log(`📧 Created email data:`, {
+    subject: emailData.subject,
+    attachments: emailData.attachmentsCount,
+    hasAttachments: emailData.hasAttachments
+  });
+
+  return emailData;
 }
 
-// NEW: Test attachment URLs endpoint
-app.get("/api/test-attachment-url/:filename", async (req, res) => {
+// NEW: Test endpoint to verify attachment URLs
+app.get("/api/test-attachment-urls", async (req, res) => {
   try {
-    const { filename } = req.params;
-    const testPath = `test-${filename}`;
+    console.log("🧪 Testing attachment URL generation...");
     
-    // Upload a test file
-    const testContent = `Test content for ${filename} at ${new Date().toISOString()}`;
-    
+    if (!supabase) {
+      return res.status(500).json({ error: "Supabase client not available" });
+    }
+
+    // Test file content
+    const testContent = "This is a test file for URL verification";
+    const testFilename = `test-verification-${Date.now()}.txt`;
+    const testPath = `test-emails/${testFilename}`;
+
+    // Upload test file
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from("attachments")
       .upload(testPath, testContent, {
@@ -498,20 +635,21 @@ app.get("/api/test-attachment-url/:filename", async (req, res) => {
     if (uploadError) {
       return res.status(500).json({ 
         error: "Upload failed", 
-        message: uploadError.message 
+        details: uploadError.message 
       });
     }
 
     // Get public URL
     const { data: urlData } = supabase.storage
       .from("attachments")
-      .getPublicUrl(testPath);
+      .getPublicUrl(uploadData.path);
 
     // Test if URL is accessible
     let urlAccessible = false;
+    let testResponse = null;
     try {
-      const response = await fetch(urlData.publicUrl);
-      urlAccessible = response.ok;
+      testResponse = await fetch(urlData.publicUrl);
+      urlAccessible = testResponse.ok;
     } catch (fetchError) {
       console.log("URL access test failed:", fetchError.message);
     }
@@ -520,15 +658,23 @@ app.get("/api/test-attachment-url/:filename", async (req, res) => {
     await supabase.storage.from("attachments").remove([testPath]);
 
     res.json({
-      filename,
-      uploadedPath: uploadData.path,
-      publicUrl: urlData.publicUrl,
-      urlAccessible,
-      bucket: 'attachments',
-      supabaseUrl: process.env.SUPABASE_URL
+      success: true,
+      test: {
+        filename: testFilename,
+        path: uploadData.path,
+        publicUrl: urlData.publicUrl,
+        urlAccessible: urlAccessible,
+        status: testResponse?.status,
+        bucket: 'attachments'
+      },
+      supabase: {
+        url: process.env.SUPABASE_URL,
+        hasClient: !!supabase
+      }
     });
 
   } catch (error) {
+    console.error("❌ Attachment URL test failed:", error);
     res.status(500).json({ 
       error: error.message,
       stack: error.stack 
@@ -536,26 +682,7 @@ app.get("/api/test-attachment-url/:filename", async (req, res) => {
   }
 });
 
-// NEW: Get direct attachment URL
-app.get("/api/attachment-url/:path", async (req, res) => {
-  try {
-    const { path } = req.params;
-    
-    const { data: urlData } = supabase.storage
-      .from("attachments")
-      .getPublicUrl(decodeURIComponent(path));
-
-    res.json({
-      url: urlData.publicUrl,
-      path: decodeURIComponent(path),
-      directUrl: urlData.publicUrl
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// FIXED: Enhanced fetch endpoints with better attachment handling
+// FIXED: Unified fetch endpoint with proper attachment handling
 app.post("/api/fetch-emails", async (req, res) => {
   console.log("🔍 DEBUG: /api/fetch-emails called");
   try {
@@ -576,24 +703,13 @@ app.post("/api/fetch-emails", async (req, res) => {
       
       console.log(`📥 Total Messages: ${box.messages.total}`);
       
-      // Calculate fetch range based on mode
+      // Calculate fetch range
       const totalMessages = box.messages.total;
-      let fetchStart, fetchEnd;
-      
-      switch (mode) {
-        case "simple":
-        case "force":
-          fetchStart = Math.max(1, totalMessages - count + 1);
-          fetchEnd = totalMessages;
-          break;
-        case "latest":
-        default:
-          fetchStart = Math.max(1, totalMessages - count + 1);
-          fetchEnd = totalMessages;
-          break;
-      }
-
+      const fetchCount = Math.min(count, totalMessages);
+      const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
+      const fetchEnd = totalMessages;
       const fetchRange = `${fetchStart}:${fetchEnd}`;
+
       console.log(`📨 Fetching range: ${fetchRange}`);
 
       const f = imapManager.connection.seq.fetch(fetchRange, { 
@@ -640,6 +756,7 @@ app.post("/api/fetch-emails", async (req, res) => {
             }
 
             // Process attachments
+            console.log(`   📎 Processing attachments for: ${parsed.subject}`);
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
             // Create email data with enhanced structure
@@ -692,6 +809,7 @@ app.post("/api/fetch-emails", async (req, res) => {
                     { $set: email },
                     { upsert: true }
                   );
+                  console.log(`   💾 Saved to MongoDB: ${email.subject}`);
                 }
                 
                 // Supabase upsert
@@ -713,13 +831,15 @@ app.post("/api/fetch-emails", async (req, res) => {
 
                   const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
                   if (supabaseError) {
-                    console.error("Supabase save error:", supabaseError);
+                    console.error("   ❌ Supabase save error:", supabaseError);
+                  } else {
+                    console.log(`   💾 Saved to Supabase: ${email.subject}`);
                   }
                 }
                 
                 return true;
               } catch (saveErr) {
-                console.error(`❌ Error saving email:`, saveErr);
+                console.error(`   ❌ Error saving email:`, saveErr);
                 return false;
               }
             });
@@ -762,10 +882,10 @@ app.post("/api/fetch-emails", async (req, res) => {
   }
 });
 
-// FIXED: Enhanced emails endpoint with better attachment handling
+// FIXED: Enhanced emails endpoint with proper attachment enhancement
 app.get("/api/emails", async (req, res) => {
   try {
-    const { search = "", sort = "date_desc", page = 1, limit = 20, includeAttachments = "true" } = req.query;
+    const { search = "", sort = "date_desc", page = 1, limit = 50, includeAttachments = "true" } = req.query;
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
@@ -779,12 +899,12 @@ app.get("/api/emails", async (req, res) => {
       return res.json(cached);
     }
 
-    // Try MongoDB first, then Supabase fallback
-    const mongoDb = await ensureMongoConnection();
     let emails = [];
     let total = 0;
-    let source = 'supabase';
+    let source = 'unknown';
 
+    // Try MongoDB first
+    const mongoDb = await ensureMongoConnection();
     if (mongoDb) {
       try {
         // Build query for search
@@ -795,8 +915,9 @@ app.get("/api/emails", async (req, res) => {
             $or: [
               { subject: searchRegex },
               { from: searchRegex },
-              { fromText: searchRegex },
-              { 'from.value.text': searchRegex }
+              { from_text: searchRegex },
+              { text: searchRegex },
+              { text_content: searchRegex }
             ]
           };
         }
@@ -817,11 +938,8 @@ app.get("/api/emails", async (req, res) => {
             sortOption = { date: -1 };
         }
 
-        // Projection to limit attachment data if not needed
-        const projection = includeAttachments === "false" ? { attachments: 0 } : {};
-
         emails = await mongoDb.collection("emails")
-          .find(query, { projection })
+          .find(query)
           .sort(sortOption)
           .skip(skip)
           .limit(limitNum)
@@ -829,9 +947,10 @@ app.get("/api/emails", async (req, res) => {
 
         total = await mongoDb.collection("emails").countDocuments(query);
         source = 'mongodb';
+        console.log(`📧 Found ${emails.length} emails in MongoDB`);
 
       } catch (mongoError) {
-        console.error("MongoDB query failed, falling back to Supabase:", mongoError);
+        console.error("MongoDB query failed:", mongoError);
         // Fall through to Supabase
       }
     }
@@ -846,7 +965,7 @@ app.get("/api/emails", async (req, res) => {
         .select('*', { count: 'exact' });
 
       if (search && search.trim().length > 0) {
-        query = query.or(`subject.ilike.%${search.trim()}%,from_text.ilike.%${search.trim()}%`);
+        query = query.or(`subject.ilike.%${search.trim()}%,from_text.ilike.%${search.trim()}%,text_content.ilike.%${search.trim()}%`);
       }
 
       switch (sort) {
@@ -868,38 +987,88 @@ app.get("/api/emails", async (req, res) => {
       const { data: supabaseEmails, error, count } = await query;
 
       if (error) {
-        throw error;
+        console.error("Supabase query error:", error);
+      } else {
+        emails = supabaseEmails || [];
+        total = count || 0;
+        source = 'supabase';
+        console.log(`📧 Found ${emails.length} emails in Supabase`);
       }
-
-      emails = supabaseEmails || [];
-      total = count || 0;
-      source = 'supabase';
     }
 
-    // FIXED: Enhance attachment URLs for frontend
-    const enhancedEmails = emails.map(email => ({
-      ...email,
+    // FIXED: Enhanced attachment processing for frontend
+    const enhancedEmails = emails.map(email => {
       // Ensure consistent ID for React
-      id: email.messageId || email.id || email.message_id,
-      // Enhance attachments for frontend
-      attachments: (email.attachments || []).map(att => ({
-        ...att,
-        // Ensure URL is accessible
-        url: att.url || att.publicUrl,
-        publicUrl: att.publicUrl || att.url,
-        downloadUrl: att.downloadUrl || att.url || att.publicUrl,
-        previewUrl: att.previewUrl || ((att.isImage || att.contentType?.startsWith('image/')) ? (att.url || att.publicUrl) : null),
-        // Ensure basic properties
-        id: att.id || `${email.messageId}_${att.filename}`,
-        name: att.name || att.filename || att.originalFilename,
-        type: att.type || att.contentType,
-        size: att.size || 0
-      })),
-      // Frontend helpers
-      hasAttachments: email.hasAttachments || (email.attachments && email.attachments.length > 0),
-      attachmentsCount: email.attachmentsCount || (email.attachments ? email.attachments.length : 0),
-      read: email.read || false
-    }));
+      const emailId = email._id || email.id || email.messageId || email.message_id;
+      
+      // Process attachments
+      let processedAttachments = [];
+      if (email.attachments && Array.isArray(email.attachments)) {
+        processedAttachments = email.attachments.map(att => {
+          // Use the URL from the attachment data
+          const attachmentUrl = att.url || att.publicUrl || att.downloadUrl;
+          
+          return {
+            // Core identification
+            id: att.id || `att_${emailId}_${Math.random().toString(36).substr(2, 9)}`,
+            
+            // File information
+            filename: att.filename || att.name || att.originalFilename || 'attachment',
+            name: att.name || att.filename || 'attachment',
+            originalFilename: att.originalFilename || att.filename || 'attachment',
+            displayName: att.displayName || att.filename || 'attachment',
+            
+            // URL information - FIXED: Ensure URL is available
+            url: attachmentUrl,
+            publicUrl: att.publicUrl || attachmentUrl,
+            downloadUrl: att.downloadUrl || attachmentUrl,
+            previewUrl: att.previewUrl || attachmentUrl,
+            
+            // File metadata
+            contentType: att.contentType || att.type || att.mimeType || 'application/octet-stream',
+            type: att.type || att.contentType || 'application/octet-stream',
+            mimeType: att.mimeType || att.contentType || 'application/octet-stream',
+            size: att.size || 0,
+            extension: att.extension || (att.filename ? att.filename.split('.').pop() : 'bin'),
+            path: att.path,
+            
+            // Frontend helpers
+            isImage: att.isImage || (att.contentType || '').startsWith('image/'),
+            isPdf: att.isPdf || (att.contentType || '') === 'application/pdf',
+            isText: att.isText || (att.contentType || '').startsWith('text/'),
+            isAudio: att.isAudio || (att.contentType || '').startsWith('audio/'),
+            isVideo: att.isVideo || (att.contentType || '').startsWith('video/')
+          };
+        }).filter(att => att.url); // Only keep attachments with URLs
+      }
+
+      const enhancedEmail = {
+        // Core email data
+        id: emailId,
+        _id: emailId,
+        messageId: email.messageId || email.message_id,
+        subject: email.subject || '(No Subject)',
+        from: email.from || email.from_text,
+        from_text: email.from_text || email.from,
+        to: email.to || email.to_text,
+        to_text: email.to_text || email.to,
+        date: email.date,
+        text: email.text || email.text_content,
+        text_content: email.text_content || email.text,
+        html: email.html || email.html_content,
+        html_content: email.html_content || email.html,
+        
+        // Enhanced attachments
+        attachments: processedAttachments,
+        hasAttachments: processedAttachments.length > 0,
+        attachmentsCount: processedAttachments.length,
+        
+        // Frontend helpers
+        read: email.read || false
+      };
+
+      return enhancedEmail;
+    });
 
     const hasMore = skip + enhancedEmails.length < total;
 
@@ -914,6 +1083,7 @@ app.get("/api/emails", async (req, res) => {
 
     setToCache(cacheKey, response);
 
+    console.log(`✅ Sending ${enhancedEmails.length} emails to frontend`);
     res.json(response);
 
   } catch (error) {
@@ -922,57 +1092,6 @@ app.get("/api/emails", async (req, res) => {
       error: "Failed to fetch emails",
       details: error.message 
     });
-  }
-});
-
-// NEW: Get single email with enhanced attachments
-app.get("/api/emails/:messageId", async (req, res) => {
-  try {
-    const { messageId } = req.params;
-
-    const mongoDb = await ensureMongoConnection();
-    let email = null;
-
-    if (mongoDb) {
-      email = await mongoDb.collection("emails").findOne({ messageId });
-    }
-
-    if (!email && supabase) {
-      const { data: supabaseEmail, error } = await supabase
-        .from('emails')
-        .select('*')
-        .eq('message_id', messageId)
-        .single();
-
-      if (!error && supabaseEmail) {
-        email = supabaseEmail;
-      }
-    }
-
-    if (!email) {
-      return res.status(404).json({ error: "Email not found" });
-    }
-
-    // Enhance attachments for frontend
-    const enhancedEmail = {
-      ...email,
-      id: email.messageId || email.id || email.message_id,
-      attachments: (email.attachments || []).map(att => ({
-        ...att,
-        url: att.url || att.publicUrl,
-        publicUrl: att.publicUrl || att.url,
-        downloadUrl: att.downloadUrl || att.url || att.publicUrl,
-        previewUrl: att.previewUrl || ((att.isImage || att.contentType?.startsWith('image/')) ? (att.url || att.publicUrl) : null),
-        id: att.id || `${email.messageId}_${att.filename}`,
-        name: att.name || att.filename || att.originalFilename
-      }))
-    };
-
-    res.json(enhancedEmail);
-
-  } catch (error) {
-    console.error("❌ Single email fetch error:", error);
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1038,27 +1157,85 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
+// NEW: Debug attachments endpoint
+app.get("/api/debug/attachments", async (req, res) => {
+  try {
+    const mongoDb = await ensureMongoConnection();
+    const emailWithAttachments = await mongoDb.collection("emails").findOne({ 
+      "attachments.0": { $exists: true } 
+    });
+
+    if (!emailWithAttachments) {
+      return res.json({ 
+        message: "No emails with attachments found in MongoDB",
+        sampleStructure: {
+          id: "string",
+          filename: "string",
+          url: "string",
+          publicUrl: "string", 
+          contentType: "string",
+          size: "number",
+          isImage: "boolean"
+        }
+      });
+    }
+
+    // Also check Supabase
+    let supabaseAttachments = [];
+    if (supabase) {
+      const { data: supabaseEmail, error } = await supabase
+        .from('emails')
+        .select('attachments')
+        .not('attachments', 'is', null)
+        .limit(1)
+        .single();
+
+      if (!error && supabaseEmail) {
+        supabaseAttachments = supabaseEmail.attachments || [];
+      }
+    }
+
+    res.json({
+      mongoDb: {
+        emailId: emailWithAttachments.messageId,
+        subject: emailWithAttachments.subject,
+        attachmentsCount: emailWithAttachments.attachments.length,
+        sampleAttachment: emailWithAttachments.attachments[0]
+      },
+      supabase: {
+        attachmentsCount: supabaseAttachments.length,
+        sampleAttachment: supabaseAttachments[0] || null
+      },
+      storage: {
+        supabaseUrl: process.env.SUPABASE_URL,
+        bucket: 'attachments'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Enhanced Attachments",
-    version: "2.1.0",
+    message: "Email IMAP Backend Server - Fixed Attachments",
+    version: "2.2.0",
     environment: process.env.NODE_ENV || 'development',
     endpoints: {
       "GET /api/health": "Check service status",
       "GET /api/emails": "Get emails with enhanced attachments",
-      "GET /api/emails/:messageId": "Get single email with attachments",
       "POST /api/fetch-emails": "Fetch new emails (mode: latest, force, simple)",
-      "GET /api/test-attachment-url/:filename": "Test attachment URL generation",
-      "GET /api/attachment-url/:path": "Get direct attachment URL",
+      "GET /api/test-attachment-urls": "Test attachment URL generation",
+      "GET /api/debug/attachments": "Debug attachment structure",
       "POST /api/clear-cache": "Clear cache"
     },
     features: [
-      "Enhanced attachment handling",
-      "Frontend-compatible attachment structure",
-      "Multiple fetch modes",
+      "Fixed Supabase attachment URLs",
+      "Enhanced attachment structure for frontend",
       "Better error handling",
-      "Vercel serverless ready"
+      "Multiple URL fallbacks",
+      "Tracking pixel filtering"
     ]
   });
 });
