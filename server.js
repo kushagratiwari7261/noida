@@ -14,6 +14,9 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "MONGO_URI:", !!process.env.MONGO_URI, "SUPABASE_URL:", !!process.env.SUPABASE_URL, "SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
+console.log("🌐 NODE_ENV:", process.env.NODE_ENV);
+console.log("🔗 SUPABASE_URL:", process.env.SUPABASE_URL ? "Set" : "NOT SET");
+console.log("🔑 SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY ? "Set (length: " + process.env.SUPABASE_SERVICE_KEY.length + ")" : "NOT SET");
 
 // Check for required environment variables
 const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
@@ -173,6 +176,7 @@ if (process.env.MONGO_URI) {
 let supabase = null;
 try {
   if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+    console.log("🔧 Creating Supabase client with service key...");
     supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_KEY, // CHANGED: Use service role key
@@ -189,12 +193,17 @@ try {
         }
       }
     );
-    console.log("✅ Supabase client created");
+    console.log("✅ Supabase client created successfully");
+    console.log("🔍 Supabase URL:", process.env.SUPABASE_URL);
+    console.log("🔍 Service key length:", process.env.SUPABASE_SERVICE_KEY.length);
   } else {
     console.error("❌ Supabase environment variables not set");
+    console.error("❌ SUPABASE_URL:", !!process.env.SUPABASE_URL);
+    console.error("❌ SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
   }
 } catch (error) {
   console.error("❌ Failed to create Supabase client:", error.message);
+  console.error("❌ Client creation error details:", error);
 }
 
 async function ensureMongoConnection() {
@@ -294,17 +303,25 @@ function clearCache() {
 async function ensureStorageBucket() {
   try {
     console.log("🛠️ Ensuring storage bucket exists and is properly configured...");
-    
+    console.log("🔍 Supabase client available:", !!supabase);
+
     // Check if bucket exists
     const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
-    
+
     if (bucketsError) {
       console.error("❌ Cannot list buckets:", bucketsError);
+      console.error("❌ Bucket error details:", {
+        message: bucketsError.message,
+        status: bucketsError.status,
+        details: bucketsError.details
+      });
       return false;
     }
 
+    console.log("📋 Available buckets:", buckets?.map(b => ({ name: b.name, public: b.public })) || []);
+
     const attachmentsBucket = buckets?.find(b => b.name === 'attachments');
-    
+
     if (!attachmentsBucket) {
       console.log("📦 Creating attachments bucket...");
       const { data: newBucket, error: createError } = await supabase.storage.createBucket('attachments', {
@@ -312,38 +329,58 @@ async function ensureStorageBucket() {
         fileSizeLimit: 52428800, // 50MB
         allowedMimeTypes: ['image/*', 'application/pdf', 'text/*', 'application/*']
       });
-      
+
       if (createError) {
         console.error("❌ Failed to create bucket:", createError);
+        console.error("❌ Create bucket error details:", {
+          message: createError.message,
+          status: createError.status,
+          details: createError.details
+        });
         return false;
       }
-      console.log("✅ Created attachments bucket");
+      console.log("✅ Created attachments bucket:", newBucket);
     } else {
-      console.log("✅ Attachments bucket exists");
-      
+      console.log("✅ Attachments bucket exists, public:", attachmentsBucket.public);
+
       // Update bucket to ensure it's public
       const { error: updateError } = await supabase.storage.updateBucket('attachments', {
         public: true,
         fileSizeLimit: 52428800
       });
-      
+
       if (updateError) {
         console.log("⚠️ Could not update bucket settings:", updateError.message);
+        console.log("⚠️ Update error details:", {
+          message: updateError.message,
+          status: updateError.status,
+          details: updateError.details
+        });
+      } else {
+        console.log("✅ Bucket updated to public");
       }
     }
 
     // Test public URL access
     const testPath = `test-access-${Date.now()}.txt`;
     const testContent = "Test file for URL access";
-    
+
+    console.log("🧪 Testing upload to bucket...");
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from("attachments")
       .upload(testPath, testContent);
-    
+
     if (uploadError) {
       console.error("❌ Test upload failed:", uploadError);
+      console.error("❌ Upload error details:", {
+        message: uploadError.message,
+        status: uploadError.status,
+        details: uploadError.details
+      });
       return false;
     }
+
+    console.log("✅ Test upload successful, path:", uploadData.path);
 
     // Get public URL and test it
     const { data: urlData } = supabase.storage
@@ -351,13 +388,23 @@ async function ensureStorageBucket() {
       .getPublicUrl(uploadData.path);
 
     console.log("🔗 Public URL test:", urlData.publicUrl);
-    
+    console.log("🔗 URL structure check - includes supabase.co:", urlData.publicUrl?.includes('supabase.co'));
+
     // Clean up test file
-    await supabase.storage.from("attachments").remove([testPath]);
-    
+    const { error: removeError } = await supabase.storage.from("attachments").remove([testPath]);
+    if (removeError) {
+      console.log("⚠️ Could not clean up test file:", removeError.message);
+    } else {
+      console.log("🧹 Test file cleaned up");
+    }
+
     return true;
   } catch (error) {
     console.error("❌ Storage setup failed:", error);
+    console.error("❌ Setup error details:", {
+      message: error.message,
+      stack: error.stack
+    });
     return false;
   }
 }
@@ -383,7 +430,8 @@ async function processAttachments(attachments) {
       console.log(`   🔍 Attachment ${index + 1}:`, {
         filename: att.filename,
         contentType: att.contentType,
-        size: att.size || att.content?.length || 0
+        size: att.size || att.content?.length || 0,
+        hasContent: !!att.content
       });
 
       // Validate attachment
@@ -398,20 +446,26 @@ async function processAttachments(attachments) {
         .substring(0, 100); // Limit filename length
 
       const uniquePath = `emails/${Date.now()}_${Math.random().toString(36).substring(2, 15)}_${safeFilename}`;
-      
+
       console.log(`   📤 Uploading: ${safeFilename} -> ${uniquePath}`);
+      console.log(`   📊 Content type: ${att.contentType || 'application/octet-stream'}`);
+      console.log(`   📏 Content size: ${att.content?.length || 'unknown'}`);
 
       // Convert to Buffer
       let contentBuffer;
       if (Buffer.isBuffer(att.content)) {
         contentBuffer = att.content;
+        console.log(`   🔄 Content already buffer, size: ${contentBuffer.length}`);
       } else if (typeof att.content === 'string') {
         contentBuffer = Buffer.from(att.content, 'utf8');
+        console.log(`   🔄 Converted string to buffer, size: ${contentBuffer.length}`);
       } else {
         contentBuffer = Buffer.from(att.content);
+        console.log(`   🔄 Converted to buffer, size: ${contentBuffer.length}`);
       }
 
       // Upload with retry logic
+      console.log(`   ⬆️ Starting upload to Supabase...`);
       const { data, error } = await supabase.storage
         .from("attachments")
         .upload(uniquePath, contentBuffer, {
@@ -422,19 +476,27 @@ async function processAttachments(attachments) {
 
       if (error) {
         console.error(`   ❌ Upload failed for ${safeFilename}:`, error.message);
+        console.error(`   ❌ Upload error details:`, {
+          message: error.message,
+          status: error.status,
+          details: error.details
+        });
         return null;
       }
+
+      console.log(`   ✅ Upload successful: ${safeFilename}, path: ${data.path}`);
 
       // Get public URL
       const { data: urlData } = supabase.storage
         .from("attachments")
         .getPublicUrl(data.path);
 
-      console.log(`   ✅ Upload successful: ${safeFilename}`);
-      console.log(`   🔗 Public URL: ${urlData.publicUrl}`);
+      console.log(`   🔗 Public URL generated: ${urlData.publicUrl}`);
+      console.log(`   🔍 URL validation - starts with https: ${urlData.publicUrl?.startsWith('https://')}`);
+      console.log(`   🔍 URL validation - includes project ref: ${urlData.publicUrl?.includes('yjxtjtwkollqidngddor')}`);
 
       // FIXED: Return consistent attachment object for ALL endpoints
-      return {
+      const attachmentResult = {
         id: `${Date.now()}_${index}_${safeFilename}`,
         filename: safeFilename,
         originalFilename: originalFilename,
@@ -447,8 +509,19 @@ async function processAttachments(attachments) {
         isImage: (att.contentType || '').startsWith('image/')
       };
 
+      console.log(`   📋 Final attachment object:`, {
+        id: attachmentResult.id,
+        filename: attachmentResult.filename,
+        url: attachmentResult.url?.substring(0, 50) + '...',
+        contentType: attachmentResult.contentType,
+        size: attachmentResult.size
+      });
+
+      return attachmentResult;
+
     } catch (attErr) {
       console.error(`   ❌ Attachment processing error:`, attErr.message);
+      console.error(`   ❌ Error stack:`, attErr.stack);
       return null;
     }
   });
