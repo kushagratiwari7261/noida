@@ -15,7 +15,7 @@ function App() {
 
   const API_BASE = '';
 
-  // Enhanced attachment URL processor
+  // Enhanced attachment URL processor with better CSV handling
   const processAttachmentUrl = (attachment) => {
     // Try multiple URL properties from backend
     const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
@@ -42,7 +42,7 @@ function App() {
     return processedUrl;
   };
 
-  // Enhanced process email data with better attachment handling
+  // Enhanced process email data with better attachment handling and CSV protection
   const processEmailData = (email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -74,9 +74,10 @@ function App() {
         const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
         const isImage = att.isImage || mimeType.startsWith('image/');
         const isPDF = att.isPdf || mimeType === 'application/pdf';
-        const isText = mimeType.startsWith('text/');
-        const isAudio = mimeType.startsWith('audio/');
-        const isVideo = mimeType.startsWith('video/');
+        const isText = att.isText || mimeType.startsWith('text/');
+        const isAudio = att.isAudio || mimeType.startsWith('audio/');
+        const isVideo = att.isVideo || mimeType.startsWith('video/');
+        const isCSV = filename.toLowerCase().endsWith('.csv') || mimeType.includes('csv');
 
         const processedAtt = {
           id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
@@ -97,6 +98,7 @@ function App() {
           isText: isText,
           isAudio: isAudio,
           isVideo: isVideo,
+          isCSV: isCSV,
           path: att.path,
           displayName: att.displayName || filename,
           originalData: att
@@ -108,7 +110,8 @@ function App() {
           type: processedAtt.type,
           size: processedAtt.size,
           isImage: processedAtt.isImage,
-          isPdf: processedAtt.isPdf
+          isPdf: processedAtt.isPdf,
+          isCSV: processedAtt.isCSV
         });
 
         return processedAtt;
@@ -121,7 +124,7 @@ function App() {
     return processedEmail;
   };
 
-  // Enhanced load emails function
+  // Enhanced load emails function with proper sorting
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -143,7 +146,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=50`,
+        `limit=100`, // Increased limit to ensure we get latest emails
         `includeAttachments=true`,
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
@@ -174,24 +177,32 @@ function App() {
       
       const processedEmails = emailsToProcess.map(processEmailData);
       
+      // Sort emails by date to ensure latest first
+      const sortedEmails = processedEmails.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        return dateB - dateA; // Descending (newest first)
+      });
+      
       // Log attachment information
-      const totalAttachments = processedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
+      const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
       console.log('📎 Total attachments found:', totalAttachments);
       
-      processedEmails.forEach((email, index) => {
+      sortedEmails.forEach((email, index) => {
         if (email.attachments.length > 0) {
           console.log(`Email ${index} attachments:`, email.attachments.map(att => ({
             filename: att.filename,
             url: att.url,
             type: att.type,
             isImage: att.isImage,
+            isCSV: att.isCSV,
             size: att.size
           })));
         }
       });
       
-      setEmails(processedEmails);
-      console.log('✅ Emails set in state:', processedEmails.length);
+      setEmails(sortedEmails);
+      console.log('✅ Emails set in state:', sortedEmails.length);
       
     } catch (err) {
       console.error('❌ Fetch error:', err);
@@ -202,7 +213,7 @@ function App() {
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint
+  // Enhanced fetch function using the new unified endpoint with proper email ordering
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -220,7 +231,7 @@ function App() {
         },
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 10 : 20
+          count: mode === 'force' ? 20 : 30 // Increased count for better sampling
         })
       });
 
@@ -235,16 +246,37 @@ function App() {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // Update with new emails immediately
+        // Update with new emails immediately with proper sorting
         if (result.data && result.data.emails && result.data.emails.length > 0) {
           console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
           const processedNewEmails = result.data.emails.map(processEmailData);
           
+          // Sort new emails by date (newest first)
+          const sortedNewEmails = processedNewEmails.sort((a, b) => {
+            const dateA = new Date(a.date || 0);
+            const dateB = new Date(b.date || 0);
+            return dateB - dateA;
+          });
+          
           setEmails(prevEmails => {
             const existingIds = new Set(prevEmails.map(email => email.messageId));
-            const uniqueNewEmails = processedNewEmails.filter(email => !existingIds.has(email.messageId));
-            return [...uniqueNewEmails, ...prevEmails];
+            const uniqueNewEmails = sortedNewEmails.filter(email => !existingIds.has(email.messageId));
+            
+            // Combine and sort all emails by date
+            const allEmails = [...uniqueNewEmails, ...prevEmails];
+            const finalSortedEmails = allEmails.sort((a, b) => {
+              const dateA = new Date(a.date || 0);
+              const dateB = new Date(b.date || 0);
+              return dateB - dateA;
+            });
+            
+            console.log(`🔄 Email state updated: ${uniqueNewEmails.length} new, ${finalSortedEmails.length} total`);
+            return finalSortedEmails;
           });
+        } else {
+          // If no new emails, still refresh the list to ensure latest order
+          console.log('🔄 No new emails, refreshing list to ensure proper order...');
+          await loadEmails(false, true);
         }
         
       } else {
@@ -290,14 +322,28 @@ function App() {
     }
   };
 
-  // Enhanced download function with better error handling
+  // Enhanced download function with CSV protection and better error handling
   const downloadFile = async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', {
         filename,
         url: attachment.url,
-        type: attachment.type
+        type: attachment.type,
+        isCSV: attachment.isCSV
       });
+
+      // Extra protection for CSV files - require user confirmation
+      if (attachment.isCSV) {
+        const confirmed = window.confirm(
+          `Are you sure you want to download the CSV file "${filename}"?\n\n` +
+          `This will save the file to your downloads folder.`
+        );
+        
+        if (!confirmed) {
+          console.log('❌ CSV download cancelled by user');
+          return;
+        }
+      }
 
       if (!attachment.url) {
         throw new Error('No URL available for download');
@@ -369,7 +415,7 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Enhanced attachment rendering with better image handling
+  // Enhanced attachment rendering with better CSV handling and fixed button positioning
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -380,6 +426,7 @@ function App() {
     const isText = attachment.isText || mimeType?.startsWith('text/');
     const isAudio = attachment.isAudio || mimeType?.startsWith('audio/');
     const isVideo = attachment.isVideo || mimeType?.startsWith('video/');
+    const isCSV = attachment.isCSV || filename.toLowerCase().endsWith('.csv');
     const isExpandable = isImage || isPDF;
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
     
@@ -439,6 +486,7 @@ function App() {
             {fileSize && <span className="file-size">{fileSize}</span>}
             <div className="file-type">
               <small>{mimeType || 'Unknown type'}</small>
+              {isCSV && <span className="csv-badge">CSV</span>}
             </div>
           </div>
           <div className="attachment-actions">
@@ -539,7 +587,7 @@ function App() {
         )}
 
         {/* Text File Preview */}
-        {isText && safeUrl && (
+        {isText && safeUrl && !isCSV && (
           <div className="text-preview">
             <div className="text-preview-content">
               <h5>Text File Preview:</h5>
@@ -552,6 +600,30 @@ function App() {
               <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="full-view-link">
                 📄 Open full text
               </a>
+            </div>
+          </div>
+        )}
+
+        {/* CSV File Preview - Limited to prevent auto-download */}
+        {isCSV && safeUrl && (
+          <div className="csv-preview">
+            <div className="csv-preview-content">
+              <h5>📋 CSV File</h5>
+              <div className="csv-warning">
+                <p>⚠️ CSV files may contain data that could be automatically processed.</p>
+                <p>Click download to save this file to your computer.</p>
+              </div>
+              <div className="csv-actions">
+                <button 
+                  className="download-csv-btn"
+                  onClick={() => downloadFile(attachment, filename)}
+                >
+                  💾 Download CSV
+                </button>
+                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="view-csv-link">
+                  🔗 Open in new tab
+                </a>
+              </div>
             </div>
           </div>
         )}
@@ -587,7 +659,7 @@ function App() {
         )}
 
         {/* Generic file info for non-previewable files */}
-        {!isImage && !isPDF && !isText && !isAudio && !isVideo && safeUrl && (
+        {!isImage && !isPDF && !isText && !isAudio && !isVideo && !isCSV && safeUrl && (
           <div className="file-preview">
             <div className="file-info-detailed">
               <p><strong>Type:</strong> {mimeType || 'Unknown'}</p>
@@ -626,7 +698,7 @@ function App() {
     }));
   };
 
-  // Enhanced EmailCard component
+  // Enhanced EmailCard component with better attachment layout
   const EmailCard = ({ email, index }) => (
     <div className="email-card">
       <div className="email-header">
@@ -871,13 +943,13 @@ function App() {
               {error && <p>Error: {error}</p>}
               <div className="attachments-debug">
                 <h4>Attachments Debug:</h4>
-                {emails.map((email, idx) => (
+                {emails.slice(0, 3).map((email, idx) => (
                   email.hasAttachments && (
                     <div key={idx}>
                       <p>Email {idx}: {email.attachmentsCount} attachments</p>
                       {email.attachments.map((att, attIdx) => (
                         <div key={attIdx} style={{marginLeft: '20px', fontSize: '12px'}}>
-                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'}
+                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'} - {att.isCSV ? '📋 CSV' : ''}
                         </div>
                       ))}
                     </div>
