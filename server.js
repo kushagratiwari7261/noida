@@ -872,59 +872,50 @@ app.post("/api/fetch-emails", async (req, res) => {
         
         try {
           // Save to databases
-          if (newEmails.length > 0) {
-            console.log(`💾 Saving ${newEmails.length} emails...`);
-            
-            const saveOps = newEmails.map(async (email) => {
-              try {
-                // MongoDB upsert
-                const mongoDb = await ensureMongoConnection();
-                if (mongoDb) {
-                  await mongoDb.collection("emails").updateOne(
-                    { messageId: email.messageId },
-                    { $set: email },
-                    { upsert: true }
-                  );
-                  console.log(`   💾 Saved to MongoDB: ${email.subject}`);
-                }
-                
-                // Supabase upsert only if enabled
-                if (supabaseEnabled && supabase) {
-                  const supabaseData = {
-                    message_id: email.messageId,
-                    subject: email.subject,
-                    from_text: email.from,
-                    to_text: email.to,
-                    date: email.date,
-                    text_content: email.text,
-                    html_content: email.html,
-                    attachments: email.attachments,
-                    has_attachments: email.hasAttachments,
-                    attachments_count: email.attachmentsCount,
-                    created_at: new Date(),
-                    updated_at: new Date()
-                  };
+         // Save to databases
+if (newEmails.length > 0) {
+  console.log(`💾 Saving ${newEmails.length} emails to Supabase ONLY...`);
+  
+  const saveOps = newEmails.map(async (email) => {
+    try {
+      // ✅ Save to Supabase ONLY
+      if (supabaseEnabled && supabase) {
+        const supabaseData = {
+          message_id: email.messageId,
+          subject: email.subject,
+          from_text: email.from,
+          to_text: email.to,
+          date: email.date,
+          text_content: email.text,
+          html_content: email.html,
+          attachments: email.attachments,
+          has_attachments: email.hasAttachments,
+          attachments_count: email.attachmentsCount,
+          created_at: new Date(),
+          updated_at: new Date()
+        };
 
-                  const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
-                  if (supabaseError) {
-                    console.error("   ❌ Supabase save error:", supabaseError);
-                  } else {
-                    console.log(`   💾 Saved to Supabase: ${email.subject}`);
-                  }
-                }
-                
-                return true;
-              } catch (saveErr) {
-                console.error(`   ❌ Error saving email:`, saveErr);
-                return false;
-              }
-            });
+        const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
+        if (supabaseError) {
+          console.error("   ❌ Supabase save error:", supabaseError);
+        } else {
+          console.log(`   ✅ Saved to Supabase: ${email.subject}`);
+        }
+      } else {
+        console.log(`   ⚠️ Supabase not available, email not saved: ${email.subject}`);
+      }
+      
+      return true;
+    } catch (saveErr) {
+      console.error(`   ❌ Error saving email:`, saveErr);
+      return false;
+    }
+  });
 
-            await Promise.allSettled(saveOps);
-            clearCache();
-            console.log(`🗑️ Cleared cache`);
-          }
-
+  await Promise.allSettled(saveOps);
+  clearCache();
+  console.log(`🗑️ Cleared cache`);
+}
           console.log(`✅ Fetch completed: ${processedCount} new, ${duplicateCount} duplicates`);
           
           res.json({
