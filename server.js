@@ -1341,7 +1341,35 @@ app.get("/api/verify-supabase-data", async (req, res) => {
   }
 });
 
+// Add this temporary debug endpoint
+app.get("/api/fix-supabase", async (req, res) => {
+  // Reinitialize Supabase
+  const success = initializeSupabase();
+  
+  // Test connection
+  let testResult = "Failed";
+  if (supabase) {
+    try {
+      const { data, error } = await supabase.from('emails').select('count', { count: 'exact', head: true });
+      testResult = error ? `Error: ${error.message}` : "Connected successfully";
+    } catch (err) {
+      testResult = `Exception: ${err.message}`;
+    }
+  }
 
+  res.json({
+    reinitialized: success,
+    supabaseEnabled: supabaseEnabled,
+    connectionTest: testResult,
+    hasSupabaseClient: !!supabase,
+    envVars: {
+      hasUrl: !!process.env.SUPABASE_URL,
+      hasKey: !!process.env.SUPABASE_SERVICE_KEY,
+      urlPreview: process.env.SUPABASE_URL?.substring(0, 50) + '...',
+      keyPreview: process.env.SUPABASE_SERVICE_KEY?.substring(0, 20) + '...'
+    }
+  });
+});
 
 
 // Health check endpoint
