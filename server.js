@@ -951,6 +951,7 @@ if (newEmails.length > 0) {
 });
 
 // FIXED: Enhanced emails endpoint with proper attachment enhancement
+// FIXED: Enhanced emails endpoint with Supabase primary
 app.get("/api/emails", async (req, res) => {
   try {
     const { search = "", sort = "date_desc", page = 1, limit = 50 } = req.query;
@@ -971,64 +972,107 @@ app.get("/api/emails", async (req, res) => {
     let total = 0;
     let source = 'unknown';
 
-    // Try MongoDB first
-    const mongoDb = await ensureMongoConnection();
-    if (mongoDb) {
+    // ✅ PRIMARY: Try Supabase first
+    if (supabaseEnabled) {
       try {
-        // Build query for search
-        let query = {};
+        console.log("📧 Fetching from Supabase...");
+        
+        let query = supabase.from('emails').select('*', { count: 'exact' });
+        
+        // Add search if provided
         if (search && search.trim().length > 0) {
-          const searchRegex = new RegExp(search.trim(), 'i');
-          query = {
-            $or: [
-              { subject: searchRegex },
-              { from: searchRegex },
-              { from_text: searchRegex },
-              { text: searchRegex },
-              { text_content: searchRegex }
-            ]
-          };
+          query = query.or(`subject.ilike.%${search}%,from_text.ilike.%${search}%,text_content.ilike.%${search}%`);
         }
-
-        // Build sort
-        let sortOption = {};
+        
+        // Add sorting
         switch (sort) {
           case "date_asc":
-            sortOption = { date: 1 };
+            query = query.order('date', { ascending: true });
             break;
           case "subject_asc":
-            sortOption = { subject: 1 };
+            query = query.order('subject', { ascending: true });
             break;
           case "subject_desc":
-            sortOption = { subject: -1 };
+            query = query.order('subject', { ascending: false });
             break;
           default: // date_desc
-            sortOption = { date: -1 };
+            query = query.order('date', { ascending: false });
         }
+        
+        // Add pagination
+        query = query.range(skip, skip + limitNum - 1);
+        
+        const { data: supabaseEmails, error, count } = await query;
+        
+        if (!error && supabaseEmails) {
+          emails = supabaseEmails;
+          total = count;
+          source = 'supabase';
+          console.log(`✅ Found ${emails.length} emails in Supabase`);
+        } else {
+          console.error("Supabase query failed:", error?.message);
+        }
+      } catch (supabaseError) {
+        console.error("Supabase fetch failed, falling back to MongoDB:", supabaseError);
+      }
+    }
+    
+    // ✅ FALLBACK: MongoDB (only if Supabase fails or not enabled)
+    if (emails.length === 0) {
+      const mongoDb = await ensureMongoConnection();
+      if (mongoDb) {
+        try {
+          // Build query for search
+          let query = {};
+          if (search && search.trim().length > 0) {
+            const searchRegex = new RegExp(search.trim(), 'i');
+            query = {
+              $or: [
+                { subject: searchRegex },
+                { from: searchRegex },
+                { from_text: searchRegex },
+                { text: searchRegex },
+                { text_content: searchRegex }
+              ]
+            };
+          }
 
-        emails = await mongoDb.collection("emails")
-          .find(query)
-          .sort(sortOption)
-          .skip(skip)
-          .limit(limitNum)
-          .toArray();
+          // Build sort
+          let sortOption = {};
+          switch (sort) {
+            case "date_asc":
+              sortOption = { date: 1 };
+              break;
+            case "subject_asc":
+              sortOption = { subject: 1 };
+              break;
+            case "subject_desc":
+              sortOption = { subject: -1 };
+              break;
+            default: // date_desc
+              sortOption = { date: -1 };
+          }
 
-        total = await mongoDb.collection("emails").countDocuments(query);
-        source = 'mongodb';
-        console.log(`📧 Found ${emails.length} emails in MongoDB`);
+          emails = await mongoDb.collection("emails")
+            .find(query)
+            .sort(sortOption)
+            .skip(skip)
+            .limit(limitNum)
+            .toArray();
 
-      } catch (mongoError) {
-        console.error("MongoDB query failed:", mongoError);
+          total = await mongoDb.collection("emails").countDocuments(query);
+          source = 'mongodb';
+          console.log(`📧 Found ${emails.length} emails in MongoDB (fallback)`);
+
+        } catch (mongoError) {
+          console.error("MongoDB query failed:", mongoError);
+        }
       }
     }
 
-    
-
-
-
     // FIXED: Enhanced attachment processing for frontend
     const enhancedEmails = emails.map(email => {
-      const emailId = email._id || email.id || email.messageId || email.message_id;
+      const emailId = email.message_id || email._id || email.id || email.messageId;
       
       // Process attachments
       let processedAttachments = [];
@@ -1065,20 +1109,20 @@ app.get("/api/emails", async (req, res) => {
       const enhancedEmail = {
         id: emailId,
         _id: emailId,
-        messageId: email.messageId || email.message_id,
+        messageId: email.message_id || email.messageId,
         subject: email.subject || '(No Subject)',
-        from: email.from || email.from_text,
+        from: email.from_text || email.from,
         from_text: email.from_text || email.from,
-        to: email.to || email.to_text,
+        to: email.to_text || email.to,
         to_text: email.to_text || email.to,
         date: email.date,
-        text: email.text || email.text_content,
+        text: email.text_content || email.text,
         text_content: email.text_content || email.text,
-        html: email.html || email.html_content,
+        html: email.html_content || email.html,
         html_content: email.html_content || email.html,
         attachments: processedAttachments,
-        hasAttachments: processedAttachments.length > 0,
-        attachmentsCount: processedAttachments.length,
+        hasAttachments: email.has_attachments || processedAttachments.length > 0,
+        attachmentsCount: email.attachments_count || processedAttachments.length,
         read: email.read || false
       };
 
@@ -1099,7 +1143,7 @@ app.get("/api/emails", async (req, res) => {
 
     setToCache(cacheKey, response);
 
-    console.log(`✅ Sending ${enhancedEmails.length} emails to frontend`);
+    console.log(`✅ Sending ${enhancedEmails.length} emails to frontend (from ${source})`);
     res.json(response);
 
   } catch (error) {
@@ -1109,8 +1153,7 @@ app.get("/api/emails", async (req, res) => {
       details: error.message 
     });
   }
-});
- 
+}); 
 
 // 1. Check migration status (simplified)
 app.get("/api/migration-status", async (req, res) => {
