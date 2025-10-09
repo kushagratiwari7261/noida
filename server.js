@@ -1031,6 +1031,10 @@ app.get("/api/emails", async (req, res) => {
       }
     }
 
+    
+
+
+
     // FIXED: Enhanced attachment processing for frontend
     const enhancedEmails = emails.map(email => {
       const emailId = email._id || email.id || email.messageId || email.message_id;
@@ -1115,6 +1119,230 @@ app.get("/api/emails", async (req, res) => {
     });
   }
 });
+ 
+
+// 1. Check migration status (simplified)
+app.get("/api/migration-status", async (req, res) => {
+  try {
+    const mongoDb = await ensureMongoConnection();
+    if (!mongoDb) {
+      return res.status(500).json({ error: "MongoDB not available" });
+    }
+
+    const totalEmails = await mongoDb.collection("emails").countDocuments();
+    const migratedEmails = await mongoDb.collection("emails").countDocuments({ 
+      migratedToSupabase: true 
+    });
+    const nonMigratedEmails = totalEmails - migratedEmails;
+
+    res.json({
+      totalEmails,
+      migratedEmails,
+      nonMigratedEmails,
+      migrationProgress: totalEmails > 0 ? (migratedEmails / totalEmails * 100).toFixed(2) + '%' : '0%',
+      supabaseEnabled: supabaseEnabled,
+      recommendation: nonMigratedEmails > 0 ? 
+        `Run metadata migration with batch size ${Math.min(100, nonMigratedEmails)}` : 
+        'All emails migrated to Supabase!'
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. Simple metadata migration
+app.post("/api/migrate-to-supabase", async (req, res) => {
+  try {
+    const { batchSize = 50 } = req.body;
+    
+    console.log(`🔄 Starting metadata migration for ${batchSize} emails...`);
+    
+    // Get MongoDB connection
+    const mongoDb = await ensureMongoConnection();
+    if (!mongoDb) {
+      return res.status(500).json({ error: "MongoDB not available" });
+    }
+
+    if (!supabaseEnabled) {
+      return res.status(500).json({ error: "Supabase not available" });
+    }
+
+    // Get emails from MongoDB that haven't been migrated
+    const emails = await mongoDb.collection("emails")
+      .find({ 
+        $or: [
+          { migratedToSupabase: { $exists: false } },
+          { migratedToSupabase: false }
+        ]
+      })
+      .limit(batchSize)
+      .toArray();
+
+    console.log(`📧 Found ${emails.length} emails to migrate...`);
+
+    let migratedCount = 0;
+    let errorCount = 0;
+    const migrationResults = [];
+
+    for (const email of emails) {
+      try {
+        console.log(`📤 Migrating metadata: ${email.subject?.substring(0, 50)}...`);
+
+        // Process attachments - they should already point to Supabase Storage
+        let attachments = email.attachments || [];
+        
+        // Verify attachments point to Supabase
+        const verifiedAttachments = attachments.map(att => {
+          // If attachment URL doesn't point to Supabase, try to fix it
+          if (att.url && !att.url.includes('supabase.co') && att.path) {
+            // Reconstruct URL from path
+            const { data: urlData } = supabase.storage
+              .from("attachments")
+              .getPublicUrl(att.path);
+            return {
+              ...att,
+              url: urlData.publicUrl,
+              publicUrl: urlData.publicUrl,
+              downloadUrl: urlData.publicUrl,
+              previewUrl: urlData.publicUrl
+            };
+          }
+          return att;
+        });
+
+        // Prepare clean data for Supabase
+        const supabaseData = {
+          message_id: email.messageId || email._id?.toString(),
+          subject: email.subject || '(No Subject)',
+          from_text: email.from || email.from_text || '',
+          to_text: email.to || email.to_text || '',
+          date: email.date || new Date(),
+          text_content: email.text || email.text_content || '',
+          html_content: email.html || email.html_content || '',
+          attachments: verifiedAttachments,
+          has_attachments: verifiedAttachments.length > 0,
+          attachments_count: verifiedAttachments.length,
+          created_at: email.date || new Date(),
+          updated_at: new Date(),
+          migrated_from_mongodb: true,
+          original_mongo_id: email._id?.toString()
+        };
+
+        // Insert into Supabase
+        const { error: supabaseError } = await supabase
+          .from('emails')
+          .upsert(supabaseData, {
+            onConflict: 'message_id'
+          });
+
+        if (supabaseError) {
+          throw new Error(`Supabase error: ${supabaseError.message}`);
+        }
+
+        // Mark as migrated in MongoDB
+        await mongoDb.collection("emails").updateOne(
+          { _id: email._id },
+          { 
+            $set: { 
+              migratedToSupabase: true,
+              migratedAt: new Date()
+            } 
+          }
+        );
+
+        migratedCount++;
+        migrationResults.push({
+          subject: email.subject,
+          status: 'success',
+          attachments: verifiedAttachments.length,
+          messageId: email.messageId
+        });
+        
+        console.log(`✅ Migrated: ${email.subject}`);
+
+      } catch (emailError) {
+        console.error(`❌ Failed to migrate:`, emailError.message);
+        errorCount++;
+        migrationResults.push({
+          subject: email.subject,
+          status: 'error',
+          error: emailError.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Metadata migration completed: ${migratedCount} migrated, ${errorCount} errors`,
+      stats: {
+        batchSize: emails.length,
+        migrated: migratedCount,
+        errors: errorCount,
+        remaining: emails.length - migratedCount
+      },
+      results: migrationResults
+    });
+
+  } catch (error) {
+    console.error("❌ Migration error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: "Migration failed: " + error.message 
+    });
+  }
+});
+
+// 3. Verify Supabase data integrity
+app.get("/api/verify-supabase-data", async (req, res) => {
+  try {
+    if (!supabaseEnabled) {
+      return res.status(500).json({ error: "Supabase not available" });
+    }
+
+    // Get count from Supabase
+    const { count, error: countError } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact', head: true });
+
+    if (countError) {
+      throw new Error(`Supabase count error: ${countError.message}`);
+    }
+
+    // Get MongoDB count
+    const mongoDb = await ensureMongoConnection();
+    const mongoCount = mongoDb ? await mongoDb.collection("emails").countDocuments() : 0;
+
+    // Check a few records for data integrity
+    const { data: sampleData, error: sampleError } = await supabase
+      .from('emails')
+      .select('message_id, subject, attachments_count')
+      .limit(5);
+
+    res.json({
+      success: true,
+      counts: {
+        supabase: count,
+        mongodb: mongoCount,
+        difference: mongoCount - count
+      },
+      sampleData: sampleData,
+      dataQuality: sampleData ? 'Good' : 'Check failed',
+      recommendation: count === mongoCount ? 
+        'Migration complete!' : 
+        `Run migration for ${mongoCount - count} more emails`
+    });
+
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+
+
 
 // Health check endpoint
 app.get("/api/health", async (req, res) => {
