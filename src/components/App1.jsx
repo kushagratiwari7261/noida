@@ -321,6 +321,73 @@ function App() {
       setFetching(false);
     }
   };
+  // Add to your existing functions in App1.jsx
+
+// NEW: Fast fetch from Supabase only
+const fastFetchEmails = async () => {
+  if (fetching) return;
+
+  setFetching(true);
+  setFetchStatus('fetching');
+  setError(null);
+
+  try {
+    console.log('🚀 Fast fetching emails from Supabase...');
+    
+    const response = await fetch(`${API_BASE}/api/fast-fetch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        mode: 'fast',
+        count: 100 // Fetch more emails quickly
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log('🚀 Fast fetch result:', result);
+    
+    if (response.ok && result.success) {
+      setFetchStatus('success');
+      setLastFetchTime(new Date());
+      
+      if (result.data && result.data.emails && result.data.emails.length > 0) {
+        console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
+        const processedEmails = result.data.emails.map(processEmailData);
+        
+        // Sort emails by date (newest first)
+        const sortedEmails = processedEmails.sort((a, b) => {
+          const dateA = new Date(a.date || 0);
+          const dateB = new Date(b.date || 0);
+          return dateB - dateA;
+        });
+        
+        setEmails(sortedEmails);
+        console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
+      } else {
+        console.log('🔄 No emails found in fast fetch');
+        setEmails([]);
+      }
+      
+    } else {
+      setFetchStatus('error');
+      setError(result.error || 'Failed to fast fetch emails');
+      console.error('❌ Fast fetch failed:', result.error);
+    }
+  } catch (err) {
+    setFetchStatus('error');
+    setError(err.message);
+    console.error('❌ Fast fetch failed:', err);
+  } finally {
+    setFetching(false);
+  }
+};
+
 
   // Enhanced download function with CSV protection and better error handling
   const downloadFile = async (attachment, filename) => {
@@ -823,56 +890,66 @@ function App() {
             </div>
           </div>
 
-          {/* Compact Controls */}
-          <div className="compact-controls">
-            <button 
-              onClick={fetchNewEmails} 
-              disabled={fetching}
-              className={`fetch-button ${fetching ? 'fetching' : ''}`}
-            >
-              {fetching ? '🔄' : '📥'} Smart Fetch
-            </button>
+        {/* Compact Controls */}
+<div className="compact-controls">
+  <button 
+    onClick={fetchNewEmails} 
+    disabled={fetching}
+    className={`fetch-button ${fetching ? 'fetching' : ''}`}
+  >
+    {fetching ? '🔄' : '📥'} Smart Fetch
+  </button>
 
-            <button 
-              onClick={forceFetchEmails} 
-              disabled={fetching}
-              className="force-fetch-button"
-            >
-              ⚡ Force Fetch
-            </button>
+  <button 
+    onClick={forceFetchEmails} 
+    disabled={fetching}
+    className="force-fetch-button"
+  >
+    ⚡ Force Fetch
+  </button>
 
-            <button 
-              onClick={simpleFetchEmails} 
-              disabled={fetching}
-              className="simple-fetch-button"
-            >
-              🚀 Simple Fetch
-            </button>
+  {/* NEW: Fast Fetch Button */}
+  <button 
+    onClick={fastFetchEmails} 
+    disabled={fetching}
+    className="fast-fetch-button"
+    title="Quickly load emails from database"
+  >
+    🚀 Fast Fetch
+  </button>
 
-            <button 
-              onClick={forceRefreshEmails} 
-              disabled={fetching}
-              className="force-refresh-button"
-            >
-              🔄 Refresh
-            </button>
+  <button 
+    onClick={simpleFetchEmails} 
+    disabled={fetching}
+    className="simple-fetch-button"
+  >
+    📨 Simple Fetch
+  </button>
 
-            <div className="search-compact">
-              <input
-                type="text"
-                placeholder="🔍 Search..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="search-input-compact"
-              />
-              <select value={sort} onChange={e => setSort(e.target.value)} className="sort-select-compact">
-                <option value="date_desc">📅 Newest</option>
-                <option value="date_asc">📅 Oldest</option>
-                <option value="subject_asc">🔤 A-Z</option>
-              </select>
-            </div>
-          </div>
-        </header>
+  <button 
+    onClick={forceRefreshEmails} 
+    disabled={fetching}
+    className="force-refresh-button"
+  >
+    🔄 Refresh
+  </button>
+
+  <div className="search-compact">
+    <input
+      type="text"
+      placeholder="🔍 Search..."
+      value={search}
+      onChange={e => setSearch(e.target.value)}
+      className="search-input-compact"
+    />
+    <select value={sort} onChange={e => setSort(e.target.value)} className="sort-select-compact">
+      <option value="date_desc">📅 Newest</option>
+      <option value="date_asc">📅 Oldest</option>
+      <option value="subject_asc">🔤 A-Z</option>
+    </select>
+  </div>
+</div>
+</header>
 
         {/* Error Display */}
         {error && (

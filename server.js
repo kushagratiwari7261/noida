@@ -798,6 +798,80 @@ app.post("/api/sync-deletions", async (req, res) => {
   }
 });
 
+
+// NEW: Fast fetch from Supabase only (no IMAP)
+app.post("/api/fast-fetch", async (req, res) => {
+  try {
+    const { mode = "latest", count = 50 } = req.body;
+    
+    console.log(`🚀 Fast fetching ${count} emails from Supabase in ${mode} mode`);
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        success: false,
+        error: "Supabase is not available" 
+      });
+    }
+
+    let query = supabase
+      .from('emails')
+      .select('*')
+      .order('date', { ascending: false })
+      .limit(count);
+
+    const { data: emails, error } = await query;
+
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      return res.status(500).json({ 
+        success: false,
+        error: "Failed to fetch emails from Supabase",
+        details: error.message 
+      });
+    }
+
+    // Enhanced email data for frontend
+    const enhancedEmails = emails.map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false
+    }));
+
+    console.log(`✅ Fast fetch completed: ${enhancedEmails.length} emails from Supabase`);
+
+    res.json({
+      success: true,
+      message: `Fetched ${enhancedEmails.length} emails from database`,
+      data: {
+        emails: enhancedEmails,
+        total: enhancedEmails.length,
+        source: 'supabase_fast'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Fast fetch error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
 // ✅ UPDATED: Get emails from Supabase ONLY
 app.get("/api/emails", async (req, res) => {
   try {
