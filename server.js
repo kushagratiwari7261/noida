@@ -1031,6 +1031,138 @@ app.post("/api/clear-cache", (req, res) => {
     message: `Cleared ${cacheSize} cache entries` 
   });
 });
+// ✅ NEW: Delete email from Supabase (including attachments from storage)
+app.delete("/api/delete-email", async (req, res) => {
+  try {
+    const { emailId, messageId } = req.body;
+    
+    if (!emailId && !messageId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Either emailId or messageId is required'
+      });
+    }
+
+    console.log('🗑️ Deleting email from database:', { emailId, messageId });
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: 'Supabase is not available'
+      });
+    }
+
+    // First, get the email to find attachment paths
+    let emailQuery = supabase.from('emails').select('*');
+    
+    if (emailId) {
+      emailQuery = emailQuery.eq('id', emailId);
+    } else if (messageId) {
+      emailQuery = emailQuery.eq('message_id', messageId);
+    }
+
+    const { data: emails, error: fetchError } = await emailQuery;
+
+    if (fetchError) {
+      console.error('❌ Failed to fetch email:', fetchError);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to fetch email: ${fetchError.message}`
+      });
+    }
+
+    if (!emails || emails.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Email not found'
+      });
+    }
+
+    const email = emails[0];
+    console.log(`📧 Found email to delete: "${email.subject}" with ${email.attachments_count} attachments`);
+
+    // Delete attachments from storage if they exist
+    let deletedAttachments = 0;
+    if (email.attachments && email.attachments.length > 0) {
+      console.log(`🗑️ Processing ${email.attachments.length} attachments for deletion`);
+      
+      // Extract file paths from attachments
+      const filePaths = email.attachments
+        .filter(att => att.path)
+        .map(att => {
+          // Ensure path is in correct format for 'attachments' bucket
+          if (att.path.startsWith('emails/')) {
+            return att.path;
+          } else {
+            return `emails/${att.path}`;
+          }
+        })
+        .filter(path => path && path.trim() !== '');
+
+      console.log('📁 File paths to delete from storage:', filePaths);
+
+      if (filePaths.length > 0) {
+        const { data: deleteResult, error: storageError } = await supabase.storage
+          .from('attachments') // Your bucket name
+          .remove(filePaths);
+
+        if (storageError) {
+          console.warn('⚠️ Failed to delete some attachments from storage:', storageError);
+          console.log('📝 Storage error details:', storageError.message);
+        } else {
+          deletedAttachments = filePaths.length;
+          console.log(`✅ Successfully deleted ${deletedAttachments} attachments from storage`);
+        }
+      } else {
+        console.log('ℹ️ No valid file paths found for attachment deletion');
+      }
+    } else {
+      console.log('ℹ️ No attachments found for this email');
+    }
+
+    // Delete the email from the database
+    let deleteQuery = supabase.from('emails').delete();
+    
+    if (emailId) {
+      deleteQuery = deleteQuery.eq('id', emailId);
+    } else if (messageId) {
+      deleteQuery = deleteQuery.eq('message_id', messageId);
+    }
+
+    const { error: deleteError } = await deleteQuery;
+
+    if (deleteError) {
+      console.error('❌ Failed to delete email from database:', deleteError);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to delete email from database: ${deleteError.message}`
+      });
+    }
+
+    console.log('✅ Email deleted successfully from database');
+    
+    // Clear cache to ensure UI updates
+    clearCache();
+    
+    res.json({
+      success: true,
+      message: 'Email and attachments deleted successfully',
+      data: {
+        deletedEmailId: emailId || messageId,
+        deletedAttachments: deletedAttachments,
+        totalAttachments: email.attachments_count,
+        subject: email.subject
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Delete email error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // Root endpoint
 app.get("/", (req, res) => {

@@ -12,6 +12,7 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
+  const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
 
   const API_BASE = '';
 
@@ -122,6 +123,67 @@ function App() {
     }
 
     return processedEmail;
+  };
+
+  // NEW: Delete email function
+  const deleteEmail = async (emailId, messageId) => {
+    if (!emailId && !messageId) {
+      console.error('❌ No email ID or message ID provided for deletion');
+      setError('Cannot delete email: Missing identifier');
+      return;
+    }
+
+    // Confirm deletion
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    // Set deleting state for this email
+    setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
+
+    try {
+      console.log('🗑️ Deleting email:', { emailId, messageId });
+
+      const response = await fetch(`${API_BASE}/api/delete-email`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emailId: emailId,
+          messageId: messageId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('🗑️ Delete response:', result);
+
+      if (response.ok && result.success) {
+        // Remove email from local state immediately
+        setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
+        console.log('✅ Email deleted successfully');
+        
+        // Show success message
+        setFetchStatus('success');
+        setTimeout(() => setFetchStatus('idle'), 3000);
+      } else {
+        throw new Error(result.error || 'Failed to delete email');
+      }
+    } catch (err) {
+      console.error('❌ Delete error:', err);
+      setError(`Failed to delete email: ${err.message}`);
+    } finally {
+      // Clear deleting state
+      setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
+    }
   };
 
   // Enhanced load emails function with proper sorting
@@ -321,73 +383,71 @@ function App() {
       setFetching(false);
     }
   };
-  // Add to your existing functions in App1.jsx
 
-// NEW: Fast fetch from Supabase only
-const fastFetchEmails = async () => {
-  if (fetching) return;
+  // Fast fetch from Supabase only
+  const fastFetchEmails = async () => {
+    if (fetching) return;
 
-  setFetching(true);
-  setFetchStatus('fetching');
-  setError(null);
+    setFetching(true);
+    setFetchStatus('fetching');
+    setError(null);
 
-  try {
-    console.log('🚀 Fast fetching emails from Supabase...');
-    
-    const response = await fetch(`${API_BASE}/api/fast-fetch`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        mode: 'fast',
-        count: 100 // Fetch more emails quickly
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const result = await response.json();
-    console.log('🚀 Fast fetch result:', result);
-    
-    if (response.ok && result.success) {
-      setFetchStatus('success');
-      setLastFetchTime(new Date());
+    try {
+      console.log('🚀 Fast fetching emails from Supabase...');
       
-      if (result.data && result.data.emails && result.data.emails.length > 0) {
-        console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
-        const processedEmails = result.data.emails.map(processEmailData);
-        
-        // Sort emails by date (newest first)
-        const sortedEmails = processedEmails.sort((a, b) => {
-          const dateA = new Date(a.date || 0);
-          const dateB = new Date(b.date || 0);
-          return dateB - dateA;
-        });
-        
-        setEmails(sortedEmails);
-        console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
-      } else {
-        console.log('🔄 No emails found in fast fetch');
-        setEmails([]);
+      const response = await fetch(`${API_BASE}/api/fast-fetch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode: 'fast',
+          count: 100 // Fetch more emails quickly
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-      
-    } else {
-      setFetchStatus('error');
-      setError(result.error || 'Failed to fast fetch emails');
-      console.error('❌ Fast fetch failed:', result.error);
-    }
-  } catch (err) {
-    setFetchStatus('error');
-    setError(err.message);
-    console.error('❌ Fast fetch failed:', err);
-  } finally {
-    setFetching(false);
-  }
-};
 
+      const result = await response.json();
+      console.log('🚀 Fast fetch result:', result);
+      
+      if (response.ok && result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        
+        if (result.data && result.data.emails && result.data.emails.length > 0) {
+          console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
+          const processedEmails = result.data.emails.map(processEmailData);
+          
+          // Sort emails by date (newest first)
+          const sortedEmails = processedEmails.sort((a, b) => {
+            const dateA = new Date(a.date || 0);
+            const dateB = new Date(b.date || 0);
+            return dateB - dateA;
+          });
+          
+          setEmails(sortedEmails);
+          console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
+        } else {
+          console.log('🔄 No emails found in fast fetch');
+          setEmails([]);
+        }
+        
+      } else {
+        setFetchStatus('error');
+        setError(result.error || 'Failed to fast fetch emails');
+        console.error('❌ Fast fetch failed:', result.error);
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Fast fetch failed:', err);
+    } finally {
+      setFetching(false);
+    }
+  };
 
   // Enhanced download function with CSV protection and better error handling
   const downloadFile = async (attachment, filename) => {
@@ -765,9 +825,21 @@ const fastFetchEmails = async () => {
     }));
   };
 
-  // Enhanced EmailCard component with better attachment layout
+  // Enhanced EmailCard component with delete button and better attachment layout
   const EmailCard = ({ email, index }) => (
     <div className="email-card">
+      {/* Delete Button - Top Right */}
+      <div className="email-actions-top">
+        <button 
+          className="delete-email-btn"
+          onClick={() => deleteEmail(email.id, email.messageId)}
+          disabled={deletingEmails[email.id]}
+          title="Permanently delete this email and all attachments"
+        >
+          {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
+        </button>
+      </div>
+
       <div className="email-header">
         <div className="email-subject">
           <h3>{email.subject || '(No Subject)'}</h3>
@@ -890,66 +962,66 @@ const fastFetchEmails = async () => {
             </div>
           </div>
 
-        {/* Compact Controls */}
-<div className="compact-controls">
-  <button 
-    onClick={fetchNewEmails} 
-    disabled={fetching}
-    className={`fetch-button ${fetching ? 'fetching' : ''}`}
-  >
-    {fetching ? '🔄' : '📥'} Smart Fetch
-  </button>
+          {/* Compact Controls */}
+          <div className="compact-controls">
+            <button 
+              onClick={fetchNewEmails} 
+              disabled={fetching}
+              className={`fetch-button ${fetching ? 'fetching' : ''}`}
+            >
+              {fetching ? '🔄' : '📥'} Smart Fetch
+            </button>
 
-  <button 
-    onClick={forceFetchEmails} 
-    disabled={fetching}
-    className="force-fetch-button"
-  >
-    ⚡ Force Fetch
-  </button>
+            <button 
+              onClick={forceFetchEmails} 
+              disabled={fetching}
+              className="force-fetch-button"
+            >
+              ⚡ Force Fetch
+            </button>
 
-  {/* NEW: Fast Fetch Button */}
-  <button 
-    onClick={fastFetchEmails} 
-    disabled={fetching}
-    className="fast-fetch-button"
-    title="Quickly load emails from database"
-  >
-    🚀 Fast Fetch
-  </button>
+            {/* Fast Fetch Button */}
+            <button 
+              onClick={fastFetchEmails} 
+              disabled={fetching}
+              className="fast-fetch-button"
+              title="Quickly load emails from database"
+            >
+              🚀 Fast Fetch
+            </button>
 
-  <button 
-    onClick={simpleFetchEmails} 
-    disabled={fetching}
-    className="simple-fetch-button"
-  >
-    📨 Simple Fetch
-  </button>
+            <button 
+              onClick={simpleFetchEmails} 
+              disabled={fetching}
+              className="simple-fetch-button"
+            >
+              📨 Simple Fetch
+            </button>
 
-  <button 
-    onClick={forceRefreshEmails} 
-    disabled={fetching}
-    className="force-refresh-button"
-  >
-    🔄 Refresh
-  </button>
+            <button 
+              onClick={forceRefreshEmails} 
+              disabled={fetching}
+              className="force-refresh-button"
+            >
+              🔄 Refresh
+            </button>
 
-  <div className="search-compact">
-    <input
-      type="text"
-      placeholder="🔍 Search..."
-      value={search}
-      onChange={e => setSearch(e.target.value)}
-      className="search-input-compact"
-    />
-    <select value={sort} onChange={e => setSort(e.target.value)} className="sort-select-compact">
-      <option value="date_desc">📅 Newest</option>
-      <option value="date_asc">📅 Oldest</option>
-      <option value="subject_asc">🔤 A-Z</option>
-    </select>
-  </div>
-</div>
-</header>
+            <div className="search-compact">
+              <input
+                type="text"
+                placeholder="🔍 Search..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="search-input-compact"
+              />
+              <select value={sort} onChange={e => setSort(e.target.value)} className="sort-select-compact">
+                <option value="date_desc">📅 Newest</option>
+                <option value="date_asc">📅 Oldest</option>
+                <option value="subject_asc">🔤 A-Z</option>
+              </select>
+            </div>
+          </div>
+        </header>
 
         {/* Error Display */}
         {error && (
