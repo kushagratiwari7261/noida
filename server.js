@@ -719,6 +719,84 @@ app.post("/api/fetch-emails", async (req, res) => {
     });
   }
 });
+// Add to your server.js
+app.post("/api/sync-deletions", async (req, res) => {
+  try {
+    await imapManager.connect();
+    
+    openInbox(async function (err, box) {
+      if (err) {
+        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+      }
+
+      // Get all message IDs from IMAP
+      const f = imapManager.connection.seq.fetch('1:*', { 
+        bodies: ['HEADER.FIELDS (MESSAGE-ID)'],
+        struct: true 
+      });
+
+      const imapMessageIds = new Set();
+      
+      f.on("message", function (msg) {
+        msg.on("body", function (stream) {
+          let buffer = "";
+          stream.on("data", function (chunk) {
+            buffer += chunk.toString("utf8");
+          });
+          stream.on("end", function () {
+            // Extract Message-ID from headers
+            const messageIdMatch = buffer.match(/Message-ID:\s*<([^>]+)>/i);
+            if (messageIdMatch) {
+              imapMessageIds.add(messageIdMatch[1]);
+            }
+          });
+        });
+      });
+
+      f.once("end", async function () {
+        try {
+          // Get all message IDs from Supabase
+          const { data: dbEmails, error } = await supabase
+            .from('emails')
+            .select('message_id');
+          
+          if (error) throw error;
+
+          const dbMessageIds = new Set(dbEmails.map(email => email.message_id));
+          
+          // Find emails in DB but not in IMAP (deleted)
+          const deletedMessageIds = [...dbMessageIds].filter(id => !imapMessageIds.has(id));
+          
+          // Delete from Supabase
+          if (deletedMessageIds.length > 0) {
+            const { error: deleteError } = await supabase
+              .from('emails')
+              .delete()
+              .in('message_id', deletedMessageIds);
+              
+            if (deleteError) throw deleteError;
+            
+            console.log(`🗑️ Deleted ${deletedMessageIds.length} emails from database`);
+            clearCache();
+          }
+          
+          res.json({
+            success: true,
+            deleted: deletedMessageIds.length,
+            deletedIds: deletedMessageIds
+          });
+          
+        } catch (syncError) {
+          console.error("❌ Sync error:", syncError);
+          res.status(500).json({ error: syncError.message });
+        }
+      });
+    });
+  } catch (error) {
+    console.error("❌ Sync deletions error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ✅ UPDATED: Get emails from Supabase ONLY
 app.get("/api/emails", async (req, res) => {

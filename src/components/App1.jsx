@@ -12,6 +12,7 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
+  const [syncStatus, setSyncStatus] = useState('idle');
 
   const API_BASE = '';
 
@@ -317,6 +318,119 @@ function App() {
       setFetchStatus('error');
       setError(err.message);
       console.error('❌ Force refresh failed:', err);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // NEW: Sync deletions with actual Gmail inbox
+  const syncDeletions = async () => {
+    if (fetching) return;
+
+    setFetching(true);
+    setSyncStatus('syncing');
+    setError(null);
+
+    try {
+      console.log('🔄 Syncing deletions with Gmail inbox...');
+      
+      const response = await fetch(`${API_BASE}/api/sync-deletions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('🗑️ Sync deletions result:', result);
+      
+      if (response.ok && result.success) {
+        setSyncStatus('success');
+        
+        if (result.deleted > 0) {
+          console.log(`🗑️ ${result.deleted} emails were deleted from database`);
+          // Reload emails to reflect deletions
+          await loadEmails(false, true);
+        } else {
+          console.log('✅ No deletions found - database is in sync with Gmail');
+        }
+        
+        setLastFetchTime(new Date());
+      } else {
+        setSyncStatus('error');
+        setError(result.error || 'Failed to sync deletions');
+        console.error('❌ Sync deletions failed:', result.error);
+      }
+    } catch (err) {
+      setSyncStatus('error');
+      setError(err.message);
+      console.error('❌ Sync deletions failed:', err);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // NEW: Cleanup all emails from database
+  const cleanupAllEmails = async () => {
+    if (fetching) return;
+
+    const confirmed = window.confirm(
+      'Are you sure you want to clear ALL emails from the database?\n\n' +
+      'This will remove all emails and you will need to fetch them again from your Gmail inbox.\n\n' +
+      'This is useful if you want to start fresh or if deleted emails are still showing.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setFetching(true);
+    setSyncStatus('cleaning');
+    setError(null);
+
+    try {
+      console.log('🗑️ Cleaning up all emails from database...');
+      
+      const response = await fetch(`${API_BASE}/api/cleanup-emails`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('🗑️ Cleanup result:', result);
+      
+      if (response.ok && result.success) {
+        setSyncStatus('success');
+        console.log('✅ All emails cleared from database');
+        
+        // Clear local state
+        setEmails([]);
+        setLastFetchTime(new Date());
+        
+        // Show success message
+        setError(null);
+        setTimeout(() => {
+          alert('✅ All emails have been cleared from the database. Use "Fetch Emails" to reload from your Gmail inbox.');
+        }, 100);
+      } else {
+        setSyncStatus('error');
+        setError(result.error || 'Failed to cleanup emails');
+        console.error('❌ Cleanup failed:', result.error);
+      }
+    } catch (err) {
+      setSyncStatus('error');
+      setError(err.message);
+      console.error('❌ Cleanup failed:', err);
     } finally {
       setFetching(false);
     }
@@ -763,15 +877,29 @@ function App() {
 
   // Reset fetch status after 5 seconds
   useEffect(() => {
-    if (fetchStatus === 'success' || fetchStatus === 'error') {
+    if (fetchStatus === 'success' || fetchStatus === 'error' || syncStatus === 'success' || syncStatus === 'error') {
       const timer = setTimeout(() => {
         setFetchStatus('idle');
+        setSyncStatus('idle');
       }, 5000);
       return () => clearTimeout(timer);
     }
-  }, [fetchStatus]);
+  }, [fetchStatus, syncStatus]);
 
   const getStatusMessage = () => {
+    if (syncStatus === 'syncing') {
+      return { message: '🔄 Syncing deletions with Gmail inbox...', type: 'info' };
+    }
+    if (syncStatus === 'cleaning') {
+      return { message: '🗑️ Cleaning up all emails from database...', type: 'info' };
+    }
+    if (syncStatus === 'success') {
+      return { message: '✅ Sync completed successfully!', type: 'success' };
+    }
+    if (syncStatus === 'error') {
+      return { message: '❌ Sync failed', type: 'error' };
+    }
+    
     switch (fetchStatus) {
       case 'fetching':
         return { message: '🔄 Fetching latest emails from server...', type: 'info' };
@@ -857,6 +985,26 @@ function App() {
               🔄 Refresh
             </button>
 
+            {/* NEW: Sync Deletions Button */}
+            <button 
+              onClick={syncDeletions} 
+              disabled={fetching}
+              className="sync-deletions-button"
+              title="Sync with Gmail inbox to remove deleted emails"
+            >
+              🗑️ Sync Deletions
+            </button>
+
+            {/* NEW: Cleanup Button */}
+            <button 
+              onClick={cleanupAllEmails} 
+              disabled={fetching}
+              className="cleanup-button"
+              title="Clear all emails from database"
+            >
+              💥 Cleanup DB
+            </button>
+
             <div className="search-compact">
               <input
                 type="text"
@@ -886,7 +1034,7 @@ function App() {
         {statusMessage && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
-            {fetchStatus === 'fetching' && (
+            {(fetchStatus === 'fetching' || syncStatus === 'syncing' || syncStatus === 'cleaning') && (
               <div className="loading-dots">
                 <span>.</span>
                 <span>.</span>
@@ -916,6 +1064,9 @@ function App() {
                 <button onClick={forceFetchEmails} className="force-fetch-button">
                   ⚡ Force Fetch
                 </button>
+                <button onClick={syncDeletions} className="sync-deletions-button">
+                  🗑️ Sync Deletions
+                </button>
               </div>
             </div>
           )}
@@ -939,6 +1090,7 @@ function App() {
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>
+              <p>Sync Status: {syncStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {error && <p>Error: {error}</p>}
               <div className="attachments-debug">
