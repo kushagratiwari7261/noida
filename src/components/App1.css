@@ -1298,3 +1298,20 @@ button:disabled {
   cursor: not-allowed;
   transform: none;
 }
+/* Quick fix for dark email backgrounds */
+.email-card {
+  background: white !important;
+  color: #1f2937 !important;
+}
+
+.email-card * {
+  color: #1f2937 !important;
+  background: transparent !important;
+}
+
+.email-header *,
+.email-subject *,
+.email-from *,
+.email-body * {
+  color: #1f2937 !important;
+}
