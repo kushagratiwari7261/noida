@@ -1031,132 +1031,100 @@ app.post("/api/clear-cache", (req, res) => {
     message: `Cleared ${cacheSize} cache entries` 
   });
 });
-// ✅ NEW: Delete email from Supabase (including attachments from storage)
-app.delete("/api/delete-email", async (req, res) => {
+// ✅ NEW: Test storage permissions and deletion
+app.post("/api/test-storage-delete", async (req, res) => {
   try {
-    const { emailId, messageId } = req.body;
-    
-    if (!emailId && !messageId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Either emailId or messageId is required'
-      });
-    }
-
-    console.log('🗑️ Deleting email from database:', { emailId, messageId });
-
     if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        message: "Supabase is not available"
+      });
+    }
+
+    console.log("🧪 Testing storage deletion permissions...");
+
+    // 1. First check if we can list buckets
+    const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+    
+    if (bucketsError) {
+      console.error("❌ Cannot list buckets:", bucketsError);
       return res.status(500).json({
         success: false,
-        error: 'Supabase is not available'
+        error: "Cannot list buckets",
+        details: bucketsError
       });
     }
 
-    // First, get the email to find attachment paths
-    let emailQuery = supabase.from('emails').select('*');
-    
-    if (emailId) {
-      emailQuery = emailQuery.eq('id', emailId);
-    } else if (messageId) {
-      emailQuery = emailQuery.eq('message_id', messageId);
-    }
+    console.log("✅ Can list buckets");
+    console.log("📦 Available buckets:", buckets.map(b => b.name));
 
-    const { data: emails, error: fetchError } = await emailQuery;
-
-    if (fetchError) {
-      console.error('❌ Failed to fetch email:', fetchError);
+    const attachmentsBucket = buckets.find(b => b.name === 'attachments');
+    if (!attachmentsBucket) {
       return res.status(500).json({
         success: false,
-        error: `Failed to fetch email: ${fetchError.message}`
+        error: "Attachments bucket not found"
       });
     }
 
-    if (!emails || emails.length === 0) {
-      return res.status(404).json({
+    console.log("✅ Attachments bucket exists");
+
+    // 2. Test upload and delete
+    const testContent = "This is a test file for deletion";
+    const testFilename = `test-delete-${Date.now()}.txt`;
+    const testPath = `emails/${testFilename}`;
+
+    console.log(`📤 Uploading test file: ${testPath}`);
+
+    // Upload test file
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("attachments")
+      .upload(testPath, testContent, {
+        contentType: 'text/plain',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error("❌ Upload failed:", uploadError);
+      return res.status(500).json({
         success: false,
-        error: 'Email not found'
+        error: "Upload failed",
+        details: uploadError
       });
     }
 
-    const email = emails[0];
-    console.log(`📧 Found email to delete: "${email.subject}" with ${email.attachments_count} attachments`);
+    console.log("✅ Test file uploaded successfully");
 
-    // Delete attachments from storage if they exist
-    let deletedAttachments = 0;
-    if (email.attachments && email.attachments.length > 0) {
-      console.log(`🗑️ Processing ${email.attachments.length} attachments for deletion`);
-      
-      // Extract file paths from attachments
-      const filePaths = email.attachments
-        .filter(att => att.path)
-        .map(att => {
-          // Ensure path is in correct format for 'attachments' bucket
-          if (att.path.startsWith('emails/')) {
-            return att.path;
-          } else {
-            return `emails/${att.path}`;
-          }
-        })
-        .filter(path => path && path.trim() !== '');
-
-      console.log('📁 File paths to delete from storage:', filePaths);
-
-      if (filePaths.length > 0) {
-        const { data: deleteResult, error: storageError } = await supabase.storage
-          .from('attachments') // Your bucket name
-          .remove(filePaths);
-
-        if (storageError) {
-          console.warn('⚠️ Failed to delete some attachments from storage:', storageError);
-          console.log('📝 Storage error details:', storageError.message);
-        } else {
-          deletedAttachments = filePaths.length;
-          console.log(`✅ Successfully deleted ${deletedAttachments} attachments from storage`);
-        }
-      } else {
-        console.log('ℹ️ No valid file paths found for attachment deletion');
-      }
-    } else {
-      console.log('ℹ️ No attachments found for this email');
-    }
-
-    // Delete the email from the database
-    let deleteQuery = supabase.from('emails').delete();
-    
-    if (emailId) {
-      deleteQuery = deleteQuery.eq('id', emailId);
-    } else if (messageId) {
-      deleteQuery = deleteQuery.eq('message_id', messageId);
-    }
-
-    const { error: deleteError } = await deleteQuery;
+    // Try to delete the test file
+    console.log(`🗑️ Attempting to delete test file: ${testPath}`);
+    const { data: deleteResult, error: deleteError } = await supabase.storage
+      .from("attachments")
+      .remove([testPath]);
 
     if (deleteError) {
-      console.error('❌ Failed to delete email from database:', deleteError);
+      console.error("❌ Delete test failed:", deleteError);
       return res.status(500).json({
         success: false,
-        error: `Failed to delete email from database: ${deleteError.message}`
+        error: "Delete failed",
+        details: deleteError,
+        bucketInfo: attachmentsBucket
       });
     }
 
-    console.log('✅ Email deleted successfully from database');
-    
-    // Clear cache to ensure UI updates
-    clearCache();
-    
+    console.log("✅ Test file deleted successfully");
+
     res.json({
       success: true,
-      message: 'Email and attachments deleted successfully',
-      data: {
-        deletedEmailId: emailId || messageId,
-        deletedAttachments: deletedAttachments,
-        totalAttachments: email.attachments_count,
-        subject: email.subject
+      message: "Storage deletion test passed",
+      test: {
+        uploaded: testPath,
+        deleted: true,
+        bucket: 'attachments',
+        bucketPublic: attachmentsBucket.public
       }
     });
 
   } catch (error) {
-    console.error('❌ Delete email error:', error);
+    console.error("❌ Storage test error:", error);
     res.status(500).json({
       success: false,
       error: error.message
