@@ -1301,11 +1301,11 @@ button:disabled {
 /* Quick fix for dark email backgrounds */
 .email-card {
   background: white !important;
-  color: #1f2937 !important;
+  color: #d3dae3ff !important;
 }
 
 .email-card * {
-  color: #1f2937 !important;
+  color: #dde3ecff !important;
   background: transparent !important;
 }
 
@@ -1313,5 +1313,5 @@ button:disabled {
 .email-subject *,
 .email-from *,
 .email-body * {
-  color: #dbe3f0ff !important;
+  color: #2b7af8ff !important;
 }
