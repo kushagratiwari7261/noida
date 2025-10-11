@@ -1298,20 +1298,39 @@ button:disabled {
   cursor: not-allowed;
   transform: none;
 }
-/* Quick fix for dark email backgrounds */
+/* More aggressive fix for email content styling */
 .email-card {
   background: white !important;
-  color: #d3dbe6ff !important;
+  isolation: isolate !important; /* Creates new stacking context */
 }
 
 .email-card * {
-  color: #dbe0e6ff !important;
+  color: #374151 !important;
   background: transparent !important;
 }
 
-.email-header *,
-.email-subject *,
-.email-from *,
-.email-body * {
-  color: #e8ecf1ff !important;
+.email-card div:not([class]) {
+  background: white !important;
+  color: #374151 !important;
+}
+
+.email-card p:not([class]) {
+  background: white !important;
+  color: #374151 !important;
+}
+
+.email-card span:not([class]) {
+  background: transparent !important;
+  color: #374151 !important;
+}
+
+/* Reset any inline styles that might be causing issues */
+.email-card [style*="color: black"],
+.email-card [style*="color:#000"],
+.email-card [style*="color: #000"],
+.email-card [style*="background: black"],
+.email-card [style*="background:#000"],
+.email-card [style*="background: #000"] {
+  color: #374151 !important;
+  background: white !important;
 }
