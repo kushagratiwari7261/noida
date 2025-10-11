@@ -1298,39 +1298,78 @@ button:disabled {
   cursor: not-allowed;
   transform: none;
 }
-/* More aggressive fix for email content styling */
+/* Email card styling fixes */
 .email-card {
   background: white !important;
-  isolation: isolate !important; /* Creates new stacking context */
+  border: 1px solid #e1e5e9 !important;
+  border-radius: 12px !important;
+  padding: 1.5rem !important;
+  margin-bottom: 1.5rem !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08) !important;
 }
 
+/* Reset all text colors within email cards to ensure proper contrast */
 .email-card * {
   color: #374151 !important;
   background: transparent !important;
 }
 
-.email-card div:not([class]) {
-  background: white !important;
+/* Specific element styling with proper colors */
+.email-subject h3 {
+  color: #1f2937 !important;
+  font-size: 1.25rem !important;
+  margin: 0 !important;
+  line-height: 1.4 !important;
+}
+
+.email-from {
+  color: #4b5563 !important;
+}
+
+.sender-email {
+  color: #3b82f6 !important;
+  margin-left: 0.5rem !important;
+  font-weight: 500 !important;
+}
+
+.email-body {
+  color: #374151 !important;
+  line-height: 1.6 !important;
+}
+
+.email-body * {
   color: #374151 !important;
 }
 
-.email-card p:not([class]) {
-  background: white !important;
+.email-body p,
+.email-body div,
+.email-body span {
   color: #374151 !important;
-}
-
-.email-card span:not([class]) {
   background: transparent !important;
+}
+
+.email-date {
+  color: #6b7280 !important;
+  font-size: 0.9rem !important;
+  white-space: nowrap !important;
+}
+
+/* Force white background for email body content */
+.email-body,
+.email-body div,
+.email-body p {
+  background: white !important;
+}
+
+/* Ensure any nested elements don't inherit dark styles */
+.email-card [style*="background"],
+.email-card [style*="color"],
+.email-card [style*="background-color"] {
+  background: white !important;
   color: #374151 !important;
 }
 
-/* Reset any inline styles that might be causing issues */
-.email-card [style*="color: black"],
-.email-card [style*="color:#000"],
-.email-card [style*="color: #000"],
-.email-card [style*="background: black"],
-.email-card [style*="background:#000"],
-.email-card [style*="background: #000"] {
+/* Specific fix for dark text in email bodies */
+.email-card *:not(.email-card) {
   color: #374151 !important;
-  background: white !important;
 }
