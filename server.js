@@ -719,7 +719,8 @@ app.post("/api/fetch-emails", async (req, res) => {
     });
   }
 });
-// Add to your server.js
+
+// Sync deletions between IMAP and Supabase
 app.post("/api/sync-deletions", async (req, res) => {
   try {
     await imapManager.connect();
@@ -797,7 +798,6 @@ app.post("/api/sync-deletions", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 
 // NEW: Fast fetch from Supabase only (no IMAP)
 app.post("/api/fast-fetch", async (req, res) => {
@@ -1031,8 +1031,8 @@ app.post("/api/clear-cache", (req, res) => {
     message: `Cleared ${cacheSize} cache entries` 
   });
 });
-// ✅ NEW: Test storage permissions and deletion
-// ✅ NEW: Delete email with attachments
+
+// ✅ ENHANCED: Delete email with attachments - more robust version
 app.delete("/api/emails/:messageId", async (req, res) => {
   try {
     const { messageId } = req.params;
@@ -1061,33 +1061,38 @@ app.delete("/api/emails/:messageId", async (req, res) => {
     }
 
     // Step 2: Delete attachments from storage if they exist
-    let attachmentDeleteResult = { success: true, deleted: 0 };
+    let attachmentDeleteResult = { success: true, deleted: 0, errors: [] };
+    
     if (email.attachments && email.attachments.length > 0) {
-      console.log(`📎 Deleting ${email.attachments.length} attachments...`);
+      console.log(`📎 Found ${email.attachments.length} attachments to delete...`);
       
+      // Extract valid paths safely
       const attachmentPaths = email.attachments
-        .filter(att => att.path)
-        .map(att => att.path);
+        .filter(att => att && typeof att === 'object' && att.path)
+        .map(att => att.path)
+        .filter(path => path && typeof path === 'string');
+
+      console.log(`📎 Valid attachment paths to delete: ${attachmentPaths.length}`);
 
       if (attachmentPaths.length > 0) {
-        const { data: deleteData, error: storageError } = await supabase.storage
-          .from("attachments")
-          .remove(attachmentPaths);
+        try {
+          const { data: deleteData, error: storageError } = await supabase.storage
+            .from("attachments")
+            .remove(attachmentPaths);
 
-        if (storageError) {
-          console.error("❌ Attachment deletion error:", storageError);
-          attachmentDeleteResult = { 
-            success: false, 
-            error: storageError.message,
-            deleted: 0
-          };
-        } else {
-          attachmentDeleteResult = {
-            success: true,
-            deleted: deleteData?.length || 0
-          };
-          console.log(`✅ Deleted ${attachmentDeleteResult.deleted} attachments`);
+          if (storageError) {
+            console.error("❌ Attachment deletion error:", storageError);
+            attachmentDeleteResult.errors.push(`Storage error: ${storageError.message}`);
+          } else {
+            attachmentDeleteResult.deleted = deleteData?.length || 0;
+            console.log(`✅ Deleted ${attachmentDeleteResult.deleted} attachments`);
+          }
+        } catch (storageErr) {
+          console.error("❌ Storage deletion exception:", storageErr);
+          attachmentDeleteResult.errors.push(`Exception: ${storageErr.message}`);
         }
+      } else {
+        console.log("📎 No valid attachment paths found to delete");
       }
     }
 
@@ -1103,7 +1108,8 @@ app.delete("/api/emails/:messageId", async (req, res) => {
       return res.status(500).json({
         success: false,
         error: "Failed to delete email from database",
-        details: deleteError.message
+        details: deleteError.message,
+        attachments: attachmentDeleteResult
       });
     }
 
@@ -1111,6 +1117,7 @@ app.delete("/api/emails/:messageId", async (req, res) => {
     clearCache();
     console.log("🗑️ Cleared cache after deletion");
 
+    // Return success even if some attachments failed to delete
     res.json({
       success: true,
       message: "Email deleted successfully",
@@ -1129,6 +1136,7 @@ app.delete("/api/emails/:messageId", async (req, res) => {
     });
   }
 });
+
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
@@ -1142,7 +1150,8 @@ app.get("/", (req, res) => {
       "POST /api/fetch-emails": "Fetch new emails",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
       "GET /api/debug-env": "Debug environment variables",
-      "POST /api/clear-cache": "Clear cache"
+      "POST /api/clear-cache": "Clear cache",
+      "DELETE /api/emails/:messageId": "Delete email and attachments"
     }
   });
 });
@@ -1178,8 +1187,13 @@ async function initializeApp() {
 initializeApp();
 
 // Vercel serverless function handler
-export default (req, res) => {
+export default async (req, res) => {
   try {
+    // Initialize Supabase on each request to ensure it's ready
+    if (!supabaseEnabled) {
+      initializeSupabase();
+    }
+    
     return app(req, res);
   } catch (error) {
     console.error('Serverless function error:', error);
@@ -1187,5 +1201,5 @@ export default (req, res) => {
       error: 'Internal Server Error',
       message: error.message
     });
-  };
+  }
 };
