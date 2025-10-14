@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, useNavigate, Navigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
@@ -9,41 +9,86 @@ import CustomerPage from './components/CustomerPage'
 import Login from './components/Login'
 import './App.css'
 import NewShipments from './components/NewShipments'
-import DSRPage from './components/DSRPage' // Import the new DSR component
-import EmailArchive from './components/App1.jsx'; // Add this import
-
-import { supabase } from './lib/supabaseClient';
+import DSRPage from './components/DSRPage'
+import EmailArchive from './components/App1.jsx'
+import { supabase } from './lib/supabaseClient'
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [error, setError] = useState(null)
+  const [user, setUser] = useState(null)
   const [statsData, setStatsData] = useState([])
   const [dashboardJobsData, setDashboardJobsData] = useState([])
   const [dashboardShipmentsData, setDashboardShipmentsData] = useState([])
+  const [isStatsLoading, setIsStatsLoading] = useState(false)
+  const [isJobsLoading, setIsJobsLoading] = useState(false)
+  const [isShipmentsLoading, setIsShipmentsLoading] = useState(false)
+  
   const navigate = useNavigate()
 
-  // Check if user is authenticated on component mount
+  // Check authentication state with Supabase
   useEffect(() => {
-    const token = sessionStorage.getItem('authToken')
-    
-    // More robust token validation
-    if (token && isValidToken(token)) {
-      setIsAuthenticated(true)
-      // Redirect to dashboard if authenticated and on login page
-      if (window.location.pathname === '/login') {
-        navigate('/dashboard', { replace: true })
-      }
-    } else {
-      // Clear token if invalid
-      sessionStorage.removeItem('authToken')
-      setIsAuthenticated(false)
-      // Redirect to login if not authenticated and trying to access protected routes
-      if (window.location.pathname !== '/login') {
-        navigate('/login', { replace: true })
+    // Get initial session
+    const getInitialSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession()
+        
+        if (error) {
+          console.error('Error getting session:', error)
+          setIsAuthenticated(false)
+        } else if (session) {
+          setIsAuthenticated(true)
+          setUser(session.user)
+          // Redirect to dashboard if on login page
+          if (window.location.pathname === '/login') {
+            navigate('/dashboard', { replace: true })
+          }
+        } else {
+          setIsAuthenticated(false)
+          // Redirect to login if not authenticated and trying to access protected routes
+          if (window.location.pathname !== '/login') {
+            navigate('/login', { replace: true })
+          }
+        }
+      } catch (error) {
+        console.error('Auth check error:', error)
+        setIsAuthenticated(false)
+        if (window.location.pathname !== '/login') {
+          navigate('/login', { replace: true })
+        }
+      } finally {
+        setIsLoading(false)
       }
     }
-    setIsLoading(false)
+
+    getInitialSession()
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('Auth state change:', event, session)
+        
+        if (session) {
+          setIsAuthenticated(true)
+          setUser(session.user)
+          if (window.location.pathname === '/login') {
+            navigate('/dashboard', { replace: true })
+          }
+        } else {
+          setIsAuthenticated(false)
+          setUser(null)
+          if (window.location.pathname !== '/login') {
+            navigate('/login', { replace: true })
+          }
+        }
+        setIsLoading(false)
+      }
+    )
+
+    return () => subscription.unsubscribe()
   }, [navigate])
 
   // Fetch data when authenticated
@@ -56,6 +101,7 @@ function App() {
   // Fetch all dashboard data
   const fetchDashboardData = async () => {
     try {
+      setError(null)
       await Promise.all([
         fetchStatsData(),
         fetchJobsData(),
@@ -63,11 +109,56 @@ function App() {
       ])
     } catch (error) {
       console.error('Error fetching dashboard data:', error)
+      setError('Failed to load dashboard data. Please try refreshing the page.')
+    }
+  }
+
+  // UPDATED: Supabase Login function
+  const handleLogin = async (email, password) => {
+    try {
+      setIsLoggingIn(true);
+      setError(null);
+      
+      console.log('Attempting login with:', email);
+      
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password,
+      });
+
+      if (error) {
+        console.error('Supabase login error:', error);
+        return { 
+          success: false, 
+          error: error.message || 'Invalid email or password. Please try again.' 
+        };
+      }
+
+      if (data.session) {
+        console.log('Login successful:', data.user);
+        // The auth state change listener will handle the redirect and state update
+        return { success: true };
+      } else {
+        return { 
+          success: false, 
+          error: 'Login failed. Please try again.' 
+        };
+      }
+      
+    } catch (error) {
+      console.error('Unexpected login error:', error);
+      return { 
+        success: false, 
+        error: 'An unexpected error occurred. Please try again.' 
+      };
+    } finally {
+      setIsLoggingIn(false);
     }
   }
 
   // Fetch stats data from Supabase
   const fetchStatsData = async () => {
+    setIsStatsLoading(true)
     try {
       // Get total shipments count
       const { count: totalShipments, error: shipmentsError } = await supabase
@@ -112,11 +203,15 @@ function App() {
       ])
     } catch (error) {
       console.error('Error in fetchStatsData:', error)
+      setError('Failed to load statistics data.')
+    } finally {
+      setIsStatsLoading(false)
     }
   }
 
-  // Fetch jobs data from Supabase - UPDATED
+  // Fetch jobs data from Supabase
   const fetchJobsData = async () => {
+    setIsJobsLoading(true)
     try {
       const { data, error } = await supabase
         .from('jobs')
@@ -135,7 +230,7 @@ function App() {
         return
       }
       
-      console.log('Jobs data from Supabase:', data); // Debug log
+      console.log('Jobs data from Supabase:', data)
       
       // More flexible mapping to handle different column names
       const fetchJobs = data.map(job => ({
@@ -148,11 +243,15 @@ function App() {
       setDashboardJobsData(fetchJobs)
     } catch (error) {
       console.error('Error in fetchJobsData:', error)
+      setError('Failed to load jobs data.')
+    } finally {
+      setIsJobsLoading(false)
     }
   }
 
-  // Fetch shipments data from Supabase - UPDATED
+  // Fetch shipments data from Supabase
   const fetchShipmentsData = async () => {
+    setIsShipmentsLoading(true)
     try {
       const { data, error } = await supabase
         .from('shipments')
@@ -171,7 +270,7 @@ function App() {
         return
       }
       
-      console.log('Shipments data from Supabase:', data); // Debug log
+      console.log('Shipments data from Supabase:', data)
       
       // More flexible mapping to handle different column names
       const formattedData = data.map(shipment => ({
@@ -184,58 +283,48 @@ function App() {
       setDashboardShipmentsData(formattedData)
     } catch (error) {
       console.error('Error in fetchShipmentsData:', error)
+      setError('Failed to load shipments data.')
+    } finally {
+      setIsShipmentsLoading(false)
     }
   }
 
-  // Helper function to validate token
-  const isValidToken = (token) => {
-    return token !== "undefined" && 
-           token !== "null" && 
-           token.trim() !== "" &&
-           token.length > 10 // Basic validation
-  }
+  const toggleMobileMenu = useCallback(() => {
+    setMobileMenuOpen(prev => !prev)
+  }, [])
 
-  const toggleMobileMenu = () => {
-    setMobileMenuOpen(!mobileMenuOpen)
-  }
-
-  const createNewShipment = () => {
+  const createNewShipment = useCallback(() => {
     navigate('/new-shipment')
-  }
+  }, [navigate])
 
-  const creatActiveJob = () => {
+  const creatActiveJob = useCallback(() => {
     navigate('/job-orders')
-  }
+  }, [navigate])
 
-  const handleLogin = () => {
-    // Generate a more realistic fake token
-    const fakeToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-    
-    // Save token to sessionStorage (cleared when browser/tab is closed)
-    sessionStorage.setItem("authToken", fakeToken)
-    
-    // Update state
-    setIsAuthenticated(true)
-    
-    // Redirect to dashboard
-    navigate("/dashboard", { replace: true })
-  }
-
-  const handleLogout = () => {
-    sessionStorage.removeItem('authToken')
-    setIsAuthenticated(false)
-    navigate('/login', { replace: true })
-  }
+  // UPDATED: Supabase Logout function
+  const handleLogout = useCallback(async () => {
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) {
+        console.error('Logout error:', error)
+      }
+      // The auth state change listener will handle the state update and redirect
+    } catch (error) {
+      console.error('Logout error:', error)
+    }
+  }, [])
 
   // Dashboard Job Summary Component
-  const DashboardJobsSummary = ({ jobs, onViewAll }) => (
+  const DashboardJobsSummary = ({ jobs, onViewAll, isLoading }) => (
     <div className="card">
       <div className="card-header">
         <h2>Recent Jobs</h2>
         <button className="view-all-btn" onClick={onViewAll}>View All</button>
       </div>
       <div className="summary-content">
-        {jobs && jobs.length > 0 ? (
+        {isLoading ? (
+          <div className="loading-message">Loading jobs...</div>
+        ) : jobs && jobs.length > 0 ? (
           jobs.slice(0, 3).map(job => (
             <div key={job.id} className="summary-item">
               <div className="summary-info">
@@ -258,14 +347,16 @@ function App() {
   )
 
   // Dashboard Shipments Summary Component
-  const DashboardShipmentsSummary = ({ shipments, onViewAll }) => (
+  const DashboardShipmentsSummary = ({ shipments, onViewAll, isLoading }) => (
     <div className="card">
       <div className="card-header">
         <h2>Recent Shipments</h2>
         <button className="view-all-btn" onClick={onViewAll}>View All</button>
       </div>
       <div className="summary-content">
-        {shipments && shipments.length > 0 ? (
+        {isLoading ? (
+          <div className="loading-message">Loading shipments...</div>
+        ) : shipments && shipments.length > 0 ? (
           shipments.slice(0, 3).map(shipment => (
             <div key={shipment.id} className="summary-item">
               <div className="summary-info">
@@ -295,34 +386,65 @@ function App() {
         createNewShipment={createNewShipment}
         creatActiveJob={creatActiveJob}
         onLogout={handleLogout}
+        user={user}
       />
       
+      {error && (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+      
       <div className="stats-grid">
-        {statsData.map(stat => (
-          <StatCard 
-            key={stat.id}
-            label={stat.label}
-            value={stat.value}
-            iconType={stat.icon}
-            id={stat.id}
-            onClick={() => navigate(stat.path)}
-          />
-        ))}
+        {isStatsLoading ? (
+          <div className="loading-stats">Loading statistics...</div>
+        ) : (
+          statsData.map(stat => (
+            <StatCard 
+              key={stat.id}
+              label={stat.label}
+              value={stat.value}
+              iconType={stat.icon}
+              id={stat.id}
+              onClick={() => navigate(stat.path)}
+            />
+          ))
+        )}
       </div>
 
       <div className="dashboard-summary-grid">
         <DashboardJobsSummary 
           jobs={dashboardJobsData} 
           onViewAll={() => navigate('/job-orders')}
+          isLoading={isJobsLoading}
         />
 
         <DashboardShipmentsSummary 
           shipments={dashboardShipmentsData} 
           onViewAll={() => navigate('/new-shipment')}
+          isLoading={isShipmentsLoading}
         />
       </div>
     </>
   )
+
+  // Protected Route Component
+  const ProtectedRoute = ({ children }) => {
+    if (isLoading) {
+      return (
+        <div className="loading-container">
+          <div>Loading...</div>
+        </div>
+      )
+    }
+    
+    if (!isAuthenticated) {
+      return <Navigate to="/login" replace />
+    }
+    
+    return children
+  }
 
   // Placeholder components for other routes
   const ShipmentsPage = () => (
@@ -360,25 +482,25 @@ function App() {
     </div>
   )
   
-  const ProtectedRoute = ({ children }) => {
-    if (!isAuthenticated) {
-      return <Navigate to="/login" replace />
-    }
-    return children
-  }
-
   // Show loading state while checking authentication
   if (isLoading) {
     return (
       <div className="loading-container">
-        <div>Loading...</div>
+        <div className="loading-spinner"></div>
+        <div>Loading Application...</div>
       </div>
     )
   }
 
   return (
     <div className="dashboard-container">
-      {isAuthenticated && <Sidebar mobileMenuOpen={mobileMenuOpen} toggleMobileMenu={toggleMobileMenu} />}
+      {isAuthenticated && (
+        <Sidebar 
+          mobileMenuOpen={mobileMenuOpen} 
+          toggleMobileMenu={toggleMobileMenu} 
+          onLogout={handleLogout}
+        />
+      )}
       <main className="main-content">
         <Routes>
           <Route 
@@ -392,7 +514,6 @@ function App() {
             } 
           />
          
-
           <Route 
             path="/" 
             element={
@@ -408,7 +529,8 @@ function App() {
               </ProtectedRoute>
             } 
           />
-            <Route 
+          
+          <Route 
             path="/email-archive" 
             element={
               <ProtectedRoute>
@@ -486,6 +608,18 @@ function App() {
               <ProtectedRoute>
                 <MessagesPage />
               </ProtectedRoute>
+            } 
+          />
+
+          {/* 404 Fallback Route */}
+          <Route 
+            path="*" 
+            element={
+              <div className="page-container">
+                <h1>404 - Page Not Found</h1>
+                <p>The page you're looking for doesn't exist.</p>
+                <button onClick={() => navigate('/dashboard')}>Go to Dashboard</button>
+              </div>
             } 
           />
         </Routes>

@@ -168,6 +168,21 @@
   background-color: #f5f5f5;
 }
 
+.logout-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  color: #dc2626;
+  font-weight: 500;
+}
+
+.logout-btn:hover {
+  background-color: #fef2f2;
+  color: #b91c1c;
+}
+
 .nav-icon {
   width: 20px;
   height: 20px;

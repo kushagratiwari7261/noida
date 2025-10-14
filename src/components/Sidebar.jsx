@@ -4,7 +4,7 @@ import sealLogo from '../assets/seal.png';
 
 
 
-const Sidebar = ({ mobileMenuOpen, toggleMobileMenu }) => {
+const Sidebar = ({ mobileMenuOpen, toggleMobileMenu, onLogout }) => {
   return (
     <>
       {/* Mobile Header */}
@@ -98,14 +98,19 @@ const Sidebar = ({ mobileMenuOpen, toggleMobileMenu }) => {
             <svg className="nav-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-6h2v6zm0-8h-2V7h2v4z"/>
             </svg>
-            Job Order 
+            Job Order
           </Link>
-        
-        </nav>
-        
-        
 
+          <button onClick={onLogout} className="nav-link logout-btn">
+            <svg className="nav-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.59L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>
+            </svg>
+            Logout
+          </button>
 
+       </nav>
+        
+      
 
         <div className="demo-badge">
           <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
