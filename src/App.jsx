@@ -12,8 +12,8 @@ import NewShipments from './components/NewShipments'
 import DSRPage from './components/DSRPage'
 import EmailArchive from './components/App1.jsx'
 import { supabase } from './lib/supabaseClient'
-import ForgotPassword from './components/ForgotPassword';
-
+import ForgotPassword from './components/ForgotPassword'
+import ResetPassword from './components/ResetPassword'
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -44,21 +44,21 @@ function App() {
         } else if (session) {
           setIsAuthenticated(true)
           setUser(session.user)
-          // Redirect to dashboard if on login page
-          if (window.location.pathname === '/login') {
+          // Redirect to dashboard if on auth pages
+          if (window.location.pathname === '/login' || window.location.pathname === '/forgot-password' || window.location.pathname === '/reset-password') {
             navigate('/dashboard', { replace: true })
           }
         } else {
           setIsAuthenticated(false)
-          // Redirect to login if not authenticated and trying to access protected routes
-          if (window.location.pathname !== '/login') {
+          // Don't redirect if we're already on auth pages
+          if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
             navigate('/login', { replace: true })
           }
         }
       } catch (error) {
         console.error('Auth check error:', error)
         setIsAuthenticated(false)
-        if (window.location.pathname !== '/login') {
+        if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
           navigate('/login', { replace: true })
         }
       } finally {
@@ -76,13 +76,14 @@ function App() {
         if (session) {
           setIsAuthenticated(true)
           setUser(session.user)
-          if (window.location.pathname === '/login') {
+          if (window.location.pathname === '/login' || window.location.pathname === '/forgot-password' || window.location.pathname === '/reset-password') {
             navigate('/dashboard', { replace: true })
           }
         } else {
           setIsAuthenticated(false)
           setUser(null)
-          if (window.location.pathname !== '/login') {
+          // Don't redirect if we're already on auth pages
+          if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
             navigate('/login', { replace: true })
           }
         }
@@ -114,23 +115,52 @@ function App() {
       setError('Failed to load dashboard data. Please try refreshing the page.')
     }
   }
+
+  // Forgot Password function
   const handleForgotPassword = async (email) => {
-  try {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
+    try {
+      console.log('Sending password reset email to:', email);
+      
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
 
-    if (error) {
-      return { success: false, error: error.message };
+      if (error) {
+        console.error('Password reset error:', error);
+        return { success: false, error: error.message };
+      }
+
+      console.log('Password reset email sent successfully');
+      return { success: true };
+    } catch (error) {
+      console.error('Unexpected error in password reset:', error);
+      return { success: false, error: 'Failed to send reset email. Please try again.' };
     }
+  };
 
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: 'Failed to send reset email. Please try again.' };
-  }
-};
+  // Reset Password function
+  const handleResetPassword = async (password) => {
+    try {
+      console.log('Updating user password...');
+      
+      const { error } = await supabase.auth.updateUser({
+        password: password
+      });
 
-  // UPDATED: Supabase Login function
+      if (error) {
+        console.error('Password update error:', error);
+        return { success: false, error: error.message };
+      }
+
+      console.log('Password updated successfully');
+      return { success: true };
+    } catch (error) {
+      console.error('Unexpected error in password update:', error);
+      return { success: false, error: 'Failed to update password. Please try again.' };
+    }
+  };
+
+  // Supabase Login function
   const handleLogin = async (email, password) => {
     try {
       setIsLoggingIn(true);
@@ -153,7 +183,6 @@ function App() {
 
       if (data.session) {
         console.log('Login successful:', data.user);
-        // The auth state change listener will handle the redirect and state update
         return { success: true };
       } else {
         return { 
@@ -318,14 +347,13 @@ function App() {
     navigate('/job-orders')
   }, [navigate])
 
-  // UPDATED: Supabase Logout function
+  // Supabase Logout function
   const handleLogout = useCallback(async () => {
     try {
       const { error } = await supabase.auth.signOut()
       if (error) {
         console.error('Logout error:', error)
       }
-      // The auth state change listener will handle the state update and redirect
     } catch (error) {
       console.error('Logout error:', error)
     }
@@ -456,7 +484,9 @@ function App() {
       )
     }
     
-    if (!isAuthenticated) {
+    // Allow access to auth pages without authentication
+    const authPages = ['/login', '/forgot-password', '/reset-password'];
+    if (!isAuthenticated && !authPages.includes(window.location.pathname)) {
       return <Navigate to="/login" replace />
     }
     
@@ -538,24 +568,38 @@ function App() {
             } 
           />
 
-          <Route 
-            path="/dashboard" 
+          {/* Forgot Password Route */}
+          <Route
+            path="/forgot-password"
+            element={
+              isAuthenticated ? (
+                <Navigate to="/dashboard" replace />
+              ) : (
+                <ForgotPassword onResetPassword={handleForgotPassword} />
+              )
+            }
+          />
+
+          {/* Reset Password Route */}
+          <Route
+            path="/reset-password"
+            element={
+              isAuthenticated ? (
+                <Navigate to="/dashboard" replace />
+              ) : (
+                <ResetPassword onResetPassword={handleResetPassword} />
+              )
+            }
+          />
+
+          <Route
+            path="/dashboard"
             element={
               <ProtectedRoute>
                 <Dashboard />
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-  path="/forgot-password" 
-  element={
-    isAuthenticated ? (
-      <Navigate to="/dashboard" replace />
-    ) : (
-      <ForgotPassword onForgotPassword={handleForgotPassword} />
-    )
-  } 
-/>
           
           <Route 
             path="/email-archive" 

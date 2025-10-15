@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import './inde.css'
 import sealLogo from './seal.png';
 
+
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
