@@ -12,6 +12,8 @@ import NewShipments from './components/NewShipments'
 import DSRPage from './components/DSRPage'
 import EmailArchive from './components/App1.jsx'
 import { supabase } from './lib/supabaseClient'
+import ForgotPassword from './components/ForgotPassword';
+
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -112,6 +114,21 @@ function App() {
       setError('Failed to load dashboard data. Please try refreshing the page.')
     }
   }
+  const handleForgotPassword = async (email) => {
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+
+    if (error) {
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: 'Failed to send reset email. Please try again.' };
+  }
+};
 
   // UPDATED: Supabase Login function
   const handleLogin = async (email, password) => {
@@ -529,6 +546,16 @@ function App() {
               </ProtectedRoute>
             } 
           />
+          <Route 
+  path="/forgot-password" 
+  element={
+    isAuthenticated ? (
+      <Navigate to="/dashboard" replace />
+    ) : (
+      <ForgotPassword onForgotPassword={handleForgotPassword} />
+    )
+  } 
+/>
           
           <Route 
             path="/email-archive" 
