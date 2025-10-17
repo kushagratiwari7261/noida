@@ -31,68 +31,153 @@ function App() {
   
   const navigate = useNavigate()
 
-  // Check authentication state with Supabase
+  // Enhanced local cleanup function
+  const performLocalCleanup = async () => {
+    try {
+      // Clear all Supabase-related storage
+      const storageKeys = Object.keys(localStorage);
+      storageKeys.forEach(key => {
+        if (key.includes('supabase') || key.includes('sb-')) {
+          localStorage.removeItem(key);
+        }
+      });
+      
+      // Also clear sessionStorage
+      const sessionKeys = Object.keys(sessionStorage);
+      sessionKeys.forEach(key => {
+        if (key.includes('supabase') || key.includes('sb-')) {
+          sessionStorage.removeItem(key);
+        }
+      });
+      
+      console.log('Local storage cleanup completed');
+    } catch (cleanupError) {
+      console.warn('Local cleanup error:', cleanupError);
+    }
+  };
+
+  // Enhanced authentication state management
   useEffect(() => {
-    // Get initial session
     const getInitialSession = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession()
+        setIsLoading(true);
+        
+        const { data: { session }, error } = await supabase.auth.getSession();
         
         if (error) {
-          console.error('Error getting session:', error)
-          setIsAuthenticated(false)
-        } else if (session) {
-          setIsAuthenticated(true)
-          setUser(session.user)
-          // Redirect to dashboard if on auth pages
-          if (window.location.pathname === '/login' || window.location.pathname === '/forgot-password' || window.location.pathname === '/reset-password') {
-            navigate('/dashboard', { replace: true })
+          console.error('Session error:', error);
+          await performLocalCleanup();
+          setIsAuthenticated(false);
+          if (!window.location.pathname.includes('/login') && 
+              !window.location.pathname.includes('/forgot-password') &&
+              !window.location.pathname.includes('/reset-password')) {
+            navigate('/login', { replace: true });
+          }
+          return;
+        }
+        
+        if (session?.user) {
+          // Validate session is not expired
+          const isExpired = session.expires_at ? new Date(session.expires_at * 1000) < new Date() : true;
+          
+          if (isExpired) {
+            console.log('Session expired, clearing...');
+            await performLocalCleanup();
+            setIsAuthenticated(false);
+            navigate('/login', { replace: true });
+          } else {
+            setIsAuthenticated(true);
+            setUser(session.user);
+            // Redirect from auth pages to dashboard
+            if (window.location.pathname === '/login' || 
+                window.location.pathname === '/forgot-password' || 
+                window.location.pathname === '/reset-password') {
+              navigate('/dashboard', { replace: true });
+            }
           }
         } else {
-          setIsAuthenticated(false)
-          // Don't redirect if we're already on auth pages
-          if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
-            navigate('/login', { replace: true })
+          setIsAuthenticated(false);
+          setUser(null);
+          // Only redirect to login if not on auth pages
+          if (!window.location.pathname.includes('/login') && 
+              !window.location.pathname.includes('/forgot-password') &&
+              !window.location.pathname.includes('/reset-password')) {
+            navigate('/login', { replace: true });
           }
         }
       } catch (error) {
-        console.error('Auth check error:', error)
-        setIsAuthenticated(false)
-        if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
-          navigate('/login', { replace: true })
-        }
+        console.error('Auth initialization error:', error);
+        await performLocalCleanup();
+        setIsAuthenticated(false);
+        navigate('/login', { replace: true });
       } finally {
-        setIsLoading(false)
+        setIsLoading(false);
       }
-    }
+    };
 
-    getInitialSession()
+    getInitialSession();
 
-    // Listen for auth state changes
+    // Enhanced auth state change listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('Auth state change:', event, session)
+        console.log('Auth state change:', event, session);
         
-        if (session) {
-          setIsAuthenticated(true)
-          setUser(session.user)
-          if (window.location.pathname === '/login' || window.location.pathname === '/forgot-password' || window.location.pathname === '/reset-password') {
-            navigate('/dashboard', { replace: true })
+        try {
+          switch (event) {
+            case 'SIGNED_IN':
+              if (session?.user) {
+                setIsAuthenticated(true);
+                setUser(session.user);
+                if (window.location.pathname === '/login' || 
+                    window.location.pathname === '/forgot-password' || 
+                    window.location.pathname === '/reset-password') {
+                  navigate('/dashboard', { replace: true });
+                }
+              }
+              break;
+              
+            case 'SIGNED_OUT':
+              await performLocalCleanup();
+              setIsAuthenticated(false);
+              setUser(null);
+              if (!window.location.pathname.includes('/login') && 
+                  !window.location.pathname.includes('/forgot-password') &&
+                  !window.location.pathname.includes('/reset-password')) {
+                navigate('/login', { replace: true });
+              }
+              break;
+              
+            case 'TOKEN_REFRESHED':
+              if (session?.user) {
+                setIsAuthenticated(true);
+                setUser(session.user);
+              }
+              break;
+              
+            case 'USER_UPDATED':
+              if (session?.user) {
+                setUser(session.user);
+              }
+              break;
+              
+            default:
+              console.log('Unhandled auth event:', event);
           }
-        } else {
-          setIsAuthenticated(false)
-          setUser(null)
-          // Don't redirect if we're already on auth pages
-          if (window.location.pathname !== '/login' && window.location.pathname !== '/forgot-password' && window.location.pathname !== '/reset-password') {
-            navigate('/login', { replace: true })
-          }
+        } catch (error) {
+          console.error('Auth state change error:', error);
+          // Fallback to safe state
+          await performLocalCleanup();
+          setIsAuthenticated(false);
+          setUser(null);
+          navigate('/login', { replace: true });
+        } finally {
+          setIsLoading(false);
         }
-        setIsLoading(false)
       }
-    )
+    );
 
-    return () => subscription.unsubscribe()
-  }, [navigate])
+    return () => subscription.unsubscribe();
+  }, [navigate]);
 
   // Fetch data when authenticated
   useEffect(() => {
@@ -201,6 +286,55 @@ function App() {
       setIsLoggingIn(false);
     }
   }
+
+  // Enhanced Logout function
+  const handleLogout = useCallback(async () => {
+    try {
+      console.log('Starting logout process...');
+      
+      // First, check if we have a valid session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.log('Session check error:', sessionError);
+        // Continue with cleanup anyway
+      }
+      
+      if (!session) {
+        console.log('No active session found, performing local cleanup');
+      } else {
+        console.log('Active session found, attempting Supabase logout');
+        // Attempt Supabase logout
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          console.warn('Supabase logout failed:', error);
+          // Continue with cleanup anyway
+        } else {
+          console.log('Supabase logout successful');
+        }
+      }
+      
+      // Always perform local cleanup
+      await performLocalCleanup();
+      
+      // Update state and redirect
+      setIsAuthenticated(false);
+      setUser(null);
+      
+      // Navigate to login page
+      navigate('/login', { replace: true });
+      
+      console.log('Logout process completed');
+      
+    } catch (error) {
+      console.error('Unexpected error during logout:', error);
+      // Fallback: ensure user is logged out locally
+      await performLocalCleanup();
+      setIsAuthenticated(false);
+      setUser(null);
+      navigate('/login', { replace: true });
+    }
+  }, [navigate]);
 
   // Fetch stats data from Supabase
   const fetchStatsData = async () => {
@@ -346,18 +480,6 @@ function App() {
   const creatActiveJob = useCallback(() => {
     navigate('/job-orders')
   }, [navigate])
-
-  // Supabase Logout function
-  const handleLogout = useCallback(async () => {
-    try {
-      const { error } = await supabase.auth.signOut()
-      if (error) {
-        console.error('Logout error:', error)
-      }
-    } catch (error) {
-      console.error('Logout error:', error)
-    }
-  }, [])
 
   // Dashboard Job Summary Component
   const DashboardJobsSummary = ({ jobs, onViewAll, isLoading }) => (
