@@ -103,12 +103,7 @@ const Sidebar = ({ mobileMenuOpen, toggleMobileMenu, onLogout }) => {
           </button>
         </nav>
 
-        <div className="demo-badge">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
-            <path d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l-2 3v1h8v-1l-2-3h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 12H3V4h18v10z"/>
-          </svg>
-          <span className="demo-badge-text">Demo Mode</span>
-        </div>
+        
       </aside>
     </>
   )
