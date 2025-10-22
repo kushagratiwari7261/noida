@@ -314,7 +314,7 @@ function App() {
     }
   };
 
-  // Enhanced load emails function
+  // Enhanced load emails function - FIXED to load from Supabase first
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -326,7 +326,7 @@ function App() {
       if (forceRefresh) {
         try {
           const headers = await getAuthHeaders();
-          await fetch(`${API_BASE}/api/clear-cache`, { 
+          await fetch(`${API_BASE}/api/clear-cache`, {
             method: 'POST',
             headers: headers
           });
@@ -336,6 +336,7 @@ function App() {
         }
       }
 
+      // Load from Supabase database first (this should include all previously uploaded emails)
       const queries = [
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
@@ -351,9 +352,9 @@ function App() {
 
       const data = await handleApiError(response, 'Failed to load emails');
       console.log('📧 Backend response:', data);
-      
+
       let emailsToProcess = [];
-      
+
       if (data.emails && Array.isArray(data.emails)) {
         emailsToProcess = data.emails;
       } else if (Array.isArray(data)) {
@@ -363,21 +364,21 @@ function App() {
         setEmails([]);
         return;
       }
-      
-      console.log('📧 Loaded emails:', emailsToProcess.length);
-      
+
+      console.log('📧 Loaded emails from database:', emailsToProcess.length);
+
       const processedEmails = emailsToProcess.map(processEmailData);
-      
+
       // Sort emails by date to ensure latest first
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
         return dateB - dateA;
       });
-      
+
       setEmails(sortedEmails);
       console.log('✅ Emails set in state:', sortedEmails.length);
-      
+
     } catch (err) {
       console.error('❌ Fetch error:', err);
       setEmails([]);
