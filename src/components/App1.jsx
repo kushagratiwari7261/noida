@@ -1,10 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App1.css';
 import { supabase } from '../lib/supabaseClient';
-
-// Constants
-const API_BASE = '';
-const DEBOUNCE_DELAY = 500;
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -21,14 +17,11 @@ function App() {
   const [user, setUser] = useState(null);
   const [loadAllProgress, setLoadAllProgress] = useState(null);
   const [searching, setSearching] = useState(false);
-  const [loadAllMode, setLoadAllMode] = useState(false);
 
-  // Refs for cleanup
-  const abortControllerRef = useRef(null);
-  const searchTimeoutRef = useRef(null);
+  const API_BASE = '';
 
   // Enhanced authentication with better error handling
-  const getAuthHeaders = useCallback(async () => {
+  const getAuthHeaders = async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error || !session) {
@@ -43,10 +36,10 @@ function App() {
       console.error('❌ Authentication error:', error);
       throw new Error('Authentication failed');
     }
-  }, []);
+  };
 
   // Enhanced API error handler
-  const handleApiError = useCallback(async (response, defaultMessage = 'API request failed') => {
+  const handleApiError = async (response, defaultMessage = 'API request failed') => {
     if (response.status === 401) {
       setError('Authentication expired. Please log in again.');
       throw new Error('Authentication expired');
@@ -65,7 +58,7 @@ function App() {
     }
     
     return response.json();
-  }, []);
+  };
 
   // Get user info on component mount
   useEffect(() => {
@@ -83,8 +76,109 @@ function App() {
     getUser();
   }, []);
 
+  // NEW: Enhanced search function that searches ALL emails using the new endpoint
+  const searchAllEmails = async (searchTerm) => {
+    if (searching) return;
+    
+    setSearching(true);
+    setError(null);
+
+    try {
+      console.log(`🔍 Searching ALL emails for: "${searchTerm}"`);
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/search-emails`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          search: searchTerm,
+          limit: 10000
+        })
+      });
+
+      const result = await handleApiError(response, 'Failed to search emails');
+      console.log('🔍 Search result:', result);
+      
+      if (result.success) {
+        const processedEmails = result.data.emails.map(processEmailData);
+        
+        // Sort emails by date
+        const sortedEmails = processedEmails.sort((a, b) => {
+          const dateA = new Date(a.date || 0);
+          const dateB = new Date(b.date || 0);
+          return dateB - dateA;
+        });
+        
+        setEmails(sortedEmails);
+        console.log(`✅ Search completed: Found ${sortedEmails.length} emails for "${searchTerm}"`);
+      } else {
+        throw new Error(result.error || 'Search failed');
+      }
+    } catch (err) {
+      console.error('❌ Search error:', err);
+      // Fallback to regular search if the search endpoint is not available
+      console.log('🔄 Falling back to regular search...');
+      await loadEmails(true, false);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // NEW: Load ALL emails function - FIXED
+  const loadAllEmails = async () => {
+    if (fetching) return;
+
+    const confirmed = window.confirm(
+      `🚀 LOAD ALL EMAILS\n\nThis will load ALL emails from your inbox. This may take several minutes for large inboxes.\n\n` +
+      `• All emails will be processed and saved to the database\n` +
+      `• Duplicates will be automatically skipped\n` +
+      `• Progress will be shown during the process\n\n` +
+      `Are you sure you want to continue?`
+    );
+
+    if (!confirmed) return;
+
+    setFetching(true);
+    setFetchStatus('fetching');
+    setLoadAllProgress({ processed: 0, duplicates: 0, totalInInbox: 0, userEmail: user?.email });
+    setError(null);
+
+    try {
+      console.log('🚀 Starting load all emails...');
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/load-all-emails`, {
+        method: 'POST',
+        headers: headers
+      });
+
+      const result = await handleApiError(response, 'Failed to load all emails');
+      console.log('🚀 Load all result:', result);
+      
+      if (result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        setLoadAllProgress(result.data);
+        
+        // Refresh the email list to show newly loaded emails
+        await loadEmails(false, true);
+        
+        console.log('✅ Load all completed successfully');
+      } else {
+        throw new Error(result.error || 'Failed to load all emails');
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Load all failed:', err);
+    } finally {
+      setFetching(false);
+      setTimeout(() => setLoadAllProgress(null), 10000);
+    }
+  };
+
   // Enhanced attachment URL processor
-  const processAttachmentUrl = useCallback((attachment) => {
+  const processAttachmentUrl = (attachment) => {
     const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
     
     if (!url) {
@@ -100,10 +194,10 @@ function App() {
     }
 
     return processedUrl;
-  }, []);
+  };
 
   // Enhanced process email data for new server structure
-  const processEmailData = useCallback((email) => {
+  const processEmailData = (email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
       _id: email._id || email.id || email.messageId || email.message_id,
@@ -174,267 +268,10 @@ function App() {
     }
 
     return processedEmail;
-  }, [processAttachmentUrl]);
-
-  // Enhanced load emails function
-  const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
-    if (showLoading) setLoading(true);
-    setError(null);
-
-    // Cancel previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-
-    try {
-      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
-
-      // Clear cache first if force refresh
-      if (forceRefresh) {
-        try {
-          const headers = await getAuthHeaders();
-          await fetch(`${API_BASE}/api/clear-cache`, { 
-            method: 'POST',
-            headers: headers,
-            signal: abortControllerRef.current.signal
-          });
-          console.log('🗑️ Cache cleared');
-        } catch (cacheErr) {
-          if (cacheErr.name !== 'AbortError') {
-            console.log('⚠️ Cache clear failed, continuing...');
-          }
-        }
-      }
-
-      const queries = [
-        `search=${encodeURIComponent(search)}`,
-        `sort=${sort}`,
-        `t=${Date.now()}`
-      ].join('&');
-
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
-        headers: headers,
-        signal: abortControllerRef.current.signal
-      });
-
-      const data = await handleApiError(response, 'Failed to load emails');
-      console.log('📧 Backend response:', data);
-      
-      let emailsToProcess = [];
-      
-      if (data.emails && Array.isArray(data.emails)) {
-        emailsToProcess = data.emails;
-      } else if (Array.isArray(data)) {
-        emailsToProcess = data;
-      } else {
-        console.log('❌ No emails found in response');
-        setEmails([]);
-        return;
-      }
-      
-      console.log('📧 Loaded emails:', emailsToProcess.length);
-      
-      const processedEmails = emailsToProcess.map(processEmailData);
-      
-      // Sort emails by date to ensure latest first
-      const sortedEmails = processedEmails.sort((a, b) => {
-        const dateA = new Date(a.date || 0);
-        const dateB = new Date(b.date || 0);
-        return dateB - dateA;
-      });
-      
-      setEmails(sortedEmails);
-      console.log('✅ Emails set in state:', sortedEmails.length);
-      
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('❌ Fetch error:', err);
-        setEmails([]);
-        setError(`Failed to load emails: ${err.message}`);
-      }
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  }, [search, sort, getAuthHeaders, handleApiError, processEmailData]);
-
-  // NEW: Enhanced search function that searches ALL emails using the new endpoint
-  const searchAllEmails = useCallback(async (searchTerm) => {
-    if (searching) return;
-    
-    setSearching(true);
-    setError(null);
-
-    // Cancel previous search
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-
-    try {
-      console.log(`🔍 Searching ALL emails for: "${searchTerm}"`);
-      
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/search-emails`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          search: searchTerm
-        }),
-        signal: abortControllerRef.current.signal
-      });
-
-      const result = await handleApiError(response, 'Failed to search emails');
-      console.log('🔍 Search result:', result);
-      
-      if (result.success) {
-        const processedEmails = result.data.emails.map(processEmailData);
-        
-        // Sort emails by date
-        const sortedEmails = processedEmails.sort((a, b) => {
-          const dateA = new Date(a.date || 0);
-          const dateB = new Date(b.date || 0);
-          return dateB - dateA;
-        });
-        
-        setEmails(sortedEmails);
-        console.log(`✅ Search completed: Found ${sortedEmails.length} emails for "${searchTerm}"`);
-      } else {
-        throw new Error(result.error || 'Search failed');
-      }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('❌ Search error:', err);
-        // Fallback to regular search if the search endpoint is not available
-        console.log('🔄 Falling back to regular search...');
-        await loadEmails(true, false);
-      }
-    } finally {
-      setSearching(false);
-    }
-  }, [searching, getAuthHeaders, handleApiError, processEmailData, loadEmails]);
-
-  // NEW: Load ALL emails from database (not IMAP)
-  const loadAllFromDatabase = useCallback(async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setLoadAllMode(true);
-    setError(null);
-
-    // Cancel previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-
-    try {
-      console.log('🚀 Loading ALL emails from database...');
-      
-      const queries = [
-        `load_all=true`,
-        `sort=${sort}`,
-        `t=${Date.now()}`
-      ].join('&');
-
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
-        headers: headers,
-        signal: abortControllerRef.current.signal
-      });
-
-      const data = await handleApiError(response, 'Failed to load all emails from database');
-      console.log('📧 Load all from database result:', data);
-      
-      const processedEmails = data.emails.map(processEmailData);
-      
-      // Sort emails by date
-      const sortedEmails = processedEmails.sort((a, b) => {
-        const dateA = new Date(a.date || 0);
-        const dateB = new Date(b.date || 0);
-        return dateB - dateA;
-      });
-      
-      setEmails(sortedEmails);
-      setLastFetchTime(new Date());
-      console.log(`✅ Load all from database completed: ${sortedEmails.length} emails loaded`);
-      
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('❌ Load all from database failed:', err);
-        setError(`Failed to load all emails: ${err.message}`);
-      }
-    } finally {
-      setFetching(false);
-      setLoadAllMode(false);
-    }
-  }, [fetching, sort, getAuthHeaders, handleApiError, processEmailData]);
-
-  // NEW: Load ALL emails from IMAP function - FIXED
-  const loadAllEmailsFromIMAP = useCallback(async () => {
-    if (fetching) return;
-
-    const confirmed = window.confirm(
-      `🚀 LOAD ALL EMAILS FROM INBOX\n\nThis will load ALL emails from your IMAP inbox. This may take several minutes for large inboxes.\n\n` +
-      `• All emails will be processed and saved to the database\n` +
-      `• Duplicates will be automatically skipped\n` +
-      `• Progress will be shown during the process\n\n` +
-      `Are you sure you want to continue?`
-    );
-
-    if (!confirmed) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setLoadAllProgress({ processed: 0, duplicates: 0, totalInInbox: 0, userEmail: user?.email });
-    setError(null);
-
-    // Cancel previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-
-    try {
-      console.log('🚀 Starting load all emails from IMAP...');
-      
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/load-all-emails`, {
-        method: 'POST',
-        headers: headers,
-        signal: abortControllerRef.current.signal
-      });
-
-      const result = await handleApiError(response, 'Failed to load all emails');
-      console.log('🚀 Load all result:', result);
-      
-      if (result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        setLoadAllProgress(result.data);
-        
-        // Refresh the email list to show newly loaded emails
-        await loadAllFromDatabase();
-        
-        console.log('✅ Load all from IMAP completed successfully');
-      } else {
-        throw new Error(result.error || 'Failed to load all emails');
-      }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        setFetchStatus('error');
-        setError(err.message);
-        console.error('❌ Load all from IMAP failed:', err);
-      }
-    } finally {
-      setFetching(false);
-      setTimeout(() => setLoadAllProgress(null), 10000);
-    }
-  }, [fetching, user, getAuthHeaders, handleApiError, loadAllFromDatabase]);
+  };
 
   // Enhanced delete email function
-  const deleteEmail = useCallback(async (emailId, messageId) => {
+  const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
       setError('Cannot delete email: Missing identifier');
@@ -475,21 +312,88 @@ function App() {
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
-  }, [getAuthHeaders, handleApiError]);
+  };
+
+  // Enhanced load emails function
+  const loadEmails = async (showLoading = true, forceRefresh = false) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    try {
+      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+
+      // Clear cache first if force refresh
+      if (forceRefresh) {
+        try {
+          const headers = await getAuthHeaders();
+          await fetch(`${API_BASE}/api/clear-cache`, { 
+            method: 'POST',
+            headers: headers
+          });
+          console.log('🗑️ Cache cleared');
+        } catch (cacheErr) {
+          console.log('⚠️ Cache clear failed, continuing...');
+        }
+      }
+
+      const queries = [
+        `search=${encodeURIComponent(search)}`,
+        `sort=${sort}`,
+        `page=1`,
+        `limit=10000`,
+        `t=${Date.now()}`
+      ].join('&');
+
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
+        headers: headers
+      });
+
+      const data = await handleApiError(response, 'Failed to load emails');
+      console.log('📧 Backend response:', data);
+      
+      let emailsToProcess = [];
+      
+      if (data.emails && Array.isArray(data.emails)) {
+        emailsToProcess = data.emails;
+      } else if (Array.isArray(data)) {
+        emailsToProcess = data;
+      } else {
+        console.log('❌ No emails found in response');
+        setEmails([]);
+        return;
+      }
+      
+      console.log('📧 Loaded emails:', emailsToProcess.length);
+      
+      const processedEmails = emailsToProcess.map(processEmailData);
+      
+      // Sort emails by date to ensure latest first
+      const sortedEmails = processedEmails.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        return dateB - dateA;
+      });
+      
+      setEmails(sortedEmails);
+      console.log('✅ Emails set in state:', sortedEmails.length);
+      
+    } catch (err) {
+      console.error('❌ Fetch error:', err);
+      setEmails([]);
+      setError(`Failed to load emails: ${err.message}`);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
 
   // Enhanced fetch function using the new unified endpoint
-  const fetchEmails = useCallback(async (mode = 'latest') => {
+  const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-
-    // Cancel previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
 
     try {
       console.log(`🔄 Starting ${mode} fetch...`);
@@ -501,8 +405,7 @@ function App() {
         body: JSON.stringify({
           mode: mode,
           count: mode === 'force' ? 20 : 30
-        }),
-        signal: abortControllerRef.current.signal
+        })
       });
 
       const result = await handleApiError(response, `Failed to ${mode} fetch emails`);
@@ -545,22 +448,21 @@ function App() {
         throw new Error(result.error || `Failed to ${mode} fetch emails`);
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        setFetchStatus('error');
-        setError(err.message);
-        console.error(`❌ ${mode} fetch failed:`, err);
-      }
+      setFetchStatus('error');
+      setError(err.message);
+      console.error(`❌ ${mode} fetch failed:`, err);
     } finally {
       setFetching(false);
     }
-  }, [fetching, getAuthHeaders, handleApiError, processEmailData, loadEmails]);
+  };
 
   // Individual fetch functions
-  const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
-  const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
+  const fetchNewEmails = () => fetchEmails('latest');
+  const forceFetchEmails = () => fetchEmails('force');
+  const simpleFetchEmails = () => fetchEmails('simple');
 
   // Refresh emails - force reload from database
-  const forceRefreshEmails = useCallback(async () => {
+  const forceRefreshEmails = async () => {
     if (fetching) return;
 
     setFetching(true);
@@ -581,21 +483,15 @@ function App() {
     } finally {
       setFetching(false);
     }
-  }, [fetching, loadEmails]);
+  };
 
   // Fast fetch from Supabase only
-  const fastFetchEmails = useCallback(async () => {
+  const fastFetchEmails = async () => {
     if (fetching) return;
 
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
-
-    // Cancel previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
 
     try {
       console.log('🚀 Fast fetching emails from Supabase...');
@@ -607,8 +503,7 @@ function App() {
         body: JSON.stringify({
           mode: 'fast',
           count: 100
-        }),
-        signal: abortControllerRef.current.signal
+        })
       });
 
       const result = await handleApiError(response, 'Failed to fast fetch emails');
@@ -639,18 +534,16 @@ function App() {
         throw new Error(result.error || 'Failed to fast fetch emails');
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        setFetchStatus('error');
-        setError(err.message);
-        console.error('❌ Fast fetch failed:', err);
-      }
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Fast fetch failed:', err);
     } finally {
       setFetching(false);
     }
-  }, [fetching, getAuthHeaders, handleApiError, processEmailData]);
+  };
 
   // Enhanced download function
-  const downloadFile = useCallback(async (attachment, filename) => {
+  const downloadFile = async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', {
         filename,
@@ -707,10 +600,10 @@ function App() {
         alert(`Download failed: ${error.message}`);
       }
     }
-  }, []);
+  };
 
   // Enhanced file icon function
-  const getFileIcon = useCallback((mimeType, filename) => {
+  const getFileIcon = (mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
     const extension = filename?.split('.').pop()?.toLowerCase();
@@ -730,17 +623,17 @@ function App() {
     if (extension === 'js' || extension === 'html' || extension === 'css') return '💻';
     
     return '📎';
-  }, []);
+  };
 
-  const getFileSize = useCallback((bytes) => {
+  const getFileSize = (bytes) => {
     if (!bytes || bytes === 0) return 'Unknown size';
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
-  }, []);
+  };
 
   // Enhanced attachment rendering
-  const renderAttachment = useCallback((attachment, index, emailIndex) => {
+  const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
     const fileSize = getFileSize(attachment.size);
@@ -882,6 +775,34 @@ function App() {
           </div>
         )}
 
+        {/* PDF Preview */}
+        {isPDF && safeUrl && (
+          <div className={`pdf-preview ${isExpanded ? 'expanded' : ''}`}>
+            {isExpanded ? (
+              <div className="pdf-full-view">
+                <button 
+                  className="close-pdf-btn"
+                  onClick={() => toggleImageExpand(emailIndex, index)}
+                >
+                  ✕ Close PDF
+                </button>
+                <iframe
+                  src={safeUrl}
+                  title={filename}
+                  className="pdf-iframe"
+                  loading="lazy"
+                />
+              </div>
+            ) : (
+              <div className="pdf-thumbnail" onClick={() => toggleImageExpand(emailIndex, index)}>
+                <div className="pdf-icon">📄</div>
+                <span className="pdf-filename">{filename}</span>
+                <button className="view-pdf-btn">View PDF</button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* CSV File Preview */}
         {isCSV && safeUrl && (
           <div className="csv-preview">
@@ -915,18 +836,18 @@ function App() {
         )}
       </div>
     );
-  }, [expandedImages, getFileIcon, getFileSize, downloadFile]);
+  };
 
-  const toggleImageExpand = useCallback((emailIndex, attachmentIndex) => {
+  const toggleImageExpand = (emailIndex, attachmentIndex) => {
     const key = `${emailIndex}-${attachmentIndex}`;
     setExpandedImages(prev => ({
       ...prev,
       [key]: !prev[key]
     }));
-  }, []);
+  };
 
   // Enhanced EmailCard component
-  const EmailCard = useCallback(({ email, index }) => (
+  const EmailCard = ({ email, index }) => (
     <div className="email-card">
       {/* Delete Button - Top Right */}
       <div className="email-actions-top">
@@ -983,22 +904,17 @@ function App() {
         </div>
       )}
     </div>
-  ), [deleteEmail, deletingEmails, renderAttachment]);
+  );
 
   // Load emails when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     loadEmails(true, true);
-  }, [loadEmails]);
+  }, []);
 
   // Enhanced search handler - uses the new search endpoint for ALL emails
   useEffect(() => {
-    // Clear previous timeout
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-
-    searchTimeoutRef.current = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (search.trim().length > 0) {
         // Use the enhanced search for ALL emails when search term is provided
         searchAllEmails(search);
@@ -1006,14 +922,10 @@ function App() {
         // Use normal load when no search term
         loadEmails(true, false);
       }
-    }, DEBOUNCE_DELAY);
+    }, 500);
     
-    return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
-    };
-  }, [search, sort, searchAllEmails, loadEmails]);
+    return () => clearTimeout(timer);
+  }, [search, sort]);
 
   // Reset fetch status after 5 seconds
   useEffect(() => {
@@ -1024,18 +936,6 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [fetchStatus]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const getStatusMessage = () => {
     switch (fetchStatus) {
@@ -1100,24 +1000,14 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
-            {/* Load All Emails from Database Button */}
+            {/* Load All Emails Button */}
             <button 
-              onClick={loadAllFromDatabase} 
+              onClick={loadAllEmails} 
               disabled={fetching}
-              className="load-all-db-button"
-              title="Load ALL emails from database (fast)"
+              className="load-all-button"
+              title="Load ALL emails from your inbox (may take several minutes)"
             >
-              🚀 Load All from DB
-            </button>
-
-            {/* Load All Emails from IMAP Button */}
-            <button 
-              onClick={loadAllEmailsFromIMAP} 
-              disabled={fetching}
-              className="load-all-imap-button"
-              title="Load ALL emails from IMAP inbox (may take time)"
-            >
-              📥 Load All from IMAP
+              🚀 Load All
             </button>
 
             <button 
@@ -1183,7 +1073,7 @@ function App() {
         {loadAllProgress && (
           <div className="load-all-progress">
             <div className="progress-header">
-              <h4>🚀 Loading All Emails from IMAP</h4>
+              <h4>🚀 Loading All Emails</h4>
               <span className="progress-stats">
                 {loadAllProgress.processed} new • {loadAllProgress.duplicates} duplicates • {loadAllProgress.totalInInbox} total in inbox
               </span>
@@ -1233,16 +1123,9 @@ function App() {
           </div>
         )}
 
-        {/* Load All Mode Status */}
-        {loadAllMode && (
-          <div className="load-all-status">
-            🚀 Loading ALL emails from database...
-          </div>
-        )}
-
         {/* Email List */}
         <div className="email-content-area">
-          {loading && !searching && !loadAllMode && (
+          {loading && !searching && (
             <div className="loading-state">
               <div className="spinner"></div>
               <p>Loading emails...</p>
@@ -1255,15 +1138,8 @@ function App() {
               <p>Searching ALL emails...</p>
             </div>
           )}
-
-          {loadAllMode && (
-            <div className="loading-state">
-              <div className="spinner"></div>
-              <p>Loading ALL emails from database...</p>
-            </div>
-          )}
           
-          {!loading && !searching && !loadAllMode && emails.length === 0 && (
+          {!loading && !searching && emails.length === 0 && (
             <div className="empty-state">
               <p>📭 No emails found</p>
               <p>Try fetching emails from your inbox</p>
@@ -1271,14 +1147,14 @@ function App() {
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Smart Fetch
                 </button>
-                <button onClick={loadAllFromDatabase} className="load-all-db-button">
-                  🚀 Load All from DB
+                <button onClick={loadAllEmails} className="load-all-button">
+                  🚀 Load All Emails
                 </button>
               </div>
             </div>
           )}
 
-          {!loading && !searching && !loadAllMode && emails.length > 0 && (
+          {!loading && !searching && emails.length > 0 && (
             <div className="email-list">
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1297,7 +1173,6 @@ function App() {
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Searching: {searching ? 'Yes' : 'No'}</p>
-              <p>Load All Mode: {loadAllMode ? 'Yes' : 'No'}</p>
               <p>Search Term: "{search}"</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
