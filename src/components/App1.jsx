@@ -76,7 +76,7 @@ function App() {
     getUser();
   }, []);
 
-  // NEW: Enhanced search function that searches ALL emails
+  // NEW: Enhanced search function that searches ALL emails using the new endpoint
   const searchAllEmails = async (searchTerm) => {
     if (searching) return;
     
@@ -84,7 +84,7 @@ function App() {
     setError(null);
 
     try {
-      console.log(`🔍 Searching for: "${searchTerm}"`);
+      console.log(`🔍 Searching ALL emails for: "${searchTerm}"`);
       
       const headers = await getAuthHeaders();
       const response = await fetch(`${API_BASE}/api/search-emails`, {
@@ -116,7 +116,9 @@ function App() {
       }
     } catch (err) {
       console.error('❌ Search error:', err);
-      setError(`Search failed: ${err.message}`);
+      // Fallback to regular search if the search endpoint is not available
+      console.log('🔄 Falling back to regular search...');
+      await loadEmails(true, false);
     } finally {
       setSearching(false);
     }
@@ -191,12 +193,6 @@ function App() {
       processedUrl = `${window.location.origin}${processedUrl}`;
     }
 
-    console.log('🔗 Processed attachment URL:', {
-      original: url,
-      processed: processedUrl,
-      filename: attachment.filename
-    });
-
     return processedUrl;
   };
 
@@ -263,16 +259,6 @@ function App() {
           displayName: att.displayName || filename,
           originalData: att
         };
-
-        console.log('📎 Enhanced attachment processed:', {
-          filename: processedAtt.filename,
-          url: processedAtt.url,
-          type: processedAtt.type,
-          size: processedAtt.size,
-          isImage: processedAtt.isImage,
-          isPdf: processedAtt.isPdf,
-          isCSV: processedAtt.isCSV
-        });
 
         return processedAtt;
       }).filter(att => att.filename && att.url);
@@ -387,23 +373,6 @@ function App() {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
         return dateB - dateA;
-      });
-      
-      // Log attachment information
-      const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
-      console.log('📎 Total attachments found:', totalAttachments);
-      
-      sortedEmails.forEach((email, index) => {
-        if (email.attachments.length > 0) {
-          console.log(`Email ${index} attachments:`, email.attachments.map(att => ({
-            filename: att.filename,
-            url: att.url,
-            type: att.type,
-            isImage: att.isImage,
-            isCSV: att.isCSV,
-            size: att.size
-          })));
-        }
       });
       
       setEmails(sortedEmails);
@@ -834,24 +803,6 @@ function App() {
           </div>
         )}
 
-        {/* Text File Preview */}
-        {isText && safeUrl && !isCSV && (
-          <div className="text-preview">
-            <div className="text-preview-content">
-              <h5>Text File Preview:</h5>
-              <iframe
-                src={safeUrl}
-                title={filename}
-                className="text-iframe"
-                loading="lazy"
-              />
-              <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="full-view-link">
-                📄 Open full text
-              </a>
-            </div>
-          </div>
-        )}
-
         {/* CSV File Preview */}
         {isCSV && safeUrl && (
           <div className="csv-preview">
@@ -871,57 +822,6 @@ function App() {
                 <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="view-csv-link">
                   🔗 Open in new tab
                 </a>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Audio Preview */}
-        {isAudio && safeUrl && (
-          <div className="audio-preview">
-            <div className="audio-player">
-              <audio controls className="audio-element">
-                <source src={safeUrl} type={mimeType} />
-                Your browser does not support the audio element.
-              </audio>
-              <a href={safeUrl} download={filename} className="download-audio">
-                💾 Download Audio
-              </a>
-            </div>
-          </div>
-        )}
-
-        {/* Video Preview */}
-        {isVideo && safeUrl && (
-          <div className="video-preview">
-            <div className="video-player">
-              <video controls className="video-element" preload="metadata">
-                <source src={safeUrl} type={mimeType} />
-                Your browser does not support the video element.
-              </video>
-              <a href={safeUrl} download={filename} className="download-video">
-                💾 Download Video
-              </a>
-            </div>
-          </div>
-        )}
-
-        {/* Generic file info for non-previewable files */}
-        {!isImage && !isPDF && !isText && !isAudio && !isVideo && !isCSV && safeUrl && (
-          <div className="file-preview">
-            <div className="file-info-detailed">
-              <p><strong>Type:</strong> {mimeType || 'Unknown'}</p>
-              <p><strong>Size:</strong> {fileSize || 'Unknown'}</p>
-              <div className="file-actions">
-                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="direct-link">
-                  🔗 Open directly
-                </a>
-                <button 
-                  onClick={() => downloadFile(attachment, filename)}
-                  className="download-direct"
-                >
-                  💾 Download
-                </button>
               </div>
             </div>
           </div>
@@ -1012,7 +912,7 @@ function App() {
     loadEmails(true, true);
   }, []);
 
-  // Enhanced search handler - uses the new search endpoint
+  // Enhanced search handler - uses the new search endpoint for ALL emails
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search.trim().length > 0) {
@@ -1137,14 +1037,6 @@ function App() {
             </button>
 
             <button 
-              onClick={simpleFetchEmails} 
-              disabled={fetching}
-              className="simple-fetch-button"
-            >
-              📨 Simple Fetch
-            </button>
-
-            <button 
               onClick={forceRefreshEmails} 
               disabled={fetching}
               className="force-refresh-button"
@@ -1227,7 +1119,7 @@ function App() {
         {/* Search Status */}
         {searching && (
           <div className="search-status">
-            🔍 Searching for "{search}"...
+            🔍 Searching ALL emails for "{search}"...
           </div>
         )}
 
@@ -1243,7 +1135,7 @@ function App() {
           {searching && (
             <div className="loading-state">
               <div className="spinner"></div>
-              <p>Searching emails...</p>
+              <p>Searching ALL emails...</p>
             </div>
           )}
           
@@ -1295,21 +1187,6 @@ function App() {
                   <p>User: {loadAllProgress.userEmail}</p>
                 </div>
               )}
-              <div className="attachments-debug">
-                <h4>Attachments Debug:</h4>
-                {emails.slice(0, 3).map((email, idx) => (
-                  email.hasAttachments && (
-                    <div key={idx}>
-                      <p>Email {idx}: {email.attachmentsCount} attachments</p>
-                      {email.attachments.map((att, attIdx) => (
-                        <div key={attIdx} style={{marginLeft: '20px', fontSize: '12px'}}>
-                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'} - {att.isCSV ? '📋 CSV' : ''}
-                        </div>
-                      ))}
-                    </div>
-                  )
-                ))}
-              </div>
             </div>
           </details>
         </div>

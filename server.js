@@ -605,6 +605,123 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
 // ========== API ENDPOINTS ==========
 
+// NEW: Enhanced search endpoint for ALL emails
+app.post("/api/search-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search = "", limit = 10000 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    console.log(`🔍 Searching ALL emails for ${userEmail}: "${search}"`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        success: false,
+        error: "Supabase is not available" 
+      });
+    }
+
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId);
+
+    // Add search conditions
+    if (search && search.trim().length > 0) {
+      const searchTerm = `%${search.trim()}%`;
+      query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
+    }
+
+    // Get ALL matching emails without pagination for search
+    query = query.order('date', { ascending: false }).limit(limit);
+
+    const { data: emails, error, count } = await query;
+    
+    if (error) {
+      console.error("❌ Search query error:", error);
+      return res.status(500).json({ 
+        success: false,
+        error: "Failed to search emails",
+        details: error.message 
+      });
+    }
+
+    // Enhanced email data normalization
+    const enhancedEmails = emails.map(email => {
+      let attachments = [];
+      try {
+        if (email.attachments && Array.isArray(email.attachments)) {
+          attachments = email.attachments.map(att => ({
+            id: att.id || `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            filename: att.filename || att.name || 'attachment',
+            originalFilename: att.originalFilename || att.filename || att.name || 'attachment',
+            name: att.name || att.filename || 'attachment',
+            displayName: att.displayName || att.filename || att.name || 'attachment',
+            url: att.url || att.publicUrl || att.downloadUrl || '',
+            publicUrl: att.publicUrl || att.url || att.downloadUrl || '',
+            downloadUrl: att.downloadUrl || att.url || att.publicUrl || '',
+            previewUrl: att.previewUrl || att.url || att.publicUrl || '',
+            contentType: att.contentType || att.type || att.mimeType || 'application/octet-stream',
+            type: att.type || att.contentType || att.mimeType || 'application/octet-stream',
+            mimeType: att.mimeType || att.contentType || att.type || 'application/octet-stream',
+            size: att.size || 0,
+            extension: att.extension || (att.filename ? att.filename.split('.').pop() : 'bin'),
+            path: att.path || '',
+            isImage: (att.contentType || att.type || '').startsWith('image/'),
+            isPdf: (att.contentType || att.type || '') === 'application/pdf',
+            isText: (att.contentType || att.type || '').startsWith('text/'),
+            isAudio: (att.contentType || att.type || '').startsWith('audio/'),
+            isVideo: (att.contentType || att.type || '').startsWith('video/'),
+            base64: att.base64 || false
+          }));
+        }
+      } catch (attError) {
+        console.error('❌ Error processing attachments for email:', email.message_id, attError);
+        attachments = [];
+      }
+
+      return {
+        id: email.message_id,
+        _id: email.message_id,
+        messageId: email.message_id,
+        subject: email.subject || '(No Subject)',
+        from: email.from_text || email.from || '',
+        from_text: email.from_text || email.from || '',
+        to: email.to_text || email.to || '',
+        to_text: email.to_text || email.to || '',
+        date: email.date || email.created_at || new Date(),
+        text: email.text_content || email.text || '',
+        text_content: email.text_content || email.text || '',
+        html: email.html_content || email.html || '',
+        html_content: email.html_content || email.html || '',
+        attachments: attachments,
+        hasAttachments: email.has_attachments || attachments.length > 0,
+        attachmentsCount: email.attachments_count || attachments.length,
+        read: email.read || false
+      };
+    });
+
+    console.log(`✅ Search completed: Found ${enhancedEmails.length} emails for "${search}"`);
+
+    res.json({
+      success: true,
+      data: {
+        emails: enhancedEmails,
+        total: count,
+        userEmail: userEmail,
+        searchTerm: search
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Search emails error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
 // FIXED: Load ALL emails endpoint with better error handling
 app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
   console.log(`🚀 Loading ALL emails for user: ${req.user.email}`);
@@ -802,49 +919,72 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// NEW: Enhanced search endpoint for ALL emails
-app.post("/api/search-emails", authenticateUser, async (req, res) => {
+// ✅ ENHANCED: Get emails for authenticated user only - FIXED search for ALL emails
+app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
-    const { search = "", limit = 10000 } = req.body;
+    const { search = "", sort = "date_desc", page = 1, limit = 50000 } = req.query;
     const userId = req.user.id;
     const userEmail = req.user.email;
+
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50000, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    // Create user-specific cache key
+    const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}`;
+    const cached = getFromCache(cacheKey);
     
-    console.log(`🔍 Searching emails for ${userEmail}: "${search}"`);
+    if (cached) {
+      console.log(`📦 Serving from cache for ${userEmail}`);
+      return res.json(cached);
+    }
 
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({ 
-        success: false,
         error: "Supabase is not available" 
       });
     }
 
-    let query = supabase
-      .from('emails')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId);
-
-    // Add search conditions
+    let query = supabase.from('emails').select('*', { count: 'exact' })
+      .eq('user_id', userId); // Only get this user's emails
+    
+    // Add search if provided
     if (search && search.trim().length > 0) {
       const searchTerm = `%${search.trim()}%`;
       query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
     }
-
-    // Get ALL matching emails without pagination for search
-    query = query.order('date', { ascending: false }).limit(limit);
-
+    
+    // Add sorting
+    switch (sort) {
+      case "date_asc":
+        query = query.order('date', { ascending: true });
+        break;
+      case "subject_asc":
+        query = query.order('subject', { ascending: true });
+        break;
+      case "subject_desc":
+        query = query.order('subject', { ascending: false });
+        break;
+      default: // date_desc
+        query = query.order('date', { ascending: false });
+    }
+    
+    // Add pagination
+    query = query.range(skip, skip + limitNum - 1);
+    
     const { data: emails, error, count } = await query;
     
     if (error) {
-      console.error("❌ Search query error:", error);
+      console.error("❌ Supabase query error:", error);
       return res.status(500).json({ 
-        success: false,
-        error: "Failed to search emails",
+        error: "Failed to fetch emails from Supabase",
         details: error.message 
       });
     }
 
-    // Enhanced email data normalization
+    // ENHANCED: Better email data normalization with fallbacks
     const enhancedEmails = emails.map(email => {
+      // Ensure attachments is always an array
       let attachments = [];
       try {
         if (email.attachments && Array.isArray(email.attachments)) {
@@ -898,23 +1038,28 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       };
     });
 
-    console.log(`✅ Search completed: Found ${enhancedEmails.length} emails for "${search}"`);
+    const hasMore = skip + enhancedEmails.length < count;
 
-    res.json({
-      success: true,
-      data: {
-        emails: enhancedEmails,
-        total: count,
-        userEmail: userEmail,
-        searchTerm: search
-      }
-    });
+    const response = {
+      emails: enhancedEmails,
+      total: count,
+      hasMore,
+      page: pageNum,
+      limit: limitNum,
+      userEmail: userEmail,
+      source: 'supabase'
+    };
+
+    setToCache(cacheKey, response);
+
+    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
+    res.json(response);
 
   } catch (error) {
-    console.error("❌ Search emails error:", error);
+    console.error("❌ Emails fetch error:", error);
     res.status(500).json({ 
-      success: false,
-      error: error.message 
+      error: "Failed to fetch emails",
+      details: error.message 
     });
   }
 });
@@ -1376,151 +1521,6 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: error.message 
-    });
-  }
-});
-
-// ✅ UPDATED: Get emails for authenticated user only - ENHANCED with search
-app.get("/api/emails", authenticateUser, async (req, res) => {
-  try {
-    const { search = "", sort = "date_desc", page = 1, limit = 10000 } = req.query; // Increased limit
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50000, Math.max(1, parseInt(limit))); // Increased limit to 50000
-    const skip = (pageNum - 1) * limitNum;
-
-    // Create user-specific cache key
-    const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}`;
-    const cached = getFromCache(cacheKey);
-    
-    if (cached) {
-      console.log(`📦 Serving from cache for ${userEmail}`);
-      return res.json(cached);
-    }
-
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({ 
-        error: "Supabase is not available" 
-      });
-    }
-
-    let query = supabase.from('emails').select('*', { count: 'exact' })
-      .eq('user_id', userId); // Only get this user's emails
-    
-    // Add search if provided
-    if (search && search.trim().length > 0) {
-      const searchTerm = `%${search.trim()}%`;
-      query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
-    }
-    
-    // Add sorting
-    switch (sort) {
-      case "date_asc":
-        query = query.order('date', { ascending: true });
-        break;
-      case "subject_asc":
-        query = query.order('subject', { ascending: true });
-        break;
-      case "subject_desc":
-        query = query.order('subject', { ascending: false });
-        break;
-      default: // date_desc
-        query = query.order('date', { ascending: false });
-    }
-    
-    // Add pagination
-    query = query.range(skip, skip + limitNum - 1);
-    
-    const { data: emails, error, count } = await query;
-    
-    if (error) {
-      console.error("❌ Supabase query error:", error);
-      return res.status(500).json({ 
-        error: "Failed to fetch emails from Supabase",
-        details: error.message 
-      });
-    }
-
-    // ENHANCED: Better email data normalization with fallbacks
-    const enhancedEmails = emails.map(email => {
-      // Ensure attachments is always an array
-      let attachments = [];
-      try {
-        if (email.attachments && Array.isArray(email.attachments)) {
-          attachments = email.attachments.map(att => ({
-            id: att.id || `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            filename: att.filename || att.name || 'attachment',
-            originalFilename: att.originalFilename || att.filename || att.name || 'attachment',
-            name: att.name || att.filename || 'attachment',
-            displayName: att.displayName || att.filename || att.name || 'attachment',
-            url: att.url || att.publicUrl || att.downloadUrl || '',
-            publicUrl: att.publicUrl || att.url || att.downloadUrl || '',
-            downloadUrl: att.downloadUrl || att.url || att.publicUrl || '',
-            previewUrl: att.previewUrl || att.url || att.publicUrl || '',
-            contentType: att.contentType || att.type || att.mimeType || 'application/octet-stream',
-            type: att.type || att.contentType || att.mimeType || 'application/octet-stream',
-            mimeType: att.mimeType || att.contentType || att.type || 'application/octet-stream',
-            size: att.size || 0,
-            extension: att.extension || (att.filename ? att.filename.split('.').pop() : 'bin'),
-            path: att.path || '',
-            isImage: (att.contentType || att.type || '').startsWith('image/'),
-            isPdf: (att.contentType || att.type || '') === 'application/pdf',
-            isText: (att.contentType || att.type || '').startsWith('text/'),
-            isAudio: (att.contentType || att.type || '').startsWith('audio/'),
-            isVideo: (att.contentType || att.type || '').startsWith('video/'),
-            base64: att.base64 || false
-          }));
-        }
-      } catch (attError) {
-        console.error('❌ Error processing attachments for email:', email.message_id, attError);
-        attachments = [];
-      }
-
-      return {
-        id: email.message_id,
-        _id: email.message_id,
-        messageId: email.message_id,
-        subject: email.subject || '(No Subject)',
-        from: email.from_text || email.from || '',
-        from_text: email.from_text || email.from || '',
-        to: email.to_text || email.to || '',
-        to_text: email.to_text || email.to || '',
-        date: email.date || email.created_at || new Date(),
-        text: email.text_content || email.text || '',
-        text_content: email.text_content || email.text || '',
-        html: email.html_content || email.html || '',
-        html_content: email.html_content || email.html || '',
-        attachments: attachments,
-        hasAttachments: email.has_attachments || attachments.length > 0,
-        attachmentsCount: email.attachments_count || attachments.length,
-        read: email.read || false
-      };
-    });
-
-    const hasMore = skip + enhancedEmails.length < count;
-
-    const response = {
-      emails: enhancedEmails,
-      total: count,
-      hasMore,
-      page: pageNum,
-      limit: limitNum,
-      userEmail: userEmail,
-      source: 'supabase'
-    };
-
-    setToCache(cacheKey, response);
-
-    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
-    res.json(response);
-
-  } catch (error) {
-    console.error("❌ Emails fetch error:", error);
-    res.status(500).json({ 
-      error: "Failed to fetch emails",
-      details: error.message 
     });
   }
 });
