@@ -307,7 +307,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=100`,
+        `limit=10000`, // Increased limit to load more emails
         `t=${Date.now()}`
       ].join('&');
 

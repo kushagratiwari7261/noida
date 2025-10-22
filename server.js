@@ -1196,9 +1196,9 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     const { search = "", sort = "date_desc", page = 1, limit = 50 } = req.query;
     const userId = req.user.id;
     const userEmail = req.user.email;
-    
+
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(10000, Math.max(1, parseInt(limit))); // Increased limit to 10000
     const skip = (pageNum - 1) * limitNum;
 
     // Create user-specific cache key
