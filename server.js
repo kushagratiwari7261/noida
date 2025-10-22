@@ -605,21 +605,40 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
 // ========== API ENDPOINTS ==========
 
-// NEW: Load ALL emails endpoint
+// FIXED: Load ALL emails endpoint with better error handling
 app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
   console.log(`🚀 Loading ALL emails for user: ${req.user.email}`);
+  
+  let userImap;
   try {
     const userId = req.user.id;
     const userEmail = req.user.email;
     
-    const userImap = await imapManager.getUserConnection(userId, userEmail);
+    userImap = await imapManager.getUserConnection(userId, userEmail);
     
     userImap.openInbox(async function (err, box) {
       if (err) {
-        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+        console.error("❌ Failed to open inbox:", err);
+        return res.status(500).json({ 
+          success: false,
+          error: "Failed to open inbox: " + err.message 
+        });
       }
       
       console.log(`📥 ${userEmail} - Total Messages: ${box.messages.total}`);
+      
+      if (box.messages.total === 0) {
+        return res.json({
+          success: true,
+          message: "No emails found in inbox",
+          data: {
+            processed: 0,
+            duplicates: 0,
+            totalInInbox: 0,
+            userEmail: userEmail
+          }
+        });
+      }
       
       // Fetch ALL emails
       const fetchRange = `1:${box.messages.total}`;
@@ -633,9 +652,11 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
       let processedCount = 0;
       let duplicateCount = 0;
       let newEmails = [];
+      let errorCount = 0;
 
       f.on("message", function (msg, seqno) {
         let buffer = "";
+        let messageProcessed = false;
 
         msg.on("body", function (stream) {
           stream.on("data", function (chunk) {
@@ -644,6 +665,9 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
         });
 
         msg.once("end", async function () {
+          if (messageProcessed) return;
+          messageProcessed = true;
+          
           try {
             const parsed = await simpleParser(buffer);
             const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
@@ -670,50 +694,82 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
             }
             
           } catch (parseErr) {
-            console.error("Parse error:", parseErr.message);
+            console.error("❌ Parse error:", parseErr.message);
+            errorCount++;
           }
+        });
+
+        msg.once("error", (msgErr) => {
+          if (messageProcessed) return;
+          messageProcessed = true;
+          console.error("❌ Message processing error:", msgErr.message);
+          errorCount++;
+        });
+      });
+
+      f.once("error", function (err) {
+        console.error("❌ Fetch stream error:", err);
+        res.status(500).json({ 
+          success: false,
+          error: "Fetch stream error: " + err.message 
         });
       });
 
       f.once("end", async function () {
         try {
-          // Save to Supabase
+          console.log(`🔄 Processing ${newEmails.length} new emails...`);
+          
+          // Save to Supabase in smaller batches
           if (newEmails.length > 0) {
             console.log(`💾 Saving ${newEmails.length} new emails to Supabase...`);
             
-            // Process in smaller batches to avoid timeouts
-            const batchSize = 10;
+            const batchSize = 5; // Smaller batches for reliability
             for (let i = 0; i < newEmails.length; i += batchSize) {
               const batch = newEmails.slice(i, i + batchSize);
               
               const batchOps = batch.map(async (email) => {
-                const supabaseData = {
-                  message_id: email.messageId,
-                  subject: email.subject,
-                  from_text: email.from,
-                  to_text: email.to,
-                  date: email.date,
-                  text_content: email.text,
-                  html_content: email.html,
-                  attachments: email.attachments,
-                  has_attachments: email.hasAttachments,
-                  attachments_count: email.attachmentsCount,
-                  user_id: userId,
-                  user_email: userEmail,
-                  created_at: new Date()
-                };
+                try {
+                  const supabaseData = {
+                    message_id: email.messageId,
+                    subject: email.subject,
+                    from_text: email.from,
+                    to_text: email.to,
+                    date: email.date,
+                    text_content: email.text,
+                    html_content: email.html,
+                    attachments: email.attachments,
+                    has_attachments: email.hasAttachments,
+                    attachments_count: email.attachmentsCount,
+                    user_id: userId,
+                    user_email: userEmail,
+                    created_at: new Date()
+                  };
 
-                await supabase.from('emails').upsert(supabaseData);
+                  const { error } = await supabase.from('emails').upsert(supabaseData);
+                  if (error) {
+                    console.error("❌ Supabase save error:", error.message);
+                    return false;
+                  }
+                  return true;
+                } catch (saveErr) {
+                  console.error("❌ Email save error:", saveErr.message);
+                  return false;
+                }
               });
 
-              await Promise.allSettled(batchOps);
-              console.log(`   ✅ Saved batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(newEmails.length/batchSize)}`);
+              const results = await Promise.allSettled(batchOps);
+              const successfulSaves = results.filter(r => r.status === 'fulfilled' && r.value).length;
+              
+              console.log(`   ✅ Saved batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(newEmails.length/batchSize)}: ${successfulSaves}/${batch.length} successful`);
+              
+              // Small delay between batches to avoid overwhelming the server
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
             
             clearCache();
           }
 
-          console.log(`✅ Load All completed: ${processedCount} new, ${duplicateCount} duplicates`);
+          console.log(`✅ Load All completed: ${processedCount} new, ${duplicateCount} duplicates, ${errorCount} errors`);
           
           res.json({
             success: true,
@@ -721,6 +777,7 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
             data: {
               processed: processedCount,
               duplicates: duplicateCount,
+              errors: errorCount,
               totalInInbox: box.messages.total,
               userEmail: userEmail
             }
@@ -728,14 +785,137 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
 
         } catch (batchError) {
           console.error("❌ Batch processing error:", batchError);
-          res.status(500).json({ error: "Processing failed" });
+          res.status(500).json({ 
+            success: false,
+            error: "Processing failed: " + batchError.message 
+          });
         }
       });
     });
 
   } catch (error) {
     console.error("❌ Load All error:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// NEW: Enhanced search endpoint for ALL emails
+app.post("/api/search-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search = "", limit = 10000 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    console.log(`🔍 Searching emails for ${userEmail}: "${search}"`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        success: false,
+        error: "Supabase is not available" 
+      });
+    }
+
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId);
+
+    // Add search conditions
+    if (search && search.trim().length > 0) {
+      const searchTerm = `%${search.trim()}%`;
+      query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
+    }
+
+    // Get ALL matching emails without pagination for search
+    query = query.order('date', { ascending: false }).limit(limit);
+
+    const { data: emails, error, count } = await query;
+    
+    if (error) {
+      console.error("❌ Search query error:", error);
+      return res.status(500).json({ 
+        success: false,
+        error: "Failed to search emails",
+        details: error.message 
+      });
+    }
+
+    // Enhanced email data normalization
+    const enhancedEmails = emails.map(email => {
+      let attachments = [];
+      try {
+        if (email.attachments && Array.isArray(email.attachments)) {
+          attachments = email.attachments.map(att => ({
+            id: att.id || `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            filename: att.filename || att.name || 'attachment',
+            originalFilename: att.originalFilename || att.filename || att.name || 'attachment',
+            name: att.name || att.filename || 'attachment',
+            displayName: att.displayName || att.filename || att.name || 'attachment',
+            url: att.url || att.publicUrl || att.downloadUrl || '',
+            publicUrl: att.publicUrl || att.url || att.downloadUrl || '',
+            downloadUrl: att.downloadUrl || att.url || att.publicUrl || '',
+            previewUrl: att.previewUrl || att.url || att.publicUrl || '',
+            contentType: att.contentType || att.type || att.mimeType || 'application/octet-stream',
+            type: att.type || att.contentType || att.mimeType || 'application/octet-stream',
+            mimeType: att.mimeType || att.contentType || att.type || 'application/octet-stream',
+            size: att.size || 0,
+            extension: att.extension || (att.filename ? att.filename.split('.').pop() : 'bin'),
+            path: att.path || '',
+            isImage: (att.contentType || att.type || '').startsWith('image/'),
+            isPdf: (att.contentType || att.type || '') === 'application/pdf',
+            isText: (att.contentType || att.type || '').startsWith('text/'),
+            isAudio: (att.contentType || att.type || '').startsWith('audio/'),
+            isVideo: (att.contentType || att.type || '').startsWith('video/'),
+            base64: att.base64 || false
+          }));
+        }
+      } catch (attError) {
+        console.error('❌ Error processing attachments for email:', email.message_id, attError);
+        attachments = [];
+      }
+
+      return {
+        id: email.message_id,
+        _id: email.message_id,
+        messageId: email.message_id,
+        subject: email.subject || '(No Subject)',
+        from: email.from_text || email.from || '',
+        from_text: email.from_text || email.from || '',
+        to: email.to_text || email.to || '',
+        to_text: email.to_text || email.to || '',
+        date: email.date || email.created_at || new Date(),
+        text: email.text_content || email.text || '',
+        text_content: email.text_content || email.text || '',
+        html: email.html_content || email.html || '',
+        html_content: email.html_content || email.html || '',
+        attachments: attachments,
+        hasAttachments: email.has_attachments || attachments.length > 0,
+        attachmentsCount: email.attachments_count || attachments.length,
+        read: email.read || false
+      };
+    });
+
+    console.log(`✅ Search completed: Found ${enhancedEmails.length} emails for "${search}"`);
+
+    res.json({
+      success: true,
+      data: {
+        emails: enhancedEmails,
+        total: count,
+        userEmail: userEmail,
+        searchTerm: search
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Search emails error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
   }
 });
 
@@ -930,6 +1110,7 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
       f.on("message", function (msg, seqno) {
         console.log(`📨 ${userEmail} - Processing message #${seqno}`);
         let buffer = "";
+        let messageProcessed = false;
 
         msg.on("body", function (stream) {
           stream.on("data", function (chunk) {
@@ -938,6 +1119,9 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
         });
 
         msg.once("end", async function () {
+          if (messageProcessed) return;
+          messageProcessed = true;
+          
           try {
             const parsed = await simpleParser(buffer);
 
@@ -985,6 +1169,12 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
           } catch (parseErr) {
             console.error("   ❌ Parse error:", parseErr.message);
           }
+        });
+
+        msg.once("error", (msgErr) => {
+          if (messageProcessed) return;
+          messageProcessed = true;
+          console.error("   ❌ Message processing error:", msgErr.message);
         });
       });
 
@@ -1190,15 +1380,15 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Get emails for authenticated user only - ENHANCED
+// ✅ UPDATED: Get emails for authenticated user only - ENHANCED with search
 app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
-    const { search = "", sort = "date_desc", page = 1, limit = 50 } = req.query;
+    const { search = "", sort = "date_desc", page = 1, limit = 10000 } = req.query; // Increased limit
     const userId = req.user.id;
     const userEmail = req.user.email;
 
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(10000, Math.max(1, parseInt(limit))); // Increased limit to 10000
+    const limitNum = Math.min(50000, Math.max(1, parseInt(limit))); // Increased limit to 50000
     const skip = (pageNum - 1) * limitNum;
 
     // Create user-specific cache key
@@ -1221,7 +1411,8 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     
     // Add search if provided
     if (search && search.trim().length > 0) {
-      query = query.or(`subject.ilike.%${search}%,from_text.ilike.%${search}%,text_content.ilike.%${search}%`);
+      const searchTerm = `%${search.trim()}%`;
+      query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
     }
     
     // Add sorting
@@ -1539,6 +1730,7 @@ app.get("/", (req, res) => {
       "GET /api/emails": "Get emails with attachments (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails (authenticated)",
       "POST /api/load-all-emails": "Load ALL emails from inbox (authenticated)",
+      "POST /api/search-emails": "Search ALL emails (authenticated)",
       "POST /api/fast-fetch": "Fast fetch from database only (authenticated)",
       "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
       "GET /api/test-attachment-urls": "Test attachment URL generation",

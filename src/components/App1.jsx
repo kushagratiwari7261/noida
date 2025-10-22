@@ -16,6 +16,7 @@ function App() {
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
   const [loadAllProgress, setLoadAllProgress] = useState(null);
+  const [searching, setSearching] = useState(false);
 
   const API_BASE = '';
 
@@ -75,7 +76,53 @@ function App() {
     getUser();
   }, []);
 
-  // NEW: Load ALL emails function
+  // NEW: Enhanced search function that searches ALL emails
+  const searchAllEmails = async (searchTerm) => {
+    if (searching) return;
+    
+    setSearching(true);
+    setError(null);
+
+    try {
+      console.log(`🔍 Searching for: "${searchTerm}"`);
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/search-emails`, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          search: searchTerm,
+          limit: 10000
+        })
+      });
+
+      const result = await handleApiError(response, 'Failed to search emails');
+      console.log('🔍 Search result:', result);
+      
+      if (result.success) {
+        const processedEmails = result.data.emails.map(processEmailData);
+        
+        // Sort emails by date
+        const sortedEmails = processedEmails.sort((a, b) => {
+          const dateA = new Date(a.date || 0);
+          const dateB = new Date(b.date || 0);
+          return dateB - dateA;
+        });
+        
+        setEmails(sortedEmails);
+        console.log(`✅ Search completed: Found ${sortedEmails.length} emails for "${searchTerm}"`);
+      } else {
+        throw new Error(result.error || 'Search failed');
+      }
+    } catch (err) {
+      console.error('❌ Search error:', err);
+      setError(`Search failed: ${err.message}`);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // NEW: Load ALL emails function - FIXED
   const loadAllEmails = async () => {
     if (fetching) return;
 
@@ -124,7 +171,7 @@ function App() {
       console.error('❌ Load all failed:', err);
     } finally {
       setFetching(false);
-      setTimeout(() => setLoadAllProgress(null), 5000);
+      setTimeout(() => setLoadAllProgress(null), 10000);
     }
   };
 
@@ -307,7 +354,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=10000`, // Increased limit to load more emails
+        `limit=10000`,
         `t=${Date.now()}`
       ].join('&');
 
@@ -965,10 +1012,16 @@ function App() {
     loadEmails(true, true);
   }, []);
 
-  // Load emails when search or sort changes
+  // Enhanced search handler - uses the new search endpoint
   useEffect(() => {
     const timer = setTimeout(() => {
-      loadEmails(true, false);
+      if (search.trim().length > 0) {
+        // Use the enhanced search for ALL emails when search term is provided
+        searchAllEmails(search);
+      } else {
+        // Use normal load when no search term
+        loadEmails(true, false);
+      }
     }, 500);
     
     return () => clearTimeout(timer);
@@ -1102,7 +1155,7 @@ function App() {
             <div className="search-compact">
               <input
                 type="text"
-                placeholder="🔍 Search..."
+                placeholder="🔍 Search ALL emails..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="search-input-compact"
@@ -1171,16 +1224,30 @@ function App() {
           </div>
         )}
 
+        {/* Search Status */}
+        {searching && (
+          <div className="search-status">
+            🔍 Searching for "{search}"...
+          </div>
+        )}
+
         {/* Email List */}
         <div className="email-content-area">
-          {loading && (
+          {loading && !searching && (
             <div className="loading-state">
               <div className="spinner"></div>
               <p>Loading emails...</p>
             </div>
           )}
           
-          {!loading && emails.length === 0 && (
+          {searching && (
+            <div className="loading-state">
+              <div className="spinner"></div>
+              <p>Searching emails...</p>
+            </div>
+          )}
+          
+          {!loading && !searching && emails.length === 0 && (
             <div className="empty-state">
               <p>📭 No emails found</p>
               <p>Try fetching emails from your inbox</p>
@@ -1195,7 +1262,7 @@ function App() {
             </div>
           )}
 
-          {!loading && emails.length > 0 && (
+          {!loading && !searching && emails.length > 0 && (
             <div className="email-list">
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1213,6 +1280,8 @@ function App() {
               <p>Current emails: {emails.length}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
+              <p>Searching: {searching ? 'Yes' : 'No'}</p>
+              <p>Search Term: "{search}"</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {user && <p>User: {user.email}</p>}
