@@ -565,7 +565,394 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
   return emailData;
 }
 
-// ========== FIXED API ENDPOINTS ==========
+// ========== ENHANCED API ENDPOINTS ==========
+
+// ✅ ENHANCED: Advanced search with pagination and better performance
+app.post("/api/search-emails-advanced", authenticateUser, async (req, res) => {
+  try {
+    const { 
+      search: searchTerm, 
+      limit = 1000, 
+      page = 1,
+      fields = ['subject', 'from_text', 'text_content', 'to_text'],
+      dateFrom,
+      dateTo,
+      hasAttachments
+    } = req.body;
+    
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🔍 ADVANCED SEARCH for user ${userEmail}: "${searchTerm}", page: ${page}, limit: ${limit}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    if (!searchTerm || searchTerm.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term is required"
+      });
+    }
+
+    const trimmedSearchTerm = searchTerm.trim();
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(5000, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Build the query dynamically
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId);
+
+    // Add search conditions for specified fields
+    const searchConditions = fields.map(field => `${field}.ilike.%${trimmedSearchTerm}%`);
+    if (searchConditions.length > 0) {
+      query = query.or(searchConditions.join(','));
+    }
+
+    // Add date range filter if provided
+    if (dateFrom) {
+      query = query.gte('date', dateFrom);
+    }
+    if (dateTo) {
+      query = query.lte('date', dateTo);
+    }
+
+    // Add attachment filter if provided
+    if (hasAttachments !== undefined) {
+      query = query.eq('has_attachments', hasAttachments);
+    }
+
+    // Add pagination and sorting
+    query = query
+      .order('date', { ascending: false })
+      .range(offset, offset + limitNum - 1);
+
+    const { data: emails, error, count } = await query;
+
+    if (error) {
+      console.error("❌ Supabase advanced search error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to search emails",
+        details: error.message
+      });
+    }
+
+    console.log(`🔍 Advanced search query executed for ${userEmail}: Found ${emails?.length || 0} emails out of ${count} total`);
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
+    }));
+
+    const totalPages = Math.ceil((count || 0) / limitNum);
+    const hasMore = pageNum < totalPages;
+
+    console.log(`✅ Advanced search completed for ${userEmail}: Page ${pageNum}/${totalPages}, showing ${enhancedEmails.length} emails`);
+
+    res.json({
+      success: true,
+      message: `Found ${count} emails matching "${trimmedSearchTerm}"`,
+      data: {
+        emails: enhancedEmails,
+        total: count,
+        searchTerm: trimmedSearchTerm,
+        userEmail: userEmail,
+        pagination: {
+          currentPage: pageNum,
+          totalPages: totalPages,
+          hasMore: hasMore,
+          limit: limitNum,
+          totalResults: count
+        },
+        source: 'advanced_search'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Advanced search emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ NEW: Get email statistics for a user
+app.get("/api/email-stats", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`📊 Getting email statistics for ${userEmail}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    // Get total count
+    const { count: totalCount, error: countError } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    if (countError) {
+      throw countError;
+    }
+
+    // Get count with attachments
+    const { count: withAttachmentsCount, error: attachError } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('has_attachments', true);
+
+    // Get date range
+    const { data: dateRange, error: dateError } = await supabase
+      .from('emails')
+      .select('date')
+      .eq('user_id', userId)
+      .order('date', { ascending: true })
+      .limit(1);
+
+    const { data: latestEmail, error: latestError } = await supabase
+      .from('emails')
+      .select('date')
+      .eq('user_id', userId)
+      .order('date', { ascending: false })
+      .limit(1);
+
+    res.json({
+      success: true,
+      data: {
+        totalEmails: totalCount || 0,
+        emailsWithAttachments: withAttachmentsCount || 0,
+        dateRange: {
+          oldest: dateRange?.[0]?.date || null,
+          latest: latestEmail?.[0]?.date || null
+        },
+        userEmail: userEmail
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Email stats error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ NEW: Bulk export emails endpoint (for large datasets)
+app.post("/api/export-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search: searchTerm, format = 'json', limit = 10000 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`📤 Exporting emails for ${userEmail}, format: ${format}, search: "${searchTerm}"`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    let query = supabase
+      .from('emails')
+      .select('*')
+      .eq('user_id', userId)
+      .order('date', { ascending: false })
+      .limit(Math.min(10000, limit));
+
+    if (searchTerm && searchTerm.trim().length > 0) {
+      const trimmedSearch = searchTerm.trim();
+      query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,text_content.ilike.%${trimmedSearch}%`);
+    }
+
+    const { data: emails, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      userEmail: userEmail,
+      totalEmails: emails.length,
+      searchTerm: searchTerm || 'all',
+      emails: emails.map(email => ({
+        id: email.message_id,
+        subject: email.subject,
+        from: email.from_text,
+        to: email.to_text,
+        date: email.date,
+        hasAttachments: email.has_attachments,
+        attachmentsCount: email.attachments_count,
+        textContent: email.text_content ? email.text_content.substring(0, 500) + '...' : '', // Truncate for export
+        htmlContent: email.html_content ? '...' : '' // Don't export full HTML
+      }))
+    };
+
+    if (format === 'csv') {
+      // Convert to CSV
+      const headers = ['ID', 'Subject', 'From', 'To', 'Date', 'Attachments', 'Text Preview'];
+      const csvRows = [headers.join(',')];
+      
+      exportData.emails.forEach(email => {
+        const row = [
+          `"${email.id}"`,
+          `"${(email.subject || '').replace(/"/g, '""')}"`,
+          `"${(email.from || '').replace(/"/g, '""')}"`,
+          `"${(email.to || '').replace(/"/g, '""')}"`,
+          `"${email.date}"`,
+          `"${email.attachmentsCount}"`,
+          `"${(email.textContent || '').replace(/"/g, '""')}"`
+        ];
+        csvRows.push(row.join(','));
+      });
+
+      const csvContent = csvRows.join('\n');
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=emails-export-${Date.now()}.csv`);
+      return res.send(csvContent);
+    } else {
+      // JSON format
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=emails-export-${Date.now()}.json`);
+      return res.json(exportData);
+    }
+
+  } catch (error) {
+    console.error("❌ Export emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ FIXED: Enhanced search to search ALL emails in database for the user
+app.post("/api/search-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search: searchTerm, limit = 1000 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🔍 Searching ALL emails in database for user ${userEmail}: "${searchTerm}"`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    if (!searchTerm || searchTerm.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term is required"
+      });
+    }
+
+    const trimmedSearchTerm = searchTerm.trim();
+    
+    // Search in ALL emails in Supabase for this user with better query
+    const { data: emails, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .or(`subject.ilike.%${trimmedSearchTerm}%,from_text.ilike.%${trimmedSearchTerm}%,text_content.ilike.%${trimmedSearchTerm}%,to_text.ilike.%${trimmedSearchTerm}%`)
+      .order('date', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error("❌ Supabase search error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to search emails",
+        details: error.message
+      });
+    }
+
+    console.log(`🔍 Search query executed for ${userEmail}: Found ${emails?.length || 0} emails`);
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
+    }));
+
+    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${trimmedSearchTerm}" out of ${count} total emails`);
+
+    res.json({
+      success: true,
+      message: `Found ${enhancedEmails.length} emails matching "${trimmedSearchTerm}"`,
+      data: {
+        emails: enhancedEmails,
+        total: count,
+        searchTerm: trimmedSearchTerm,
+        userEmail: userEmail,
+        source: 'database_search'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Search emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ✅ FIXED: Enhanced fetch-emails to handle oldest mode properly
 app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
@@ -954,97 +1341,6 @@ app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Enhanced search to search ALL emails in database for the user
-app.post("/api/search-emails", authenticateUser, async (req, res) => {
-  try {
-    const { search: searchTerm, limit = 1000 } = req.body;
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-
-    console.log(`🔍 Searching ALL emails in database for user ${userEmail}: "${searchTerm}"`);
-
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        success: false,
-        error: "Supabase is not available"
-      });
-    }
-
-    if (!searchTerm || searchTerm.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Search term is required"
-      });
-    }
-
-    const trimmedSearchTerm = searchTerm.trim();
-    
-    // Search in ALL emails in Supabase for this user with better query
-    const { data: emails, error, count } = await supabase
-      .from('emails')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
-      .or(`subject.ilike.%${trimmedSearchTerm}%,from_text.ilike.%${trimmedSearchTerm}%,text_content.ilike.%${trimmedSearchTerm}%,to_text.ilike.%${trimmedSearchTerm}%`)
-      .order('date', { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      console.error("❌ Supabase search error:", error);
-      return res.status(500).json({
-        success: false,
-        error: "Failed to search emails",
-        details: error.message
-      });
-    }
-
-    console.log(`🔍 Search query executed for ${userEmail}: Found ${emails?.length || 0} emails`);
-
-    // Enhanced email data for frontend
-    const enhancedEmails = (emails || []).map(email => ({
-      id: email.message_id,
-      _id: email.message_id,
-      messageId: email.message_id,
-      subject: email.subject,
-      from: email.from_text,
-      from_text: email.from_text,
-      to: email.to_text,
-      to_text: email.to_text,
-      date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
-      attachments: email.attachments || [],
-      hasAttachments: email.has_attachments,
-      attachmentsCount: email.attachments_count,
-      read: email.read || false,
-      user_id: email.user_id,
-      user_email: email.user_email
-    }));
-
-    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${trimmedSearchTerm}" out of ${count} total emails`);
-
-    res.json({
-      success: true,
-      message: `Found ${enhancedEmails.length} emails matching "${trimmedSearchTerm}"`,
-      data: {
-        emails: enhancedEmails,
-        total: count,
-        searchTerm: trimmedSearchTerm,
-        userEmail: userEmail,
-        source: 'database_search'
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Search emails error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // ✅ FIXED: Get emails with proper pagination for old emails
 app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
@@ -1157,11 +1453,11 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
 // ✅ NEW: Get oldest emails specifically
 app.get("/api/emails/oldest", authenticateUser, async (req, res) => {
   try {
-    const { limit = 50 } = req.query;
+    const { limit = 100 } = req.query;
     const userId = req.user.id;
     const userEmail = req.user.email;
     
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
 
     console.log(`📧 Fetching OLDEST emails for ${userEmail}, limit: ${limitNum}`);
 
@@ -1255,11 +1551,92 @@ app.post("/api/clear-cache", authenticateUser, (req, res) => {
   });
 });
 
+// Delete email endpoint
+app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🗑️ Deleting email for ${userEmail}: ${messageId}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    // First get the email to check attachments
+    const { data: email, error: fetchError } = await supabase
+      .from('emails')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('message_id', messageId)
+      .single();
+
+    if (fetchError) {
+      return res.status(404).json({
+        success: false,
+        error: "Email not found"
+      });
+    }
+
+    // Delete attachments from storage if they exist
+    if (email.attachments && Array.isArray(email.attachments) && email.attachments.length > 0) {
+      console.log(`🗑️ Deleting ${email.attachments.length} attachments for email ${messageId}`);
+      
+      const deletePromises = email.attachments.map(async (attachment) => {
+        if (attachment.path) {
+          const { error: storageError } = await supabase.storage
+            .from('attachments')
+            .remove([attachment.path]);
+          
+          if (storageError) {
+            console.error(`❌ Failed to delete attachment ${attachment.path}:`, storageError);
+          } else {
+            console.log(`✅ Deleted attachment: ${attachment.path}`);
+          }
+        }
+      });
+
+      await Promise.allSettled(deletePromises);
+    }
+
+    // Delete the email record
+    const { error: deleteError } = await supabase
+      .from('emails')
+      .delete()
+      .eq('user_id', userId)
+      .eq('message_id', messageId);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    clearCache(); // Clear cache after deletion
+
+    console.log(`✅ Successfully deleted email ${messageId} for ${userEmail}`);
+    
+    res.json({
+      success: true,
+      message: "Email and attachments deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete email error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Multi-User Support",
-    version: "4.2.0",
+    message: "Email IMAP Backend Server - Enhanced Multi-User Support",
+    version: "5.0.0",
     environment: process.env.NODE_ENV || 'development',
     supabase: supabaseEnabled ? "enabled" : "disabled",
     emailConfigs: {
@@ -1268,11 +1645,15 @@ app.get("/", (req, res) => {
     },
     endpoints: {
       "GET /api/health": "Check service status",
+      "GET /api/email-stats": "Get email statistics (authenticated)",
       "GET /api/emails": "Get emails with pagination (authenticated)",
       "GET /api/emails/oldest": "Get oldest emails specifically (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails with mode support (authenticated)",
       "POST /api/load-older-emails": "Load older emails with pagination (authenticated)",
       "POST /api/search-emails": "Search ALL emails in database (authenticated)",
+      "POST /api/search-emails-advanced": "Advanced search with pagination (authenticated)",
+      "POST /api/export-emails": "Export emails to JSON/CSV (authenticated)",
+      "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
       "POST /api/clear-cache": "Clear cache (authenticated)"
     }
   });
@@ -1313,7 +1694,7 @@ initializeApp();
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📧 Email IMAP Backend Server - Multi-User Support`);
+    console.log(`📧 Email IMAP Backend Server - Enhanced Multi-User Support`);
     console.log(`📋 Supabase: ${supabaseEnabled ? 'ENABLED' : 'DISABLED'}`);
     console.log(`📧 Email Configurations: ${Object.keys(emailConfigs).length} loaded`);
   });
