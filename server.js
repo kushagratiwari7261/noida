@@ -774,14 +774,14 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ NEW: Load older emails endpoint - specifically for paginating through old emails
+// ✅ FIXED: Enhanced load-older-emails endpoint
 app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
   try {
-    const { beforeSequence = null, count = 50 } = req.body;
+    const { lastSequence = null, count = 50 } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
 
-    console.log(`📨 Loading OLDER emails for ${userEmail}, before sequence: ${beforeSequence}, count: ${count}`);
+    console.log(`📨 Loading OLDER emails for ${userEmail}, last sequence: ${lastSequence}, count: ${count}`);
 
     const userImap = await imapManager.getUserConnection(userId, userEmail);
     
@@ -799,10 +799,10 @@ app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
       // Calculate the range for older emails
       let fetchStart, fetchEnd;
       
-      if (beforeSequence) {
+      if (lastSequence) {
         // Load emails before the given sequence number
-        fetchStart = Math.max(1, beforeSequence - count);
-        fetchEnd = beforeSequence - 1;
+        fetchStart = Math.max(1, lastSequence - count);
+        fetchEnd = lastSequence - 1;
       } else {
         // Initial load of oldest emails
         fetchStart = 1;
@@ -817,7 +817,8 @@ app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
             processed: 0,
             duplicates: 0,
             emails: [],
-            hasMore: false
+            hasMore: false,
+            nextLastSequence: null
           }
         });
       }
@@ -919,6 +920,7 @@ app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
           }
 
           const hasMore = fetchStart > 1;
+          const nextLastSequence = hasMore ? fetchStart : null;
 
           res.json({
             success: true,
@@ -928,7 +930,7 @@ app.post("/api/load-older-emails", authenticateUser, async (req, res) => {
               duplicates: duplicateCount,
               emails: newEmails,
               hasMore: hasMore,
-              nextBeforeSequence: hasMore ? fetchStart : null,
+              nextLastSequence: nextLastSequence,
               userEmail: userEmail
             }
           });
@@ -975,12 +977,14 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       });
     }
 
-    // Search in ALL emails in Supabase for this user
+    const trimmedSearchTerm = searchTerm.trim();
+    
+    // Search in ALL emails in Supabase for this user with better query
     const { data: emails, error, count } = await supabase
       .from('emails')
       .select('*', { count: 'exact' })
       .eq('user_id', userId)
-      .or(`subject.ilike.%${searchTerm.trim()}%,from_text.ilike.%${searchTerm.trim()}%,text_content.ilike.%${searchTerm.trim()}%,to_text.ilike.%${searchTerm.trim()}%`)
+      .or(`subject.ilike.%${trimmedSearchTerm}%,from_text.ilike.%${trimmedSearchTerm}%,text_content.ilike.%${trimmedSearchTerm}%,to_text.ilike.%${trimmedSearchTerm}%`)
       .order('date', { ascending: false })
       .limit(limit);
 
@@ -993,8 +997,10 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       });
     }
 
+    console.log(`🔍 Search query executed for ${userEmail}: Found ${emails?.length || 0} emails`);
+
     // Enhanced email data for frontend
-    const enhancedEmails = emails.map(email => ({
+    const enhancedEmails = (emails || []).map(email => ({
       id: email.message_id,
       _id: email.message_id,
       messageId: email.message_id,
@@ -1011,18 +1017,20 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       attachments: email.attachments || [],
       hasAttachments: email.has_attachments,
       attachmentsCount: email.attachments_count,
-      read: email.read || false
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
     }));
 
-    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${searchTerm}" out of ${count} total emails`);
+    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${trimmedSearchTerm}" out of ${count} total emails`);
 
     res.json({
       success: true,
-      message: `Found ${enhancedEmails.length} emails matching "${searchTerm}"`,
+      message: `Found ${enhancedEmails.length} emails matching "${trimmedSearchTerm}"`,
       data: {
         emails: enhancedEmails,
         total: count,
-        searchTerm: searchTerm,
+        searchTerm: trimmedSearchTerm,
         userEmail: userEmail,
         source: 'database_search'
       }
@@ -1048,6 +1056,8 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
+    console.log(`📧 Fetching emails for ${userEmail}: page=${pageNum}, limit=${limitNum}, search="${search}", sort=${sort}, loadOlder=${loadOlder}`);
+
     // Create user-specific cache key
     const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}:${loadOlder}`;
     const cached = getFromCache(cacheKey);
@@ -1068,11 +1078,12 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     
     // Add search if provided
     if (search && search.trim().length > 0) {
-      query = query.or(`subject.ilike.%${search}%,from_text.ilike.%${search}%,text_content.ilike.%${search}%`);
+      const trimmedSearch = search.trim();
+      query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,text_content.ilike.%${trimmedSearch}%`);
     }
     
     // Add sorting - for oldest first, use date ascending
-    if (loadOlder || sort === "date_asc") {
+    if (loadOlder === 'true' || sort === "date_asc") {
       query = query.order('date', { ascending: true });
     } else {
       query = query.order('date', { ascending: false });
@@ -1091,8 +1102,10 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       });
     }
 
+    console.log(`📧 Supabase returned ${emails?.length || 0} emails for ${userEmail}`);
+
     // Enhanced email data for frontend
-    const enhancedEmails = emails.map(email => ({
+    const enhancedEmails = (emails || []).map(email => ({
       id: email.message_id,
       _id: email.message_id,
       messageId: email.message_id,
@@ -1109,14 +1122,16 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       attachments: email.attachments || [],
       hasAttachments: email.has_attachments,
       attachmentsCount: email.attachments_count,
-      read: email.read || false
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
     }));
 
-    const hasMore = skip + enhancedEmails.length < count;
+    const hasMore = skip + (emails?.length || 0) < (count || 0);
 
     const response = {
       emails: enhancedEmails,
-      total: count,
+      total: count || 0,
       hasMore,
       page: pageNum,
       limit: limitNum,
@@ -1139,14 +1154,112 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
   }
 });
 
-// Keep the rest of your existing endpoints (health, clear-cache, delete, etc.)
-// ... (your existing health, clear-cache, delete endpoints remain the same)
+// ✅ NEW: Get oldest emails specifically
+app.get("/api/emails/oldest", authenticateUser, async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+
+    console.log(`📧 Fetching OLDEST emails for ${userEmail}, limit: ${limitNum}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        error: "Supabase is not available" 
+      });
+    }
+
+    const { data: emails, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .order('date', { ascending: true }) // Oldest first
+      .limit(limitNum);
+    
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      return res.status(500).json({ 
+        error: "Failed to fetch oldest emails from Supabase",
+        details: error.message 
+      });
+    }
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
+    }));
+
+    console.log(`✅ Sending ${enhancedEmails.length} OLDEST emails from Supabase for ${userEmail}`);
+
+    res.json({
+      emails: enhancedEmails,
+      total: count || 0,
+      userEmail: userEmail,
+      source: 'supabase_oldest'
+    });
+
+  } catch (error) {
+    console.error("❌ Oldest emails fetch error:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch oldest emails",
+      details: error.message 
+    });
+  }
+});
+
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    supabase: supabaseEnabled ? "connected" : "disconnected",
+    emailConfigs: {
+      count: Object.keys(emailConfigs).length,
+      configured: Object.keys(emailConfigs).length > 0
+    },
+    cache: {
+      size: cache.size,
+      ttl: CACHE_TTL
+    }
+  });
+});
+
+// Clear cache endpoint
+app.post("/api/clear-cache", authenticateUser, (req, res) => {
+  const previousSize = cache.size;
+  clearCache();
+  res.json({
+    success: true,
+    message: `Cache cleared (${previousSize} items removed)`,
+    user: req.user.email
+  });
+});
 
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
     message: "Email IMAP Backend Server - Multi-User Support",
-    version: "4.1.0",
+    version: "4.2.0",
     environment: process.env.NODE_ENV || 'development',
     supabase: supabaseEnabled ? "enabled" : "disabled",
     emailConfigs: {
@@ -1156,12 +1269,10 @@ app.get("/", (req, res) => {
     endpoints: {
       "GET /api/health": "Check service status",
       "GET /api/emails": "Get emails with pagination (authenticated)",
+      "GET /api/emails/oldest": "Get oldest emails specifically (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails with mode support (authenticated)",
       "POST /api/load-older-emails": "Load older emails with pagination (authenticated)",
       "POST /api/search-emails": "Search ALL emails in database (authenticated)",
-      "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
-      "GET /api/test-attachment-urls": "Test attachment URL generation",
-      "GET /api/debug-env": "Debug environment variables",
       "POST /api/clear-cache": "Clear cache (authenticated)"
     }
   });

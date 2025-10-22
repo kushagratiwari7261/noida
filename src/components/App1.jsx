@@ -17,6 +17,9 @@ function App() {
   const [user, setUser] = useState(null);
   const [loadAllProgress, setLoadAllProgress] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreEmails, setHasMoreEmails] = useState(false);
+  const [lastSequence, setLastSequence] = useState(null);
 
   const API_BASE = '';
 
@@ -76,7 +79,7 @@ function App() {
     getUser();
   }, []);
 
-  // NEW: Enhanced search function that searches ALL emails using the new endpoint
+  // ✅ FIXED: Enhanced search function that searches ALL emails using the new endpoint
   const searchAllEmails = async (searchTerm) => {
     if (searching) return;
     
@@ -110,70 +113,115 @@ function App() {
         });
         
         setEmails(sortedEmails);
+        setHasMoreEmails(false); // Search results don't have pagination
         console.log(`✅ Search completed: Found ${sortedEmails.length} emails for "${searchTerm}"`);
       } else {
         throw new Error(result.error || 'Search failed');
       }
     } catch (err) {
       console.error('❌ Search error:', err);
-      // Fallback to regular search if the search endpoint is not available
-      console.log('🔄 Falling back to regular search...');
-      await loadEmails(true, false);
+      setError(`Search failed: ${err.message}`);
     } finally {
       setSearching(false);
     }
   };
 
-  // NEW: Load ALL emails function - FIXED
-  const loadAllEmails = async () => {
-    if (fetching) return;
+  // ✅ NEW: Load older emails function
+  const loadOlderEmails = async () => {
+    if (loadingOlder || !hasMoreEmails) return;
 
-    const confirmed = window.confirm(
-      `🚀 LOAD ALL EMAILS\n\nThis will load ALL emails from your inbox. This may take several minutes for large inboxes.\n\n` +
-      `• All emails will be processed and saved to the database\n` +
-      `• Duplicates will be automatically skipped\n` +
-      `• Progress will be shown during the process\n\n` +
-      `Are you sure you want to continue?`
-    );
-
-    if (!confirmed) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setLoadAllProgress({ processed: 0, duplicates: 0, totalInInbox: 0, userEmail: user?.email });
+    setLoadingOlder(true);
     setError(null);
 
     try {
-      console.log('🚀 Starting load all emails...');
+      console.log(`📨 Loading older emails, last sequence: ${lastSequence}`);
       
       const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/load-all-emails`, {
+      const response = await fetch(`${API_BASE}/api/load-older-emails`, {
         method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          lastSequence: lastSequence,
+          count: 50
+        })
+      });
+
+      const result = await handleApiError(response, 'Failed to load older emails');
+      console.log('📨 Load older result:', result);
+      
+      if (result.success) {
+        const processedEmails = result.data.emails.map(processEmailData);
+        
+        // Sort older emails by date (oldest first for chronological order)
+        const sortedEmails = processedEmails.sort((a, b) => {
+          const dateA = new Date(a.date || 0);
+          const dateB = new Date(b.date || 0);
+          return dateA - dateB; // Oldest first for older emails
+        });
+        
+        // Append older emails to the current list
+        setEmails(prevEmails => {
+          const allEmails = [...prevEmails, ...sortedEmails];
+          // Final sort by date descending for display
+          return allEmails.sort((a, b) => {
+            const dateA = new Date(a.date || 0);
+            const dateB = new Date(b.date || 0);
+            return dateB - dateA;
+          });
+        });
+        
+        setHasMoreEmails(result.data.hasMore);
+        setLastSequence(result.data.nextLastSequence);
+        
+        console.log(`✅ Loaded ${processedEmails.length} older emails, has more: ${result.data.hasMore}`);
+      } else {
+        throw new Error(result.error || 'Failed to load older emails');
+      }
+    } catch (err) {
+      console.error('❌ Load older emails error:', err);
+      setError(`Failed to load older emails: ${err.message}`);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  // ✅ NEW: Load oldest emails specifically
+  const loadOldestEmails = async () => {
+    if (loading) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      console.log(`📨 Loading oldest emails...`);
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails/oldest?limit=100`, {
         headers: headers
       });
 
-      const result = await handleApiError(response, 'Failed to load all emails');
-      console.log('🚀 Load all result:', result);
+      const data = await handleApiError(response, 'Failed to load oldest emails');
+      console.log('📨 Oldest emails result:', data);
       
-      if (result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        setLoadAllProgress(result.data);
-        
-        // Refresh the email list to show newly loaded emails
-        await loadEmails(false, true);
-        
-        console.log('✅ Load all completed successfully');
-      } else {
-        throw new Error(result.error || 'Failed to load all emails');
-      }
+      const processedEmails = data.emails.map(processEmailData);
+      
+      // Sort oldest emails chronologically
+      const sortedEmails = processedEmails.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        return dateA - dateB; // Oldest first
+      });
+      
+      setEmails(sortedEmails);
+      setHasMoreEmails(sortedEmails.length >= 100); // Assume more if we got full limit
+      setLastSequence(sortedEmails.length > 0 ? 1 : null);
+      
+      console.log(`✅ Loaded ${sortedEmails.length} oldest emails`);
     } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Load all failed:', err);
+      console.error('❌ Load oldest emails error:', err);
+      setError(`Failed to load oldest emails: ${err.message}`);
     } finally {
-      setFetching(false);
-      setTimeout(() => setLoadAllProgress(null), 10000);
+      setLoading(false);
     }
   };
 
@@ -217,7 +265,8 @@ function App() {
       attachmentsCount: email.attachments_count || email.attachmentsCount || 0,
       user_id: email.user_id,
       user_email: email.user_email,
-      read: email.read || false
+      read: email.read || false,
+      sequenceNumber: email.sequenceNumber // For pagination
     };
 
     // Process attachments - handle both direct attachments and enhanced structure
@@ -314,13 +363,16 @@ function App() {
     }
   };
 
-  // Enhanced load emails function - FIXED to load from Supabase first
-  const loadEmails = async (showLoading = true, forceRefresh = false) => {
+  // ✅ FIXED: Enhanced load emails function with proper pagination
+  const loadEmails = async (showLoading = true, forceRefresh = false, loadOlder = false) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+      console.log('🔄 Loading emails from backend...', 
+        forceRefresh ? '(FORCE REFRESH)' : '', 
+        loadOlder ? '(LOAD OLDER)' : ''
+      );
 
       // Clear cache first if force refresh
       if (forceRefresh) {
@@ -336,12 +388,13 @@ function App() {
         }
       }
 
-      // Load from Supabase database first (this should include all previously uploaded emails)
+      // Build query parameters
       const queries = [
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=10000`,
+        `limit=100`,
+        `loadOlder=${loadOlder}`,
         `t=${Date.now()}`
       ].join('&');
 
@@ -362,6 +415,7 @@ function App() {
       } else {
         console.log('❌ No emails found in response');
         setEmails([]);
+        setHasMoreEmails(false);
         return;
       }
 
@@ -377,18 +431,22 @@ function App() {
       });
 
       setEmails(sortedEmails);
-      console.log('✅ Emails set in state:', sortedEmails.length);
+      setHasMoreEmails(data.hasMore || false);
+      setLastSequence(sortedEmails.length > 0 ? sortedEmails[sortedEmails.length - 1].sequenceNumber : null);
+      
+      console.log('✅ Emails set in state:', sortedEmails.length, 'hasMore:', data.hasMore);
 
     } catch (err) {
       console.error('❌ Fetch error:', err);
       setEmails([]);
+      setHasMoreEmails(false);
       setError(`Failed to load emails: ${err.message}`);
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint
+  // ✅ FIXED: Enhanced fetch function using the new unified endpoint
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -405,7 +463,7 @@ function App() {
         headers: headers,
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30
+          count: mode === 'force' ? 20 : 50
         })
       });
 
@@ -460,7 +518,6 @@ function App() {
   // Individual fetch functions
   const fetchNewEmails = () => fetchEmails('latest');
   const forceFetchEmails = () => fetchEmails('force');
-  const simpleFetchEmails = () => fetchEmails('simple');
 
   // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
@@ -481,63 +538,6 @@ function App() {
       setFetchStatus('error');
       setError(err.message);
       console.error('❌ Force refresh failed:', err);
-    } finally {
-      setFetching(false);
-    }
-  };
-
-  // Fast fetch from Supabase only
-  const fastFetchEmails = async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('🚀 Fast fetching emails from Supabase...');
-      
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/fast-fetch`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          mode: 'fast',
-          count: 100
-        })
-      });
-
-      const result = await handleApiError(response, 'Failed to fast fetch emails');
-      console.log('🚀 Fast fetch result:', result);
-      
-      if (result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        if (result.data && result.data.emails && result.data.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
-          const processedEmails = result.data.emails.map(processEmailData);
-          
-          const sortedEmails = processedEmails.sort((a, b) => {
-            const dateA = new Date(a.date || 0);
-            const dateB = new Date(b.date || 0);
-            return dateB - dateA;
-          });
-          
-          setEmails(sortedEmails);
-          console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
-        } else {
-          console.log('🔄 No emails found in fast fetch');
-          setEmails([]);
-        }
-        
-      } else {
-        throw new Error(result.error || 'Failed to fast fetch emails');
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Fast fetch failed:', err);
     } finally {
       setFetching(false);
     }
@@ -913,7 +913,7 @@ function App() {
     loadEmails(true, true);
   }, []);
 
-  // Enhanced search handler - uses the new search endpoint for ALL emails
+  // ✅ FIXED: Enhanced search handler - uses the new search endpoint for ALL emails
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search.trim().length > 0) {
@@ -1001,14 +1001,14 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
-            {/* Load All Emails Button */}
+            {/* Load Oldest Emails Button */}
             <button 
-              onClick={loadAllEmails} 
-              disabled={fetching}
-              className="load-all-button"
-              title="Load ALL emails from your inbox (may take several minutes)"
+              onClick={loadOldestEmails} 
+              disabled={loading}
+              className="load-oldest-button"
+              title="Load oldest emails from your inbox"
             >
-              🚀 Load All
+              📜 Oldest
             </button>
 
             <button 
@@ -1025,16 +1025,6 @@ function App() {
               className="force-fetch-button"
             >
               ⚡ Force Fetch
-            </button>
-
-            {/* Fast Fetch Button */}
-            <button 
-              onClick={fastFetchEmails} 
-              disabled={fetching}
-              className="fast-fetch-button"
-              title="Quickly load emails from database"
-            >
-              🚀 Fast Fetch
             </button>
 
             <button 
@@ -1067,39 +1057,6 @@ function App() {
           <div className="error-banner">
             ❌ {error}
             <button onClick={() => setError(null)} className="close-error">✕</button>
-          </div>
-        )}
-
-        {/* Load All Progress Display */}
-        {loadAllProgress && (
-          <div className="load-all-progress">
-            <div className="progress-header">
-              <h4>🚀 Loading All Emails</h4>
-              <span className="progress-stats">
-                {loadAllProgress.processed} new • {loadAllProgress.duplicates} duplicates • {loadAllProgress.totalInInbox} total in inbox
-              </span>
-            </div>
-            {fetchStatus === 'fetching' && (
-              <div className="progress-bar-container">
-                <div className="progress-bar">
-                  <div 
-                    className="progress-fill" 
-                    style={{ 
-                      width: `${loadAllProgress.totalInInbox > 0 ? 
-                        ((loadAllProgress.processed + loadAllProgress.duplicates) / loadAllProgress.totalInInbox) * 100 : 0}%` 
-                    }}
-                  ></div>
-                </div>
-                <div className="progress-text">
-                  Processing emails... ({loadAllProgress.processed + loadAllProgress.duplicates} / {loadAllProgress.totalInInbox})
-                </div>
-              </div>
-            )}
-            {fetchStatus === 'success' && (
-              <div className="progress-complete">
-                ✅ Successfully loaded {loadAllProgress.processed} new emails!
-              </div>
-            )}
           </div>
         )}
 
@@ -1148,8 +1105,8 @@ function App() {
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Smart Fetch
                 </button>
-                <button onClick={loadAllEmails} className="load-all-button">
-                  🚀 Load All Emails
+                <button onClick={loadOldestEmails} className="load-oldest-button">
+                  📜 Load Oldest
                 </button>
               </div>
             </div>
@@ -1160,6 +1117,19 @@ function App() {
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
               ))}
+              
+              {/* Load More Button for Older Emails */}
+              {hasMoreEmails && (
+                <div className="load-more-section">
+                  <button 
+                    onClick={loadOlderEmails} 
+                    disabled={loadingOlder}
+                    className="load-more-button"
+                  >
+                    {loadingOlder ? '🔄 Loading...' : '📨 Load Older Emails'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1174,20 +1144,14 @@ function App() {
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Searching: {searching ? 'Yes' : 'No'}</p>
+              <p>Loading Older: {loadingOlder ? 'Yes' : 'No'}</p>
               <p>Search Term: "{search}"</p>
               <p>Fetch Status: {fetchStatus}</p>
+              <p>Has More Emails: {hasMoreEmails ? 'Yes' : 'No'}</p>
+              <p>Last Sequence: {lastSequence || 'None'}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {user && <p>User: {user.email}</p>}
               {error && <p>Error: {error}</p>}
-              {loadAllProgress && (
-                <div className="load-all-debug">
-                  <h4>Load All Progress:</h4>
-                  <p>Processed: {loadAllProgress.processed}</p>
-                  <p>Duplicates: {loadAllProgress.duplicates}</p>
-                  <p>Total in Inbox: {loadAllProgress.totalInInbox}</p>
-                  <p>User: {loadAllProgress.userEmail}</p>
-                </div>
-              )}
             </div>
           </details>
         </div>
