@@ -15,11 +15,11 @@ function App() {
   const [error, setError] = useState(null);
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
-  const [loadAllProgress, setLoadAllProgress] = useState(null);
   const [searching, setSearching] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [emailStats, setEmailStats] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [hasMoreEmails, setHasMoreEmails] = useState(false);
-  const [lastSequence, setLastSequence] = useState(null);
+  const [totalEmails, setTotalEmails] = useState(0);
 
   const API_BASE = '';
 
@@ -71,6 +71,9 @@ function App() {
         if (error) throw error;
         setUser(user);
         console.log('✅ User loaded:', user?.email);
+        
+        // Load email stats
+        await loadEmailStats();
       } catch (error) {
         console.error('❌ Failed to get user:', error);
         setError('Failed to load user information');
@@ -79,7 +82,85 @@ function App() {
     getUser();
   }, []);
 
-  // ✅ FIXED: Enhanced search function that searches ALL emails using the new endpoint
+  // ✅ NEW: Load email statistics
+  const loadEmailStats = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/email-stats`, {
+        headers: headers
+      });
+
+      const result = await handleApiError(response, 'Failed to load email statistics');
+      
+      if (result.success) {
+        setEmailStats(result.data);
+        setTotalEmails(result.data.totalEmails);
+        console.log('📊 Email stats loaded:', result.data);
+      }
+    } catch (err) {
+      console.error('❌ Failed to load email stats:', err);
+      // Don't show error for stats, it's not critical
+    }
+  };
+
+  // ✅ SIMPLIFIED: Load ALL emails from Supabase with pagination
+  const loadEmails = async (page = 1, showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    try {
+      console.log(`📧 Loading emails from Supabase - Page ${page}`);
+      
+      // Build query parameters
+      const queries = [
+        `search=${encodeURIComponent(search)}`,
+        `sort=${sort}`,
+        `page=${page}`,
+        `limit=100`,
+        `t=${Date.now()}`
+      ].join('&');
+
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
+        headers: headers
+      });
+
+      const data = await handleApiError(response, 'Failed to load emails');
+      console.log('📧 Backend response:', data);
+
+      const processedEmails = data.emails.map(processEmailData);
+
+      if (page === 1) {
+        // First page, replace all emails
+        setEmails(processedEmails);
+      } else {
+        // Subsequent pages, append emails
+        setEmails(prevEmails => [...prevEmails, ...processedEmails]);
+      }
+      
+      setHasMoreEmails(data.hasMore);
+      setCurrentPage(page);
+      setTotalEmails(data.total || processedEmails.length);
+      
+      console.log(`✅ Loaded ${processedEmails.length} emails from Supabase (page ${page}, total: ${data.total})`);
+
+    } catch (err) {
+      console.error('❌ Load error:', err);
+      setError(`Failed to load emails: ${err.message}`);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  // ✅ SIMPLIFIED: Load more emails (pagination)
+  const loadMoreEmails = async () => {
+    if (loading || !hasMoreEmails) return;
+    
+    const nextPage = currentPage + 1;
+    await loadEmails(nextPage, false);
+  };
+
+  // ✅ ENHANCED: Search ALL emails in Supabase
   const searchAllEmails = async (searchTerm) => {
     if (searching) return;
     
@@ -105,16 +186,12 @@ function App() {
       if (result.success) {
         const processedEmails = result.data.emails.map(processEmailData);
         
-        // Sort emails by date
-        const sortedEmails = processedEmails.sort((a, b) => {
-          const dateA = new Date(a.date || 0);
-          const dateB = new Date(b.date || 0);
-          return dateB - dateA;
-        });
-        
-        setEmails(sortedEmails);
+        setEmails(processedEmails);
         setHasMoreEmails(false); // Search results don't have pagination
-        console.log(`✅ Search completed: Found ${sortedEmails.length} emails for "${searchTerm}"`);
+        setCurrentPage(1);
+        setTotalEmails(result.data.total);
+        
+        console.log(`✅ Search completed: Found ${processedEmails.length} emails for "${searchTerm}"`);
       } else {
         throw new Error(result.error || 'Search failed');
       }
@@ -126,102 +203,46 @@ function App() {
     }
   };
 
-  // ✅ NEW: Load older emails function
-  const loadOlderEmails = async () => {
-    if (loadingOlder || !hasMoreEmails) return;
+  // ✅ SIMPLIFIED: Fetch new emails from IMAP
+  const fetchNewEmails = async () => {
+    if (fetching) return;
 
-    setLoadingOlder(true);
+    setFetching(true);
+    setFetchStatus('fetching');
     setError(null);
 
     try {
-      console.log(`📨 Loading older emails, last sequence: ${lastSequence}`);
+      console.log('🔄 Fetching new emails from IMAP...');
       
       const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/load-older-emails`, {
+      const response = await fetch(`${API_BASE}/api/fetch-emails`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          lastSequence: lastSequence,
           count: 50
         })
       });
 
-      const result = await handleApiError(response, 'Failed to load older emails');
-      console.log('📨 Load older result:', result);
+      const result = await handleApiError(response, 'Failed to fetch emails');
+      console.log('📨 Fetch result:', result);
       
       if (result.success) {
-        const processedEmails = result.data.emails.map(processEmailData);
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
         
-        // Sort older emails by date (oldest first for chronological order)
-        const sortedEmails = processedEmails.sort((a, b) => {
-          const dateA = new Date(a.date || 0);
-          const dateB = new Date(b.date || 0);
-          return dateA - dateB; // Oldest first for older emails
-        });
+        // Reload emails to show newly fetched ones
+        await loadEmails(1, false);
         
-        // Append older emails to the current list
-        setEmails(prevEmails => {
-          const allEmails = [...prevEmails, ...sortedEmails];
-          // Final sort by date descending for display
-          return allEmails.sort((a, b) => {
-            const dateA = new Date(a.date || 0);
-            const dateB = new Date(b.date || 0);
-            return dateB - dateA;
-          });
-        });
-        
-        setHasMoreEmails(result.data.hasMore);
-        setLastSequence(result.data.nextLastSequence);
-        
-        console.log(`✅ Loaded ${processedEmails.length} older emails, has more: ${result.data.hasMore}`);
+        console.log(`✅ Fetched ${result.data.processed} new emails`);
       } else {
-        throw new Error(result.error || 'Failed to load older emails');
+        throw new Error(result.error || 'Failed to fetch emails');
       }
     } catch (err) {
-      console.error('❌ Load older emails error:', err);
-      setError(`Failed to load older emails: ${err.message}`);
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Fetch failed:', err);
     } finally {
-      setLoadingOlder(false);
-    }
-  };
-
-  // ✅ NEW: Load oldest emails specifically
-  const loadOldestEmails = async () => {
-    if (loading) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      console.log(`📨 Loading oldest emails...`);
-      
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails/oldest?limit=100`, {
-        headers: headers
-      });
-
-      const data = await handleApiError(response, 'Failed to load oldest emails');
-      console.log('📨 Oldest emails result:', data);
-      
-      const processedEmails = data.emails.map(processEmailData);
-      
-      // Sort oldest emails chronologically
-      const sortedEmails = processedEmails.sort((a, b) => {
-        const dateA = new Date(a.date || 0);
-        const dateB = new Date(b.date || 0);
-        return dateA - dateB; // Oldest first
-      });
-      
-      setEmails(sortedEmails);
-      setHasMoreEmails(sortedEmails.length >= 100); // Assume more if we got full limit
-      setLastSequence(sortedEmails.length > 0 ? 1 : null);
-      
-      console.log(`✅ Loaded ${sortedEmails.length} oldest emails`);
-    } catch (err) {
-      console.error('❌ Load oldest emails error:', err);
-      setError(`Failed to load oldest emails: ${err.message}`);
-    } finally {
-      setLoading(false);
+      setFetching(false);
     }
   };
 
@@ -265,8 +286,7 @@ function App() {
       attachmentsCount: email.attachments_count || email.attachmentsCount || 0,
       user_id: email.user_id,
       user_email: email.user_email,
-      read: email.read || false,
-      sequenceNumber: email.sequenceNumber // For pagination
+      read: email.read || false
     };
 
     // Process attachments - handle both direct attachments and enhanced structure
@@ -352,6 +372,15 @@ function App() {
         console.log('✅ Email deleted successfully');
         setFetchStatus('success');
         setTimeout(() => setFetchStatus('idle'), 3000);
+        
+        // Update stats
+        if (emailStats) {
+          setEmailStats(prev => ({
+            ...prev,
+            totalEmails: prev.totalEmails - 1
+          }));
+          setTotalEmails(prev => prev - 1);
+        }
       } else {
         throw new Error(result.error || 'Failed to delete email');
       }
@@ -360,186 +389,6 @@ function App() {
       setError(`Failed to delete email: ${err.message}`);
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
-    }
-  };
-
-  // ✅ FIXED: Enhanced load emails function with proper pagination
-  const loadEmails = async (showLoading = true, forceRefresh = false, loadOlder = false) => {
-    if (showLoading) setLoading(true);
-    setError(null);
-
-    try {
-      console.log('🔄 Loading emails from backend...', 
-        forceRefresh ? '(FORCE REFRESH)' : '', 
-        loadOlder ? '(LOAD OLDER)' : ''
-      );
-
-      // Clear cache first if force refresh
-      if (forceRefresh) {
-        try {
-          const headers = await getAuthHeaders();
-          await fetch(`${API_BASE}/api/clear-cache`, {
-            method: 'POST',
-            headers: headers
-          });
-          console.log('🗑️ Cache cleared');
-        } catch (cacheErr) {
-          console.log('⚠️ Cache clear failed, continuing...');
-        }
-      }
-
-      // Build query parameters
-      const queries = [
-        `search=${encodeURIComponent(search)}`,
-        `sort=${sort}`,
-        `page=1`,
-        `limit=100`,
-        `loadOlder=${loadOlder}`,
-        `t=${Date.now()}`
-      ].join('&');
-
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
-        headers: headers
-      });
-
-      const data = await handleApiError(response, 'Failed to load emails');
-      console.log('📧 Backend response:', data);
-
-      let emailsToProcess = [];
-
-      if (data.emails && Array.isArray(data.emails)) {
-        emailsToProcess = data.emails;
-      } else if (Array.isArray(data)) {
-        emailsToProcess = data;
-      } else {
-        console.log('❌ No emails found in response');
-        setEmails([]);
-        setHasMoreEmails(false);
-        return;
-      }
-
-      console.log('📧 Loaded emails from database:', emailsToProcess.length);
-
-      const processedEmails = emailsToProcess.map(processEmailData);
-
-      // Sort emails by date to ensure latest first
-      const sortedEmails = processedEmails.sort((a, b) => {
-        const dateA = new Date(a.date || 0);
-        const dateB = new Date(b.date || 0);
-        return dateB - dateA;
-      });
-
-      setEmails(sortedEmails);
-      setHasMoreEmails(data.hasMore || false);
-      setLastSequence(sortedEmails.length > 0 ? sortedEmails[sortedEmails.length - 1].sequenceNumber : null);
-      
-      console.log('✅ Emails set in state:', sortedEmails.length, 'hasMore:', data.hasMore);
-
-    } catch (err) {
-      console.error('❌ Fetch error:', err);
-      setEmails([]);
-      setHasMoreEmails(false);
-      setError(`Failed to load emails: ${err.message}`);
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  };
-
-  // ✅ FIXED: Enhanced fetch function using the new unified endpoint
-  const fetchEmails = async (mode = 'latest') => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log(`🔄 Starting ${mode} fetch...`);
-      
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/fetch-emails`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          mode: mode,
-          count: mode === 'force' ? 20 : 50
-        })
-      });
-
-      const result = await handleApiError(response, `Failed to ${mode} fetch emails`);
-      console.log(`📨 ${mode} fetch result:`, result);
-      
-      if (result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        if (result.data && result.data.emails && result.data.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
-          const processedNewEmails = result.data.emails.map(processEmailData);
-          
-          const sortedNewEmails = processedNewEmails.sort((a, b) => {
-            const dateA = new Date(a.date || 0);
-            const dateB = new Date(b.date || 0);
-            return dateB - dateA;
-          });
-          
-          setEmails(prevEmails => {
-            const existingIds = new Set(prevEmails.map(email => email.messageId));
-            const uniqueNewEmails = sortedNewEmails.filter(email => !existingIds.has(email.messageId));
-            
-            const allEmails = [...uniqueNewEmails, ...prevEmails];
-            const finalSortedEmails = allEmails.sort((a, b) => {
-              const dateA = new Date(a.date || 0);
-              const dateB = new Date(b.date || 0);
-              return dateB - dateA;
-            });
-            
-            console.log(`🔄 Email state updated: ${uniqueNewEmails.length} new, ${finalSortedEmails.length} total`);
-            return finalSortedEmails;
-          });
-        } else {
-          console.log('🔄 No new emails, refreshing list to ensure proper order...');
-          await loadEmails(false, true);
-        }
-        
-      } else {
-        throw new Error(result.error || `Failed to ${mode} fetch emails`);
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error(`❌ ${mode} fetch failed:`, err);
-    } finally {
-      setFetching(false);
-    }
-  };
-
-  // Individual fetch functions
-  const fetchNewEmails = () => fetchEmails('latest');
-  const forceFetchEmails = () => fetchEmails('force');
-
-  // Refresh emails - force reload from database
-  const forceRefreshEmails = async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('🔄 Force refreshing emails...');
-      await loadEmails(true, true);
-
-      setFetchStatus('success');
-      setLastFetchTime(new Date());
-      console.log('✅ Force refresh completed');
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Force refresh failed:', err);
-    } finally {
-      setFetching(false);
     }
   };
 
@@ -633,7 +482,7 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Enhanced attachment rendering
+  // Enhanced attachment rendering (keep your existing renderAttachment function)
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -910,18 +759,18 @@ function App() {
   // Load emails when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
-    loadEmails(true, true);
+    loadEmails(1, true);
   }, []);
 
-  // ✅ FIXED: Enhanced search handler - uses the new search endpoint for ALL emails
+  // ✅ ENHANCED: Search handler with debouncing
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search.trim().length > 0) {
-        // Use the enhanced search for ALL emails when search term is provided
+        // Use search for ALL emails when search term is provided
         searchAllEmails(search);
       } else {
         // Use normal load when no search term
-        loadEmails(true, false);
+        loadEmails(1, true);
       }
     }, 500);
     
@@ -977,6 +826,29 @@ function App() {
                   <p className="user-email">{user.email}</p>
                 </div>
               )}
+
+              {/* Email Statistics */}
+              {emailStats && (
+                <div className="email-stats-sidebar">
+                  <h4>📊 Email Statistics</h4>
+                  <div className="stat-item">
+                    <span className="stat-label">Total Emails:</span>
+                    <span className="stat-value">{emailStats.totalEmails.toLocaleString()}</span>
+                  </div>
+                  <div className="stat-item">
+                    <span className="stat-label">With Attachments:</span>
+                    <span className="stat-value">{emailStats.emailsWithAttachments.toLocaleString()}</span>
+                  </div>
+                  {emailStats.dateRange.oldest && (
+                    <div className="stat-item">
+                      <span className="stat-label">Date Range:</span>
+                      <span className="stat-value">
+                        {new Date(emailStats.dateRange.oldest).toLocaleDateString()} - {new Date(emailStats.dateRange.latest).toLocaleDateString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -989,7 +861,7 @@ function App() {
           <div className="header-top">
             <h1>📧 Email Inbox</h1>
             <div className="header-stats">
-              <span className="email-count-badge">📊 {emails.length} emails</span>
+              <span className="email-count-badge">📊 {emails.length} of {totalEmails.toLocaleString()} emails</span>
               {user && (
                 <span className="user-badge">👤 {user.email}</span>
               )}
@@ -1001,36 +873,18 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
-            {/* Load Oldest Emails Button */}
-            <button 
-              onClick={loadOldestEmails} 
-              disabled={loading}
-              className="load-oldest-button"
-              title="Load oldest emails from your inbox"
-            >
-              📜 Oldest
-            </button>
-
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
               className={`fetch-button ${fetching ? 'fetching' : ''}`}
             >
-              {fetching ? '🔄' : '📥'} Smart Fetch
+              {fetching ? '🔄' : '📥'} Fetch New
             </button>
 
             <button 
-              onClick={forceFetchEmails} 
-              disabled={fetching}
-              className="force-fetch-button"
-            >
-              ⚡ Force Fetch
-            </button>
-
-            <button 
-              onClick={forceRefreshEmails} 
-              disabled={fetching}
-              className="force-refresh-button"
+              onClick={() => loadEmails(1, true)} 
+              disabled={loading}
+              className="refresh-button"
             >
               🔄 Refresh
             </button>
@@ -1061,7 +915,7 @@ function App() {
         )}
 
         {/* Status Banner */}
-        {statusMessage && !loadAllProgress && (
+        {statusMessage && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
             {fetchStatus === 'fetching' && (
@@ -1077,7 +931,7 @@ function App() {
         {/* Search Status */}
         {searching && (
           <div className="search-status">
-            🔍 Searching ALL emails for "{search}"...
+            🔍 Searching through {emailStats?.totalEmails.toLocaleString() || 'all'} emails for "{search}"...
           </div>
         )}
 
@@ -1093,20 +947,17 @@ function App() {
           {searching && (
             <div className="loading-state">
               <div className="spinner"></div>
-              <p>Searching ALL emails...</p>
+              <p>Searching through {emailStats?.totalEmails.toLocaleString() || 'all'} emails...</p>
             </div>
           )}
           
           {!loading && !searching && emails.length === 0 && (
             <div className="empty-state">
               <p>📭 No emails found</p>
-              <p>Try fetching emails from your inbox</p>
+              <p>Try fetching emails from your inbox or using different search terms</p>
               <div className="empty-actions">
                 <button onClick={fetchNewEmails} className="fetch-button">
-                  📥 Smart Fetch
-                </button>
-                <button onClick={loadOldestEmails} className="load-oldest-button">
-                  📜 Load Oldest
+                  📥 Fetch New Emails
                 </button>
               </div>
             </div>
@@ -1118,15 +969,15 @@ function App() {
                 <EmailCard key={email.id} email={email} index={index} />
               ))}
               
-              {/* Load More Button for Older Emails */}
+              {/* Load More Button */}
               {hasMoreEmails && (
                 <div className="load-more-section">
                   <button 
-                    onClick={loadOlderEmails} 
-                    disabled={loadingOlder}
+                    onClick={loadMoreEmails} 
+                    disabled={loading}
                     className="load-more-button"
                   >
-                    {loadingOlder ? '🔄 Loading...' : '📨 Load Older Emails'}
+                    {loading ? '🔄 Loading...' : `📥 Load More (${totalEmails - emails.length} remaining)`}
                   </button>
                 </div>
               )}
@@ -1141,14 +992,14 @@ function App() {
             <div className="debug-content">
               <p>Backend: {API_BASE}</p>
               <p>Current emails: {emails.length}</p>
+              <p>Total emails: {totalEmails}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Searching: {searching ? 'Yes' : 'No'}</p>
-              <p>Loading Older: {loadingOlder ? 'Yes' : 'No'}</p>
               <p>Search Term: "{search}"</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Has More Emails: {hasMoreEmails ? 'Yes' : 'No'}</p>
-              <p>Last Sequence: {lastSequence || 'None'}</p>
+              <p>Current Page: {currentPage}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {user && <p>User: {user.email}</p>}
               {error && <p>Error: {error}</p>}
