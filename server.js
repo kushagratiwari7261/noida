@@ -99,7 +99,7 @@ function getEmailConfigsFromEnv() {
 // Initialize email configs
 const emailConfigs = getEmailConfigsFromEnv();
 
-// Simple IMAP connection function (no complex manager needed)
+// Simple IMAP connection function
 async function createIMAPConnection(userEmail, password) {
   return new Promise((resolve, reject) => {
     const connection = new Imap({
@@ -442,7 +442,222 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
   return emailData;
 }
 
-// ========== SIMPLIFIED API ENDPOINTS ==========
+// ========== ENHANCED API ENDPOINTS ==========
+
+// ✅ FIXED: Get ALL emails from Supabase with proper pagination
+app.get("/api/emails", authenticateUser, async (req, res) => {
+  try {
+    const { search = "", sort = "date_desc", page = 1, limit = 100 } = req.query;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+
+    console.log(`📧 Fetching ALL emails from Supabase for ${userEmail}: page=${pageNum}, limit=${limitNum}, search="${search}", sort=${sort}`);
+
+    // Create user-specific cache key
+    const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}`;
+    const cached = getFromCache(cacheKey);
+    
+    if (cached) {
+      console.log(`📦 Serving from cache for ${userEmail}`);
+      return res.json(cached);
+    }
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        error: "Supabase is not available" 
+      });
+    }
+
+    let query = supabase.from('emails').select('*', { count: 'exact' })
+      .eq('user_id', userId); // Only get this user's emails
+    
+    // Add search if provided
+    if (search && search.trim().length > 0) {
+      const trimmedSearch = search.trim();
+      query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,text_content.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
+    }
+    
+    // Add sorting - NO DATE LIMITS, get ALL emails
+    if (sort === "date_asc") {
+      query = query.order('date', { ascending: true }); // Oldest first
+    } else if (sort === "subject_asc") {
+      query = query.order('subject', { ascending: true }); // A-Z
+    } else {
+      query = query.order('date', { ascending: false }); // Newest first (default)
+    }
+    
+    // Add pagination - NO OTHER FILTERS
+    query = query.range(offset, offset + limitNum - 1);
+    
+    const { data: emails, error, count } = await query;
+    
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      return res.status(500).json({ 
+        error: "Failed to fetch emails from Supabase",
+        details: error.message 
+      });
+    }
+
+    console.log(`📧 Supabase returned ${emails?.length || 0} emails for ${userEmail} out of ${count} total`);
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
+    }));
+
+    const totalPages = Math.ceil((count || 0) / limitNum);
+    const hasMore = pageNum < totalPages;
+
+    const response = {
+      emails: enhancedEmails,
+      total: count || 0,
+      hasMore,
+      page: pageNum,
+      limit: limitNum,
+      totalPages,
+      userEmail: userEmail,
+      source: 'supabase'
+    };
+
+    setToCache(cacheKey, response);
+
+    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase for ${userEmail} (page ${pageNum}/${totalPages})`);
+    res.json(response);
+
+  } catch (error) {
+    console.error("❌ Emails fetch error:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch emails",
+      details: error.message 
+    });
+  }
+});
+
+// ✅ ENHANCED: Search ALL emails in Supabase
+app.post("/api/search-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search: searchTerm, limit = 5000, page = 1 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🔍 Searching ALL emails in Supabase for user ${userEmail}: "${searchTerm}", page: ${page}, limit: ${limit}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    if (!searchTerm || searchTerm.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term is required"
+      });
+    }
+
+    const trimmedSearchTerm = searchTerm.trim();
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(5000, Math.max(1, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
+    
+    // Search in ALL emails in Supabase for this user
+    const { data: emails, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .or(`subject.ilike.%${trimmedSearchTerm}%,from_text.ilike.%${trimmedSearchTerm}%,text_content.ilike.%${trimmedSearchTerm}%,to_text.ilike.%${trimmedSearchTerm}%`)
+      .order('date', { ascending: false })
+      .range(offset, offset + limitNum - 1);
+
+    if (error) {
+      console.error("❌ Supabase search error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to search emails",
+        details: error.message
+      });
+    }
+
+    console.log(`🔍 Search query executed for ${userEmail}: Found ${emails?.length || 0} emails out of ${count} total`);
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      user_id: email.user_id,
+      user_email: email.user_email
+    }));
+
+    const totalPages = Math.ceil((count || 0) / limitNum);
+    const hasMore = pageNum < totalPages;
+
+    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${trimmedSearchTerm}" out of ${count} total emails`);
+
+    res.json({
+      success: true,
+      message: `Found ${count} emails matching "${trimmedSearchTerm}"`,
+      data: {
+        emails: enhancedEmails,
+        total: count,
+        searchTerm: trimmedSearchTerm,
+        userEmail: userEmail,
+        pagination: {
+          currentPage: pageNum,
+          totalPages: totalPages,
+          hasMore: hasMore,
+          limit: limitNum
+        },
+        source: 'supabase_search'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Search emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // ✅ SIMPLIFIED: Fetch new emails from IMAP and save to Supabase
 app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
@@ -622,209 +837,6 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: error.message 
-    });
-  }
-});
-
-// ✅ SIMPLIFIED: Get emails from Supabase only (no IMAP)
-app.get("/api/emails", authenticateUser, async (req, res) => {
-  try {
-    const { search = "", sort = "date_desc", page = 1, limit = 100 } = req.query;
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-    
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
-
-    console.log(`📧 Fetching emails from Supabase for ${userEmail}: page=${pageNum}, limit=${limitNum}, search="${search}", sort=${sort}`);
-
-    // Create user-specific cache key
-    const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}`;
-    const cached = getFromCache(cacheKey);
-    
-    if (cached) {
-      console.log(`📦 Serving from cache for ${userEmail}`);
-      return res.json(cached);
-    }
-
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({ 
-        error: "Supabase is not available" 
-      });
-    }
-
-    let query = supabase.from('emails').select('*', { count: 'exact' })
-      .eq('user_id', userId); // Only get this user's emails
-    
-    // Add search if provided
-    if (search && search.trim().length > 0) {
-      const trimmedSearch = search.trim();
-      query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,text_content.ilike.%${trimmedSearch}%`);
-    }
-    
-    // Add sorting
-    if (sort === "date_asc") {
-      query = query.order('date', { ascending: true }); // Oldest first
-    } else if (sort === "subject_asc") {
-      query = query.order('subject', { ascending: true }); // A-Z
-    } else {
-      query = query.order('date', { ascending: false }); // Newest first (default)
-    }
-    
-    // Add pagination
-    query = query.range(skip, skip + limitNum - 1);
-    
-    const { data: emails, error, count } = await query;
-    
-    if (error) {
-      console.error("❌ Supabase query error:", error);
-      return res.status(500).json({ 
-        error: "Failed to fetch emails from Supabase",
-        details: error.message 
-      });
-    }
-
-    console.log(`📧 Supabase returned ${emails?.length || 0} emails for ${userEmail}`);
-
-    // Enhanced email data for frontend
-    const enhancedEmails = (emails || []).map(email => ({
-      id: email.message_id,
-      _id: email.message_id,
-      messageId: email.message_id,
-      subject: email.subject,
-      from: email.from_text,
-      from_text: email.from_text,
-      to: email.to_text,
-      to_text: email.to_text,
-      date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
-      attachments: email.attachments || [],
-      hasAttachments: email.has_attachments,
-      attachmentsCount: email.attachments_count,
-      read: email.read || false,
-      user_id: email.user_id,
-      user_email: email.user_email
-    }));
-
-    const totalPages = Math.ceil((count || 0) / limitNum);
-    const hasMore = pageNum < totalPages;
-
-    const response = {
-      emails: enhancedEmails,
-      total: count || 0,
-      hasMore,
-      page: pageNum,
-      limit: limitNum,
-      totalPages,
-      userEmail: userEmail,
-      source: 'supabase'
-    };
-
-    setToCache(cacheKey, response);
-
-    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase for ${userEmail} (page ${pageNum}/${totalPages})`);
-    res.json(response);
-
-  } catch (error) {
-    console.error("❌ Emails fetch error:", error);
-    res.status(500).json({ 
-      error: "Failed to fetch emails",
-      details: error.message 
-    });
-  }
-});
-
-// ✅ ENHANCED: Search ALL emails in Supabase
-app.post("/api/search-emails", authenticateUser, async (req, res) => {
-  try {
-    const { search: searchTerm, limit = 1000 } = req.body;
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-
-    console.log(`🔍 Searching ALL emails in Supabase for user ${userEmail}: "${searchTerm}"`);
-
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        success: false,
-        error: "Supabase is not available"
-      });
-    }
-
-    if (!searchTerm || searchTerm.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Search term is required"
-      });
-    }
-
-    const trimmedSearchTerm = searchTerm.trim();
-    
-    // Search in ALL emails in Supabase for this user
-    const { data: emails, error, count } = await supabase
-      .from('emails')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
-      .or(`subject.ilike.%${trimmedSearchTerm}%,from_text.ilike.%${trimmedSearchTerm}%,text_content.ilike.%${trimmedSearchTerm}%,to_text.ilike.%${trimmedSearchTerm}%`)
-      .order('date', { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      console.error("❌ Supabase search error:", error);
-      return res.status(500).json({
-        success: false,
-        error: "Failed to search emails",
-        details: error.message
-      });
-    }
-
-    console.log(`🔍 Search query executed for ${userEmail}: Found ${emails?.length || 0} emails`);
-
-    // Enhanced email data for frontend
-    const enhancedEmails = (emails || []).map(email => ({
-      id: email.message_id,
-      _id: email.message_id,
-      messageId: email.message_id,
-      subject: email.subject,
-      from: email.from_text,
-      from_text: email.from_text,
-      to: email.to_text,
-      to_text: email.to_text,
-      date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
-      attachments: email.attachments || [],
-      hasAttachments: email.has_attachments,
-      attachmentsCount: email.attachments_count,
-      read: email.read || false,
-      user_id: email.user_id,
-      user_email: email.user_email
-    }));
-
-    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${trimmedSearchTerm}" out of ${count} total emails`);
-
-    res.json({
-      success: true,
-      message: `Found ${enhancedEmails.length} emails matching "${trimmedSearchTerm}"`,
-      data: {
-        emails: enhancedEmails,
-        total: count,
-        searchTerm: trimmedSearchTerm,
-        userEmail: userEmail,
-        source: 'supabase_search'
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Search emails error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
     });
   }
 });
@@ -1010,8 +1022,8 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Simplified Version",
-    version: "6.0.0",
+    message: "Email IMAP Backend Server - Complete Email Access",
+    version: "7.0.0",
     environment: process.env.NODE_ENV || 'development',
     supabase: supabaseEnabled ? "enabled" : "disabled",
     emailConfigs: {
@@ -1021,7 +1033,7 @@ app.get("/", (req, res) => {
     endpoints: {
       "GET /api/health": "Check service status",
       "GET /api/email-stats": "Get email statistics (authenticated)",
-      "GET /api/emails": "Get emails from Supabase (authenticated)",
+      "GET /api/emails": "Get ALL emails with pagination (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails from IMAP (authenticated)",
       "POST /api/search-emails": "Search ALL emails in Supabase (authenticated)",
       "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
@@ -1065,7 +1077,7 @@ initializeApp();
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📧 Email IMAP Backend Server - Simplified Version`);
+    console.log(`📧 Email IMAP Backend Server - Complete Email Access`);
     console.log(`📋 Supabase: ${supabaseEnabled ? 'ENABLED' : 'DISABLED'}`);
     console.log(`📧 Email Configurations: ${Object.keys(emailConfigs).length} loaded`);
   });
