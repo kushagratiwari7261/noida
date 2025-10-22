@@ -17,6 +17,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [loadAllProgress, setLoadAllProgress] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [loadAllMode, setLoadAllMode] = useState(false);
 
   const API_BASE = '';
 
@@ -91,8 +92,7 @@ function App() {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          search: searchTerm,
-          limit: 10000
+          search: searchTerm
         })
       });
 
@@ -124,12 +124,59 @@ function App() {
     }
   };
 
-  // NEW: Load ALL emails function - FIXED
-  const loadAllEmails = async () => {
+  // NEW: Load ALL emails from database (not IMAP)
+  const loadAllFromDatabase = async () => {
+    if (fetching) return;
+
+    setFetching(true);
+    setLoadAllMode(true);
+    setError(null);
+
+    try {
+      console.log('🚀 Loading ALL emails from database...');
+      
+      const queries = [
+        `load_all=true`,
+        `sort=${sort}`,
+        `t=${Date.now()}`
+      ].join('&');
+
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
+        headers: headers
+      });
+
+      const data = await handleApiError(response, 'Failed to load all emails from database');
+      console.log('📧 Load all from database result:', data);
+      
+      const processedEmails = data.emails.map(processEmailData);
+      
+      // Sort emails by date
+      const sortedEmails = processedEmails.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        return dateB - dateA;
+      });
+      
+      setEmails(sortedEmails);
+      setLastFetchTime(new Date());
+      console.log(`✅ Load all from database completed: ${sortedEmails.length} emails loaded`);
+      
+    } catch (err) {
+      console.error('❌ Load all from database failed:', err);
+      setError(`Failed to load all emails: ${err.message}`);
+    } finally {
+      setFetching(false);
+      setLoadAllMode(false);
+    }
+  };
+
+  // NEW: Load ALL emails from IMAP function - FIXED
+  const loadAllEmailsFromIMAP = async () => {
     if (fetching) return;
 
     const confirmed = window.confirm(
-      `🚀 LOAD ALL EMAILS\n\nThis will load ALL emails from your inbox. This may take several minutes for large inboxes.\n\n` +
+      `🚀 LOAD ALL EMAILS FROM INBOX\n\nThis will load ALL emails from your IMAP inbox. This may take several minutes for large inboxes.\n\n` +
       `• All emails will be processed and saved to the database\n` +
       `• Duplicates will be automatically skipped\n` +
       `• Progress will be shown during the process\n\n` +
@@ -144,7 +191,7 @@ function App() {
     setError(null);
 
     try {
-      console.log('🚀 Starting load all emails...');
+      console.log('🚀 Starting load all emails from IMAP...');
       
       const headers = await getAuthHeaders();
       const response = await fetch(`${API_BASE}/api/load-all-emails`, {
@@ -161,16 +208,16 @@ function App() {
         setLoadAllProgress(result.data);
         
         // Refresh the email list to show newly loaded emails
-        await loadEmails(false, true);
+        await loadAllFromDatabase();
         
-        console.log('✅ Load all completed successfully');
+        console.log('✅ Load all from IMAP completed successfully');
       } else {
         throw new Error(result.error || 'Failed to load all emails');
       }
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
-      console.error('❌ Load all failed:', err);
+      console.error('❌ Load all from IMAP failed:', err);
     } finally {
       setFetching(false);
       setTimeout(() => setLoadAllProgress(null), 10000);
@@ -339,8 +386,6 @@ function App() {
       const queries = [
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
-        `page=1`,
-        `limit=10000`,
         `t=${Date.now()}`
       ].join('&');
 
@@ -459,7 +504,6 @@ function App() {
   // Individual fetch functions
   const fetchNewEmails = () => fetchEmails('latest');
   const forceFetchEmails = () => fetchEmails('force');
-  const simpleFetchEmails = () => fetchEmails('simple');
 
   // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
@@ -775,34 +819,6 @@ function App() {
           </div>
         )}
 
-        {/* PDF Preview */}
-        {isPDF && safeUrl && (
-          <div className={`pdf-preview ${isExpanded ? 'expanded' : ''}`}>
-            {isExpanded ? (
-              <div className="pdf-full-view">
-                <button 
-                  className="close-pdf-btn"
-                  onClick={() => toggleImageExpand(emailIndex, index)}
-                >
-                  ✕ Close PDF
-                </button>
-                <iframe
-                  src={safeUrl}
-                  title={filename}
-                  className="pdf-iframe"
-                  loading="lazy"
-                />
-              </div>
-            ) : (
-              <div className="pdf-thumbnail" onClick={() => toggleImageExpand(emailIndex, index)}>
-                <div className="pdf-icon">📄</div>
-                <span className="pdf-filename">{filename}</span>
-                <button className="view-pdf-btn">View PDF</button>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* CSV File Preview */}
         {isCSV && safeUrl && (
           <div className="csv-preview">
@@ -1000,14 +1016,24 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
-            {/* Load All Emails Button */}
+            {/* Load All Emails from Database Button */}
             <button 
-              onClick={loadAllEmails} 
+              onClick={loadAllFromDatabase} 
               disabled={fetching}
-              className="load-all-button"
-              title="Load ALL emails from your inbox (may take several minutes)"
+              className="load-all-db-button"
+              title="Load ALL emails from database (fast)"
             >
-              🚀 Load All
+              🚀 Load All from DB
+            </button>
+
+            {/* Load All Emails from IMAP Button */}
+            <button 
+              onClick={loadAllEmailsFromIMAP} 
+              disabled={fetching}
+              className="load-all-imap-button"
+              title="Load ALL emails from IMAP inbox (may take time)"
+            >
+              📥 Load All from IMAP
             </button>
 
             <button 
@@ -1073,7 +1099,7 @@ function App() {
         {loadAllProgress && (
           <div className="load-all-progress">
             <div className="progress-header">
-              <h4>🚀 Loading All Emails</h4>
+              <h4>🚀 Loading All Emails from IMAP</h4>
               <span className="progress-stats">
                 {loadAllProgress.processed} new • {loadAllProgress.duplicates} duplicates • {loadAllProgress.totalInInbox} total in inbox
               </span>
@@ -1123,9 +1149,16 @@ function App() {
           </div>
         )}
 
+        {/* Load All Mode Status */}
+        {loadAllMode && (
+          <div className="load-all-status">
+            🚀 Loading ALL emails from database...
+          </div>
+        )}
+
         {/* Email List */}
         <div className="email-content-area">
-          {loading && !searching && (
+          {loading && !searching && !loadAllMode && (
             <div className="loading-state">
               <div className="spinner"></div>
               <p>Loading emails...</p>
@@ -1138,8 +1171,15 @@ function App() {
               <p>Searching ALL emails...</p>
             </div>
           )}
+
+          {loadAllMode && (
+            <div className="loading-state">
+              <div className="spinner"></div>
+              <p>Loading ALL emails from database...</p>
+            </div>
+          )}
           
-          {!loading && !searching && emails.length === 0 && (
+          {!loading && !searching && !loadAllMode && emails.length === 0 && (
             <div className="empty-state">
               <p>📭 No emails found</p>
               <p>Try fetching emails from your inbox</p>
@@ -1147,14 +1187,14 @@ function App() {
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Smart Fetch
                 </button>
-                <button onClick={loadAllEmails} className="load-all-button">
-                  🚀 Load All Emails
+                <button onClick={loadAllFromDatabase} className="load-all-db-button">
+                  🚀 Load All from DB
                 </button>
               </div>
             </div>
           )}
 
-          {!loading && !searching && emails.length > 0 && (
+          {!loading && !searching && !loadAllMode && emails.length > 0 && (
             <div className="email-list">
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1173,6 +1213,7 @@ function App() {
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Searching: {searching ? 'Yes' : 'No'}</p>
+              <p>Load All Mode: {loadAllMode ? 'Yes' : 'No'}</p>
               <p>Search Term: "{search}"</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
