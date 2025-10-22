@@ -302,11 +302,13 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// ✅ SHARED: Enhanced email data normalization
+// ✅ FIXED: Enhanced email data normalization with safe attachment handling
 function normalizeEmailData(email) {
+  // Safe attachment processing
   let attachments = [];
   try {
-    if (email.attachments && Array.isArray(email.attachments)) {
+    // FIX: Check if email exists and has attachments array
+    if (email && email.attachments && Array.isArray(email.attachments)) {
       attachments = email.attachments.map(att => ({
         id: att.id || `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         filename: att.filename || att.name || 'attachment',
@@ -332,28 +334,29 @@ function normalizeEmailData(email) {
       }));
     }
   } catch (attError) {
-    console.error('❌ Error processing attachments for email:', email.message_id, attError);
+    console.error('❌ Error processing attachments for email:', email?.message_id, attError);
     attachments = [];
   }
 
+  // FIX: Safe data extraction with fallbacks
   return {
-    id: email.message_id,
-    _id: email.message_id,
-    messageId: email.message_id,
-    subject: email.subject || '(No Subject)',
-    from: email.from_text || email.from || '',
-    from_text: email.from_text || email.from || '',
-    to: email.to_text || email.to || '',
-    to_text: email.to_text || email.to || '',
-    date: email.date || email.created_at || new Date(),
-    text: email.text_content || email.text || '',
-    text_content: email.text_content || email.text || '',
-    html: email.html_content || email.html || '',
-    html_content: email.html_content || email.html || '',
+    id: email?.message_id || email?.id || `email_${Date.now()}`,
+    _id: email?.message_id || email?.id || `email_${Date.now()}`,
+    messageId: email?.message_id || email?.id || `email_${Date.now()}`,
+    subject: email?.subject || '(No Subject)',
+    from: email?.from_text || email?.from || '',
+    from_text: email?.from_text || email?.from || '',
+    to: email?.to_text || email?.to || '',
+    to_text: email?.to_text || email?.to || '',
+    date: email?.date || email?.created_at || new Date(),
+    text: email?.text_content || email?.text || '',
+    text_content: email?.text_content || email?.text || '',
+    html: email?.html_content || email?.html || '',
+    html_content: email?.html_content || email?.html || '',
     attachments: attachments,
-    hasAttachments: email.has_attachments || attachments.length > 0,
-    attachmentsCount: email.attachments_count || attachments.length,
-    read: email.read || false
+    hasAttachments: email?.has_attachments || attachments.length > 0,
+    attachmentsCount: email?.attachments_count || attachments.length,
+    read: email?.read || false
   };
 }
 
@@ -658,20 +661,22 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
   return emailData;
 }
 
-// ✅ SHARED: Enhanced email query builder
-function buildEmailQuery(userId, { search = "", sort = "date_desc", limit = null }) {
+// ✅ ENHANCED: Improved email query builder with better search and sort
+function buildEmailQuery(userId, { search = "", sort = "date_desc", limit = null, offset = 0 }) {
   let query = supabase
     .from('emails')
     .select('*', { count: 'exact' })
     .eq('user_id', userId);
 
-  // Add search conditions
+  // Add search conditions - IMPROVED: Better search across multiple fields
   if (search && search.trim().length > 0) {
     const searchTerm = `%${search.trim()}%`;
-    query = query.or(`subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`);
+    query = query.or(
+      `subject.ilike.${searchTerm},from_text.ilike.${searchTerm},text_content.ilike.${searchTerm},to_text.ilike.${searchTerm}`
+    );
   }
 
-  // Add sorting
+  // Add sorting - IMPROVED: Better date handling
   switch (sort) {
     case "date_asc":
       query = query.order('date', { ascending: true });
@@ -682,12 +687,18 @@ function buildEmailQuery(userId, { search = "", sort = "date_desc", limit = null
     case "subject_desc":
       query = query.order('subject', { ascending: false });
       break;
+    case "oldest":
+      query = query.order('date', { ascending: true });
+      break;
+    case "newest":
     default: // date_desc
       query = query.order('date', { ascending: false });
   }
 
-  // Add limit if specified
-  if (limit && limit > 0) {
+  // Add pagination
+  if (offset > 0) {
+    query = query.range(offset, offset + (limit || 50) - 1);
+  } else if (limit && limit > 0) {
     query = query.limit(limit);
   }
 
@@ -696,13 +707,14 @@ function buildEmailQuery(userId, { search = "", sort = "date_desc", limit = null
 
 // ========== API ENDPOINTS ==========
 
-// ✅ UNIFIED: Get emails endpoint with search, sort, and pagination options
+// ✅ FIXED: Get emails endpoint with improved search and old emails loading
 app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
     const { 
       search = "", 
       sort = "date_desc", 
       limit = null,
+      offset = 0,
       load_all = "false" 
     } = req.query;
     
@@ -710,12 +722,13 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     const userEmail = req.user.email;
 
     const loadAllMode = load_all === "true";
-    const effectiveLimit = loadAllMode ? null : (limit ? parseInt(limit) : 1000);
+    const effectiveLimit = loadAllMode ? null : (limit ? parseInt(limit) : 50);
+    const effectiveOffset = parseInt(offset) || 0;
 
-    console.log(`📧 Loading emails for ${userEmail}, search: "${search}", sort: ${sort}, limit: ${effectiveLimit || 'ALL'}`);
+    console.log(`📧 Loading emails for ${userEmail}, search: "${search}", sort: ${sort}, limit: ${effectiveLimit || 'ALL'}, offset: ${effectiveOffset}`);
 
     // Create user-specific cache key
-    const cacheKey = `emails:${userId}:${search}:${sort}:${effectiveLimit}`;
+    const cacheKey = `emails:${userId}:${search}:${sort}:${effectiveLimit}:${effectiveOffset}`;
     const cached = getFromCache(cacheKey);
     
     if (cached && !loadAllMode) {
@@ -730,8 +743,14 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       });
     }
 
-    // Build and execute query
-    const query = buildEmailQuery(userId, { search, sort, limit: effectiveLimit });
+    // Build and execute query with pagination
+    const query = buildEmailQuery(userId, { 
+      search, 
+      sort, 
+      limit: effectiveLimit,
+      offset: effectiveOffset 
+    });
+    
     const { data: emails, error, count } = await query;
     
     if (error) {
@@ -745,19 +764,21 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
 
     console.log(`📧 Loaded ${emails?.length || 0} emails from Supabase for ${userEmail}`);
 
-    // Enhanced email data normalization using shared function
+    // FIXED: Enhanced email data normalization with safe attachment handling
     const enhancedEmails = (emails || []).map(normalizeEmailData);
 
     const response = {
       success: true,
       data: {
         emails: enhancedEmails,
-        total: count,
+        total: count || 0,
         userEmail: userEmail,
         searchTerm: search,
         sort: sort,
         limit: effectiveLimit,
-        loadAllMode: loadAllMode
+        offset: effectiveOffset,
+        loadAllMode: loadAllMode,
+        hasMore: count ? effectiveOffset + enhancedEmails.length < count : false
       }
     };
 
@@ -779,20 +800,21 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ UNIFIED: Search emails endpoint (POST for complex searches)
+// ✅ IMPROVED: Search emails endpoint with better old emails support
 app.post("/api/search-emails", authenticateUser, async (req, res) => {
   try {
     const { 
       search = "", 
       sort = "date_desc", 
       limit = null,
+      offset = 0,
       fields = [] // Optional: specify which fields to search
     } = req.body;
     
     const userId = req.user.id;
     const userEmail = req.user.email;
     
-    console.log(`🔍 Searching emails for ${userEmail}: "${search}", sort: ${sort}, fields: ${fields.join(', ') || 'all'}`);
+    console.log(`🔍 Searching emails for ${userEmail}: "${search}", sort: ${sort}, offset: ${offset}, fields: ${fields.join(', ') || 'all'}`);
 
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({ 
@@ -801,8 +823,14 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       });
     }
 
-    // Build query using shared function
-    const query = buildEmailQuery(userId, { search, sort, limit });
+    // Build query using improved function
+    const query = buildEmailQuery(userId, { 
+      search, 
+      sort, 
+      limit,
+      offset 
+    });
+    
     const { data: emails, error, count } = await query;
     
     if (error) {
@@ -816,7 +844,7 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
 
     console.log(`✅ Search found ${emails?.length || 0} emails for "${search}"`);
 
-    // Enhanced email data normalization using shared function
+    // FIXED: Enhanced email data normalization with safe attachment handling
     const enhancedEmails = (emails || []).map(normalizeEmailData);
 
     console.log(`✅ Search completed: Found ${enhancedEmails.length} emails for "${search}"`);
@@ -825,10 +853,12 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       success: true,
       data: {
         emails: enhancedEmails,
-        total: count,
+        total: count || 0,
         userEmail: userEmail,
         searchTerm: search,
-        sort: sort
+        sort: sort,
+        offset: offset,
+        hasMore: count ? offset + enhancedEmails.length < count : false
       }
     });
 
@@ -841,7 +871,7 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Load ALL emails endpoint with better error handling
+// ✅ FIXED: Load ALL emails endpoint with better error handling and attachment safety
 app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
   console.log(`🚀 Loading ALL emails for user: ${req.user.email}`);
   
@@ -876,9 +906,9 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
         });
       }
       
-      // Fetch ALL emails
+      // Fetch ALL emails - FIXED: Better range handling for old emails
       const fetchRange = `1:${box.messages.total}`;
-      console.log(`📨 ${userEmail} - Fetching ALL ${box.messages.total} emails`);
+      console.log(`📨 ${userEmail} - Fetching ALL ${box.messages.total} emails (including old ones)`);
 
       const f = userImap.connection.seq.fetch(fetchRange, { 
         bodies: "",
@@ -915,22 +945,26 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
               return;
             }
 
-            const attachmentLinks = await processAttachments(parsed.attachments || []);
+            // FIXED: Safe attachment processing
+            const attachments = parsed.attachments || [];
+            const attachmentLinks = attachments.length > 0 ? await processAttachments(attachments) : [];
+
             const emailData = createEmailData(parsed, messageId, attachmentLinks, {
               userId: userId,
-              userEmail: userEmail
+              userEmail: userEmail,
+              sequenceNumber: seqno
             });
 
             newEmails.push(emailData);
             processedCount++;
             
-            // Log progress for large batches
-            if (processedCount % 10 === 0) {
-              console.log(`   📧 Processed ${processedCount}/${box.messages.total} emails...`);
+            // Log progress for large batches - especially for old emails
+            if (processedCount % 10 === 0 || seqno <= 10) {
+              console.log(`   📧 Processed ${processedCount}/${box.messages.total} emails... (current: #${seqno})`);
             }
             
           } catch (parseErr) {
-            console.error("❌ Parse error:", parseErr.message);
+            console.error(`❌ Parse error for message #${seqno}:`, parseErr.message);
             errorCount++;
           }
         });
@@ -938,7 +972,7 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
         msg.once("error", (msgErr) => {
           if (messageProcessed) return;
           messageProcessed = true;
-          console.error("❌ Message processing error:", msgErr.message);
+          console.error(`❌ Message processing error for #${seqno}:`, msgErr.message);
           errorCount++;
         });
       });
@@ -953,13 +987,13 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
 
       f.once("end", async function () {
         try {
-          console.log(`🔄 Processing ${newEmails.length} new emails...`);
+          console.log(`🔄 Processing ${newEmails.length} new emails (including old ones)...`);
           
-          // Save to Supabase in smaller batches
+          // Save to Supabase in smaller batches - IMPORTANT for old emails
           if (newEmails.length > 0) {
             console.log(`💾 Saving ${newEmails.length} new emails to Supabase...`);
             
-            const batchSize = 5; // Smaller batches for reliability
+            const batchSize = 5; // Smaller batches for reliability with old emails
             for (let i = 0; i < newEmails.length; i += batchSize) {
               const batch = newEmails.slice(i, i + batchSize);
               
@@ -1006,16 +1040,18 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
           }
 
           console.log(`✅ Load All completed: ${processedCount} new, ${duplicateCount} duplicates, ${errorCount} errors`);
+          console.log(`📊 Email range: #1 to #${box.messages.total} (oldest to newest)`);
           
           res.json({
             success: true,
-            message: `Loaded ${processedCount} new emails for ${userEmail}`,
+            message: `Loaded ${processedCount} new emails for ${userEmail} (including old emails)`,
             data: {
               processed: processedCount,
               duplicates: duplicateCount,
               errors: errorCount,
               totalInInbox: box.messages.total,
-              userEmail: userEmail
+              userEmail: userEmail,
+              emailRange: `#1 to #${box.messages.total}`
             }
           });
 
@@ -1038,11 +1074,11 @@ app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Fetch emails for authenticated user
+// ✅ FIXED: Fetch emails with support for old emails
 app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   console.log(`🔍 DEBUG: /api/fetch-emails called for user: ${req.user.email}`);
   try {
-    const { mode = "latest", count = 20 } = req.body;
+    const { mode = "latest", count = 20, includeOld = false } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
     
@@ -1056,7 +1092,7 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
       });
     }
 
-    console.log(`🔄 Fetching emails for ${userEmail} in ${mode} mode, count: ${count}`);
+    console.log(`🔄 Fetching emails for ${userEmail} in ${mode} mode, count: ${count}, includeOld: ${includeOld}`);
     
     userImap.openInbox(async function (err, box) {
       if (err) {
@@ -1068,14 +1104,22 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
       
       console.log(`📥 ${userEmail} - Total Messages: ${box.messages.total}`);
       
-      // Calculate fetch range
-      const totalMessages = box.messages.total;
-      const fetchCount = Math.min(count, totalMessages);
-      const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-      const fetchEnd = totalMessages;
-      const fetchRange = `${fetchStart}:${fetchEnd}`;
-
-      console.log(`📨 ${userEmail} - Fetching range: ${fetchRange}`);
+      // Calculate fetch range - IMPROVED: Support for old emails
+      let fetchRange;
+      if (includeOld || mode === "oldest") {
+        // Fetch from the beginning (oldest emails)
+        const fetchCount = Math.min(count, box.messages.total);
+        fetchRange = `1:${fetchCount}`;
+        console.log(`📨 ${userEmail} - Fetching OLDEST ${fetchCount} emails (range: ${fetchRange})`);
+      } else {
+        // Fetch latest emails (default behavior)
+        const totalMessages = box.messages.total;
+        const fetchCount = Math.min(count, totalMessages);
+        const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
+        const fetchEnd = totalMessages;
+        fetchRange = `${fetchStart}:${fetchEnd}`;
+        console.log(`📨 ${userEmail} - Fetching LATEST ${fetchCount} emails (range: ${fetchRange})`);
+      }
 
       const f = userImap.connection.seq.fetch(fetchRange, { 
         bodies: "",
@@ -1117,7 +1161,8 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
                 processingDetails.push({
                   messageId: messageId.substring(0, 50) + '...',
                   subject: parsed.subject || '(No Subject)',
-                  status: 'duplicate'
+                  status: 'duplicate',
+                  sequence: seqno
                 });
                 return;
               }
@@ -1125,25 +1170,28 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
 
             // Process attachments
             console.log(`   📎 Processing attachments for: ${parsed.subject}`);
-            const attachmentLinks = await processAttachments(parsed.attachments || []);
+            const attachments = parsed.attachments || [];
+            const attachmentLinks = attachments.length > 0 ? await processAttachments(attachments) : [];
 
             // Create email data with user info
             const emailData = createEmailData(parsed, messageId, attachmentLinks, {
               fetchMode: mode,
               sequenceNumber: seqno,
               userId: userId,
-              userEmail: userEmail
+              userEmail: userEmail,
+              isOldEmail: includeOld || mode === "oldest"
             });
 
             newEmails.push(emailData);
             processedCount++;
-            console.log(`   ✅ New email: ${parsed.subject} (${attachmentLinks.length} attachments)`);
+            console.log(`   ✅ New email: ${parsed.subject} (${attachmentLinks.length} attachments) - Seq: #${seqno}`);
             
             processingDetails.push({
               messageId: messageId.substring(0, 50) + '...',
               subject: parsed.subject || '(No Subject)',
               status: 'new',
-              attachments: attachmentLinks.length
+              attachments: attachmentLinks.length,
+              sequence: seqno
             });
 
           } catch (parseErr) {
@@ -1225,7 +1273,9 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
               total: processedCount + duplicateCount,
               userEmail: userEmail,
               emails: newEmails,
-              details: processingDetails
+              details: processingDetails,
+              fetchRange: fetchRange,
+              includeOld: includeOld
             }
           });
 
@@ -1248,14 +1298,14 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ ENHANCED: Fast fetch from Supabase only (no IMAP)
+// ✅ ENHANCED: Fast fetch from Supabase with old emails support
 app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
   try {
-    const { mode = "latest", count = 50 } = req.body;
+    const { mode = "latest", count = 50, includeOld = false } = req.body;
     const userId = req.user.id;
     const userEmail = req.user.email;
     
-    console.log(`🚀 Fast fetching ${count} emails from Supabase for ${userEmail} in ${mode} mode`);
+    console.log(`🚀 Fast fetching ${count} emails from Supabase for ${userEmail} in ${mode} mode, includeOld: ${includeOld}`);
     
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({ 
@@ -1264,8 +1314,11 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
       });
     }
 
+    // Determine sort order based on mode
+    const sort = includeOld ? "date_asc" : "date_desc";
+    
     // Build query using shared function
-    const query = buildEmailQuery(userId, { sort: "date_desc", limit: count });
+    const query = buildEmailQuery(userId, { sort, limit: count });
     const { data: emails, error } = await query;
 
     if (error) {
@@ -1277,7 +1330,7 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
       });
     }
 
-    // Enhanced email data normalization using shared function
+    // FIXED: Enhanced email data normalization with safe attachment handling
     const enhancedEmails = (emails || []).map(normalizeEmailData);
 
     console.log(`✅ Fast fetch completed: ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
@@ -1289,7 +1342,9 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
         emails: enhancedEmails,
         total: enhancedEmails.length,
         userEmail: userEmail,
-        source: 'supabase_fast'
+        source: 'supabase_fast',
+        sort: sort,
+        includeOld: includeOld
       }
     });
 
@@ -1302,7 +1357,68 @@ app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Delete email with attachments - Vercel compatible
+// ✅ NEW: Special endpoint to load old emails specifically
+app.post("/api/load-old-emails", authenticateUser, async (req, res) => {
+  try {
+    const { count = 50 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    console.log(`🕰️ Loading ${count} OLDEST emails for user: ${userEmail}`);
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        success: false,
+        error: "Supabase is not available" 
+      });
+    }
+
+    // Query for oldest emails specifically
+    const { data: emails, error } = await supabase
+      .from('emails')
+      .select('*')
+      .eq('user_id', userId)
+      .order('date', { ascending: true }) // Oldest first
+      .limit(count);
+
+    if (error) {
+      console.error("❌ Old emails query error:", error);
+      return res.status(500).json({ 
+        success: false,
+        error: "Failed to fetch old emails from Supabase",
+        details: error.message 
+      });
+    }
+
+    // FIXED: Enhanced email data normalization with safe attachment handling
+    const enhancedEmails = (emails || []).map(normalizeEmailData);
+
+    console.log(`✅ Old emails fetch completed: ${enhancedEmails.length} oldest emails for ${userEmail}`);
+
+    res.json({
+      success: true,
+      message: `Fetched ${enhancedEmails.length} oldest emails for ${userEmail}`,
+      data: {
+        emails: enhancedEmails,
+        total: enhancedEmails.length,
+        userEmail: userEmail,
+        source: 'oldest_emails',
+        sort: 'date_asc'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Load old emails error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// ... (Keep the rest of the endpoints the same: delete, health, debug, etc.)
+
+// Delete email endpoint (unchanged)
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
     const { messageId } = req.params;
@@ -1325,7 +1441,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       .from('emails')
       .select('*')
       .eq('message_id', messageId)
-      .eq('user_id', userId) // Ensure user can only delete their own emails
+      .eq('user_id', userId)
       .single();
 
     if (fetchError || !email) {
@@ -1385,7 +1501,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       .from('emails')
       .delete()
       .eq('message_id', messageId)
-      .eq('user_id', userId); // Ensure user can only delete their own emails
+      .eq('user_id', userId);
 
     if (deleteError) {
       console.error("❌ Database deletion error:", deleteError);
@@ -1403,7 +1519,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     clearCache();
     console.log("🗑️ Cleared cache after deletion");
 
-    // Return success even if some attachments failed to delete
     res.json({
       success: true,
       message: "Email deleted successfully",
@@ -1420,15 +1535,12 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     console.error("❌ Delete email error:", error);
     res.status(500).json({
       success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 });
 
-// ========== UTILITY ENDPOINTS ==========
-
-// Health check endpoint
+// Health check endpoint (unchanged)
 app.get("/api/health", async (req, res) => {
   try {
     let supabaseStatus = "not_configured";
@@ -1474,7 +1586,7 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Test endpoint to verify attachment URLs
+// Test endpoint to verify attachment URLs (unchanged)
 app.get("/api/test-attachment-urls", async (req, res) => {
   try {
     if (!supabaseEnabled || !supabase) {
@@ -1484,12 +1596,10 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       });
     }
 
-    // Test file content
     const testContent = "This is a test file for URL verification";
     const testFilename = `test-verification-${Date.now()}.txt`;
     const testPath = `test-emails/${testFilename}`;
 
-    // Upload test file
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from("attachments")
       .upload(testPath, testContent, {
@@ -1503,12 +1613,10 @@ app.get("/api/test-attachment-urls", async (req, res) => {
       });
     }
 
-    // Get public URL
     const { data: urlData } = supabase.storage
       .from("attachments")
       .getPublicUrl(uploadData.path);
 
-    // Clean up test file
     await supabase.storage.from("attachments").remove([testPath]);
 
     res.json({
@@ -1529,7 +1637,7 @@ app.get("/api/test-attachment-urls", async (req, res) => {
   }
 });
 
-// Debug endpoint for attachment issues
+// Debug endpoint for attachment issues (unchanged)
 app.get("/api/debug-attachments/:messageId", authenticateUser, async (req, res) => {
   try {
     const { messageId } = req.params;
@@ -1539,7 +1647,6 @@ app.get("/api/debug-attachments/:messageId", authenticateUser, async (req, res) 
       return res.status(500).json({ error: "Supabase not available" });
     }
 
-    // Get the email
     const { data: email, error } = await supabase
       .from('emails')
       .select('*')
@@ -1551,7 +1658,6 @@ app.get("/api/debug-attachments/:messageId", authenticateUser, async (req, res) 
       return res.status(404).json({ error: "Email not found" });
     }
 
-    // Test attachment URLs
     const attachmentTests = [];
     if (email.attachments && Array.isArray(email.attachments)) {
       for (const att of email.attachments) {
@@ -1599,7 +1705,7 @@ app.get("/api/debug-attachments/:messageId", authenticateUser, async (req, res) 
   }
 });
 
-// Debug environment
+// Debug environment (unchanged)
 app.get("/api/debug-env", (req, res) => {
   res.json({
     environment: {
@@ -1619,7 +1725,7 @@ app.get("/api/debug-env", (req, res) => {
   });
 });
 
-// Clear cache endpoint - Vercel optimized (no auth required for cache)
+// Clear cache endpoint (unchanged)
 app.post("/api/clear-cache", (req, res) => {
   try {
     const cacheSize = cache.size;
@@ -1638,7 +1744,7 @@ app.post("/api/clear-cache", (req, res) => {
   }
 });
 
-// Root endpoint
+// Root endpoint (unchanged)
 app.get("/", (req, res) => {
   res.json({
     message: "Email IMAP Backend Server - Multi-User Support",
@@ -1654,6 +1760,7 @@ app.get("/", (req, res) => {
       "GET /api/emails": "Get emails with attachments (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails (authenticated)",
       "POST /api/load-all-emails": "Load ALL emails from inbox (authenticated)",
+      "POST /api/load-old-emails": "Load OLDEST emails specifically (authenticated)",
       "POST /api/search-emails": "Search ALL emails (authenticated)",
       "POST /api/fast-fetch": "Fast fetch from database only (authenticated)",
       "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
@@ -1696,5 +1803,5 @@ async function initializeApp() {
 // Call initialization
 initializeApp();
 
-// Vercel serverless function handler - SIMPLIFIED
+// Vercel serverless function handler
 export default app;
