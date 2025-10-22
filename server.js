@@ -1157,10 +1157,291 @@ app.get("/api/health", async (req, res) => {
 app.post("/api/clear-cache", authenticateUser, (req, res) => {
   const cacheSize = cache.size;
   clearCache();
-  res.json({ 
-    success: true, 
-    message: `Cleared ${cacheSize} cache entries for ${req.user.email}` 
+  res.json({
+    success: true,
+    message: `Cleared ${cacheSize} cache entries for ${req.user.email}`
   });
+});
+
+// NEW: Search emails endpoint - searches ALL emails in database
+app.post("/api/search-emails", authenticateUser, async (req, res) => {
+  try {
+    const { search: searchTerm, limit = 10000 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🔍 Searching ALL emails for user ${userEmail}: "${searchTerm}"`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase is not available"
+      });
+    }
+
+    if (!searchTerm || searchTerm.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term is required"
+      });
+    }
+
+    // Search in Supabase with user filter
+    const { data: emails, error } = await supabase
+      .from('emails')
+      .select('*')
+      .eq('user_id', userId)
+      .or(`subject.ilike.%${searchTerm.trim()}%,from_text.ilike.%${searchTerm.trim()}%,text_content.ilike.%${searchTerm.trim()}%`)
+      .order('date', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error("❌ Supabase search error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to search emails",
+        details: error.message
+      });
+    }
+
+    // Enhanced email data for frontend
+    const enhancedEmails = emails.map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false
+    }));
+
+    console.log(`✅ Search completed for ${userEmail}: Found ${enhancedEmails.length} emails for "${searchTerm}"`);
+
+    res.json({
+      success: true,
+      message: `Found ${enhancedEmails.length} emails matching "${searchTerm}"`,
+      data: {
+        emails: enhancedEmails,
+        total: enhancedEmails.length,
+        searchTerm: searchTerm,
+        userEmail: userEmail
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Search emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// NEW: Load ALL emails endpoint - fetches all emails from IMAP and saves to database
+app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🚀 Starting load ALL emails for user: ${userEmail}`);
+
+    // Get user-specific IMAP connection
+    const userImap = await imapManager.getUserConnection(userId, userEmail);
+
+    if (!userImap.connection || userImap.connection.state !== 'authenticated') {
+      return res.status(400).json({ error: "IMAP not connected" });
+    }
+
+    userImap.openInbox(async function (err, box) {
+      if (err) {
+        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+      }
+
+      console.log(`📥 ${userEmail} - Total Messages in Inbox: ${box.messages.total}`);
+
+      const totalMessages = box.messages.total;
+      if (totalMessages === 0) {
+        return res.json({
+          success: true,
+          message: "No emails found in inbox",
+          data: {
+            processed: 0,
+            duplicates: 0,
+            totalInInbox: 0,
+            userEmail: userEmail
+          }
+        });
+      }
+
+      // Fetch ALL messages in batches to avoid memory issues
+      const batchSize = 50;
+      let processed = 0;
+      let duplicates = 0;
+      let allNewEmails = [];
+      let batchPromises = [];
+
+      for (let start = 1; start <= totalMessages; start += batchSize) {
+        const end = Math.min(start + batchSize - 1, totalMessages);
+        const fetchRange = `${start}:${end}`;
+
+        console.log(`📨 ${userEmail} - Fetching batch: ${fetchRange} (${Math.ceil((end - start + 1) / batchSize)}/${Math.ceil(totalMessages / batchSize)})`);
+
+        const batchPromise = new Promise((resolveBatch) => {
+          const f = userImap.connection.seq.fetch(fetchRange, {
+            bodies: "",
+            struct: true
+          });
+
+          let batchEmails = [];
+          let batchProcessed = 0;
+          let batchDuplicates = 0;
+
+          f.on("message", function (msg, seqno) {
+            let buffer = "";
+
+            msg.on("body", function (stream) {
+              stream.on("data", function (chunk) {
+                buffer += chunk.toString("utf8");
+              });
+            });
+
+            msg.once("end", async function () {
+              try {
+                const parsed = await simpleParser(buffer);
+                const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
+
+                // Check for duplicates for this user
+                const isDuplicate = await checkDuplicate(userId, messageId);
+                if (isDuplicate) {
+                  batchDuplicates++;
+                  return;
+                }
+
+                // Process attachments
+                const attachmentLinks = await processAttachments(parsed.attachments || []);
+
+                const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+                  userId: userId,
+                  userEmail: userEmail
+                });
+
+                batchEmails.push(emailData);
+                batchProcessed++;
+
+              } catch (parseErr) {
+                console.error(`   ❌ Parse error for message ${seqno}:`, parseErr.message);
+              }
+            });
+          });
+
+          f.once("error", function (err) {
+            console.error(`❌ Batch fetch error for ${fetchRange}:`, err);
+            resolveBatch({ emails: [], processed: 0, duplicates: 0, error: err.message });
+          });
+
+          f.once("end", function () {
+            console.log(`✅ Batch ${fetchRange} completed: ${batchProcessed} new, ${batchDuplicates} duplicates`);
+            resolveBatch({
+              emails: batchEmails,
+              processed: batchProcessed,
+              duplicates: batchDuplicates
+            });
+          });
+        });
+
+        batchPromises.push(batchPromise);
+
+        // Process batches in smaller groups to avoid overwhelming the system
+        if (batchPromises.length >= 5 || start + batchSize > totalMessages) {
+          const batchResults = await Promise.allSettled(batchPromises);
+
+          for (const result of batchResults) {
+            if (result.status === 'fulfilled') {
+              allNewEmails.push(...result.value.emails);
+              processed += result.value.processed;
+              duplicates += result.value.duplicates;
+            }
+          }
+
+          batchPromises = [];
+        }
+      }
+
+      // Save all new emails to Supabase
+      if (allNewEmails.length > 0) {
+        console.log(`💾 Saving ${allNewEmails.length} emails to Supabase for ${userEmail}...`);
+
+        const saveOps = allNewEmails.map(async (email) => {
+          try {
+            if (supabaseEnabled && supabase) {
+              const supabaseData = {
+                message_id: email.messageId,
+                subject: email.subject,
+                from_text: email.from,
+                to_text: email.to,
+                date: email.date,
+                text_content: email.text,
+                html_content: email.html,
+                attachments: email.attachments,
+                has_attachments: email.hasAttachments,
+                attachments_count: email.attachmentsCount,
+                user_id: userId,
+                user_email: userEmail,
+                created_at: new Date(),
+                updated_at: new Date()
+              };
+
+              const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
+              if (supabaseError) {
+                console.error("   ❌ Supabase save error:", supabaseError);
+              } else {
+                console.log(`   ✅ Saved to Supabase for ${userEmail}: ${email.subject}`);
+              }
+            }
+            return true;
+          } catch (saveErr) {
+            console.error(`   ❌ Error saving email:`, saveErr);
+            return false;
+          }
+        });
+
+        await Promise.allSettled(saveOps);
+        clearCache();
+        console.log(`🗑️ Cleared cache after bulk save for ${userEmail}`);
+      }
+
+      console.log(`✅ Load ALL completed for ${userEmail}: ${processed} new, ${duplicates} duplicates, ${totalMessages} total in inbox`);
+
+      res.json({
+        success: true,
+        message: `Successfully processed ${processed} new emails for ${userEmail}`,
+        data: {
+          processed: processed,
+          duplicates: duplicates,
+          totalInInbox: totalMessages,
+          userEmail: userEmail,
+          emails: allNewEmails
+        }
+      });
+    });
+
+  } catch (error) {
+    console.error("❌ Load all emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // ✅ FIXED: Delete email with attachments - Vercel compatible
@@ -1341,6 +1622,16 @@ async function initializeApp() {
 // Call initialization
 initializeApp();
 
+// Start server for local development
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📧 Email IMAP Backend Server - Multi-User Support`);
+    console.log(`📋 Supabase: ${supabaseEnabled ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`📧 Email Configurations: ${Object.keys(emailConfigs).length} loaded`);
+  });
+}
+
 // Vercel serverless function handler
 const handler = async (req, res) => {
   try {
@@ -1348,7 +1639,7 @@ const handler = async (req, res) => {
     if (!supabaseEnabled) {
       initializeSupabase();
     }
-    
+
     return app(req, res);
   } catch (error) {
     console.error('Serverless function error:', error);
