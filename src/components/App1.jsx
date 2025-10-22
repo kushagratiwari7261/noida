@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App1.css';
+import { supabase } from '../lib/supabaseClient'; // Import Supabase client
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -13,8 +14,35 @@ function App() {
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
   const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
+  const [user, setUser] = useState(null); // Track current user
 
   const API_BASE = '';
+
+  // Get authentication headers
+  const getAuthHeaders = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('No active session');
+      }
+      return {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json'
+      };
+    } catch (error) {
+      console.error('❌ Authentication error:', error);
+      throw new Error('Authentication required');
+    }
+  };
+
+  // Get user info on component mount
+  useEffect(() => {
+    const getUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setUser(user);
+    };
+    getUser();
+  }, []);
 
   // Enhanced attachment URL processor with better CSV handling
   const processAttachmentUrl = (attachment) => {
@@ -125,7 +153,7 @@ function App() {
     return processedEmail;
   };
 
-  // NEW: Delete email function
+  // NEW: Delete email function with authentication
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
@@ -148,15 +176,10 @@ function App() {
     try {
       console.log('🗑️ Deleting email:', { emailId, messageId });
 
-      const response = await fetch(`${API_BASE}/api/delete-email`, {
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails/${messageId}`, {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          emailId: emailId,
-          messageId: messageId
-        })
+        headers: headers
       });
 
       if (!response.ok) {
@@ -186,7 +209,7 @@ function App() {
     }
   };
 
-  // Enhanced load emails function with proper sorting
+  // Enhanced load emails function with proper sorting and authentication
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -197,7 +220,11 @@ function App() {
       // Clear cache first if force refresh
       if (forceRefresh) {
         try {
-          await fetch(`${API_BASE}/api/clear-cache`, { method: 'POST' });
+          const headers = await getAuthHeaders();
+          await fetch(`${API_BASE}/api/clear-cache`, { 
+            method: 'POST',
+            headers: headers
+          });
           console.log('🗑️ Cache cleared');
         } catch (cacheErr) {
           console.log('⚠️ Cache clear failed, continuing...');
@@ -213,7 +240,10 @@ function App() {
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
 
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`);
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
+        headers: headers
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -275,7 +305,7 @@ function App() {
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint with proper email ordering
+  // Enhanced fetch function using the new unified endpoint with proper email ordering and authentication
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -286,11 +316,10 @@ function App() {
     try {
       console.log(`🔄 Starting ${mode} fetch...`);
       
+      const headers = await getAuthHeaders();
       const response = await fetch(`${API_BASE}/api/fetch-emails`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
         body: JSON.stringify({
           mode: mode,
           count: mode === 'force' ? 20 : 30 // Increased count for better sampling
@@ -384,7 +413,7 @@ function App() {
     }
   };
 
-  // Fast fetch from Supabase only
+  // Fast fetch from Supabase only with authentication
   const fastFetchEmails = async () => {
     if (fetching) return;
 
@@ -395,11 +424,10 @@ function App() {
     try {
       console.log('🚀 Fast fetching emails from Supabase...');
       
+      const headers = await getAuthHeaders();
       const response = await fetch(`${API_BASE}/api/fast-fetch`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
         body: JSON.stringify({
           mode: 'fast',
           count: 100 // Fetch more emails quickly
@@ -942,7 +970,13 @@ function App() {
         <div className="sidebar-content">
           {!sidebarCollapsed && (
             <>
-              {/* Sidebar content can be added here if needed */}
+              {/* User Info */}
+              {user && (
+                <div className="user-info-sidebar">
+                  <p><strong>Logged in as:</strong></p>
+                  <p className="user-email">{user.email}</p>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -956,6 +990,9 @@ function App() {
             <h1>📧 Email Inbox</h1>
             <div className="header-stats">
               <span className="email-count-badge">📊 {emails.length} emails</span>
+              {user && (
+                <span className="user-badge">👤 {user.email}</span>
+              )}
               {lastFetchTime && (
                 <span className="last-fetch">Last: {lastFetchTime.toLocaleTimeString()}</span>
               )}
@@ -1089,6 +1126,7 @@ function App() {
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
+              {user && <p>User: {user.email}</p>}
               {error && <p>Error: {error}</p>}
               <div className="attachments-debug">
                 <h4>Attachments Debug:</h4>

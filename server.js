@@ -6,13 +6,11 @@ import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
 
-// Load environment variables locally (not needed in Vercel)
-if (process.env.NODE_ENV !== 'production') {
+// Load environment variables only in development
+if (process.env.NODE_ENV === 'development') {
   const dotenv = await import('dotenv');
   dotenv.config();
 }
-
-console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "SUPABASE_URL:", !!process.env.SUPABASE_URL, "SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
 
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -20,7 +18,6 @@ const __dirname = path.dirname(__filename);
 
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
@@ -69,9 +66,80 @@ const initializeSupabase = () => {
 // Initialize Supabase immediately
 initializeSupabase();
 
-// Enhanced IMAP Connection Manager
-class IMAPConnection {
+// ========== MULTI-EMAIL SUPPORT ==========
+
+// Function to parse multiple email configurations from environment
+function getEmailConfigsFromEnv() {
+  const configs = {};
+  
+  // Parse multiple email configurations
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('EMAIL_CONFIG_')) {
+      const [email, password] = value.split(':');
+      if (email && password) {
+        configs[email.trim()] = password.trim();
+      }
+    }
+  }
+  
+  // Also support legacy single email config for backward compatibility
+  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    configs[process.env.EMAIL_USER] = process.env.EMAIL_PASS;
+  }
+  
+  console.log(`📧 Loaded ${Object.keys(configs).length} email configurations:`);
+  Object.keys(configs).forEach(email => {
+    console.log(`   ✅ ${email}`);
+  });
+  
+  return configs;
+}
+
+// Initialize email configs
+const emailConfigs = getEmailConfigsFromEnv();
+
+// Enhanced IMAP Connection Manager for multiple users
+class IMAPConnectionManager {
   constructor() {
+    this.connections = new Map(); // Store connections by user ID
+  }
+
+  async getUserConnection(userId, userEmail) {
+    // Check if user's email has configuration
+    if (!emailConfigs[userEmail]) {
+      throw new Error(`No email configuration found for ${userEmail}`);
+    }
+
+    // Return existing connection if available and valid
+    if (this.connections.has(userId)) {
+      const existingConnection = this.connections.get(userId);
+      if (await existingConnection.checkConnection()) {
+        return existingConnection;
+      }
+      // Remove stale connection
+      this.connections.delete(userId);
+    }
+
+    // Create new connection
+    const newConnection = new UserIMAPConnection(userId, userEmail, emailConfigs[userEmail]);
+    this.connections.set(userId, newConnection);
+    await newConnection.connect();
+    return newConnection;
+  }
+
+  disconnectUser(userId) {
+    if (this.connections.has(userId)) {
+      this.connections.get(userId).disconnect();
+      this.connections.delete(userId);
+    }
+  }
+}
+
+class UserIMAPConnection {
+  constructor(userId, userEmail, password) {
+    this.userId = userId;
+    this.userEmail = userEmail;
+    this.password = password;
     this.connection = null;
     this.isConnected = false;
     this.isConnecting = false;
@@ -101,8 +169,8 @@ class IMAPConnection {
     
     return new Promise((resolve, reject) => {
       this.connection = new Imap({
-        user: process.env.EMAIL_USER,
-        password: process.env.EMAIL_PASS,
+        user: this.userEmail,
+        password: this.password,
         host: "imap.gmail.com",
         port: 993,
         tls: true,
@@ -116,18 +184,18 @@ class IMAPConnection {
         this.isConnected = true;
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-        console.log("✅ IMAP connection ready");
+        console.log(`✅ IMAP connection ready for user: ${this.userEmail}`);
         resolve(this.connection);
       });
 
       this.connection.once('error', (err) => {
         this.isConnecting = false;
         this.isConnected = false;
-        console.error("❌ IMAP connection error:", err.message);
+        console.error(`❌ IMAP connection error for user ${this.userEmail}:`, err.message);
         
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
-          console.log(`🔄 Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+          console.log(`🔄 Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts} for ${this.userEmail}`);
           setTimeout(() => {
             this.connect().then(resolve).catch(reject);
           }, this.reconnectDelay);
@@ -138,12 +206,12 @@ class IMAPConnection {
 
       this.connection.once('end', () => {
         this.isConnected = false;
-        console.log("📤 IMAP connection closed");
+        console.log(`📤 IMAP connection closed for user: ${this.userEmail}`);
       });
 
       this.connection.on('close', (hadError) => {
         this.isConnected = false;
-        console.log(`🔒 IMAP connection closed ${hadError ? 'with error' : 'normally'}`);
+        console.log(`🔒 IMAP connection closed ${hadError ? 'with error' : 'normally'} for user: ${this.userEmail}`);
       });
 
       this.connection.connect();
@@ -172,21 +240,76 @@ class IMAPConnection {
       }
     });
   }
+
+  openInbox(cb) {
+    this.connection.openBox("INBOX", true, cb);
+  }
 }
 
-const imapManager = new IMAPConnection();
+// Initialize the multi-user manager
+const imapManager = new IMAPConnectionManager();
 
-function openInbox(cb) {
-  imapManager.connection.openBox("INBOX", true, cb);
-}
+// Authentication middleware - Vercel optimized
+const authenticateUser = async (req, res, next) => {
+  try {
+    // Skip authentication for public endpoints
+    const publicEndpoints = ['/api/health', '/api/test-attachment-urls', '/api/debug-env'];
+    if (publicEndpoints.includes(req.path)) {
+      return next();
+    }
 
-// ✅ UPDATED: Check duplicate using Supabase only
-async function checkDuplicate(messageId) {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader?.startsWith('Bearer ')) {
+      console.log('❌ No authorization header found');
+      return res.status(401).json({ 
+        success: false,
+        error: "Authentication required. Please log in again." 
+      });
+    }
+
+    const token = authHeader.substring(7);
+    
+    // Verify JWT with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      console.log('❌ Invalid token:', error?.message);
+      return res.status(401).json({ 
+        success: false,
+        error: "Invalid token. Please log in again." 
+      });
+    }
+
+    // Check if user's email has configuration
+    if (!emailConfigs[user.email]) {
+      console.log(`❌ No email config for: ${user.email}`);
+      return res.status(403).json({ 
+        success: false,
+        error: `No email configuration found for ${user.email}. Please contact administrator.` 
+      });
+    }
+
+    req.user = user;
+    console.log(`✅ Authenticated user: ${user.email}`);
+    next();
+  } catch (error) {
+    console.error("❌ Authentication error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: "Authentication failed" 
+    });
+  }
+};
+
+// ✅ UPDATED: Check duplicate using user_id
+async function checkDuplicate(userId, messageId) {
   try {
     if (supabaseEnabled && supabase) {
       const { data, error } = await supabase
         .from('emails')
         .select('message_id')
+        .eq('user_id', userId)
         .eq('message_id', messageId)
         .single();
 
@@ -525,35 +648,42 @@ app.get("/api/debug-env", (req, res) => {
       NODE_ENV: process.env.NODE_ENV,
       SUPABASE_URL: process.env.SUPABASE_URL ? "Set" : "Not set",
       SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? `Set (length: ${process.env.SUPABASE_SERVICE_KEY.length})` : "Not set",
-      EMAIL_USER: process.env.EMAIL_USER ? "Set" : "Not set"
+      EMAIL_CONFIGS: Object.keys(emailConfigs)
     },
     supabase: {
       enabled: supabaseEnabled,
       initialized: !!supabase
+    },
+    emailConfigs: {
+      count: Object.keys(emailConfigs).length,
+      emails: Object.keys(emailConfigs)
     }
   });
 });
 
-// FIXED: Fetch emails - Save to Supabase only
-app.post("/api/fetch-emails", async (req, res) => {
-  console.log("🔍 DEBUG: /api/fetch-emails called");
+// ✅ UPDATED: Fetch emails for authenticated user
+app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
+  console.log(`🔍 DEBUG: /api/fetch-emails called for user: ${req.user.email}`);
   try {
     const { mode = "latest", count = 20 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
     
-    await imapManager.connect();
+    // Get user-specific IMAP connection
+    const userImap = await imapManager.getUserConnection(userId, userEmail);
     
-    if (imapManager.connection.state !== 'authenticated') {
+    if (!userImap.connection || userImap.connection.state !== 'authenticated') {
       return res.status(400).json({ error: "IMAP not connected" });
     }
 
-    console.log(`🔄 Fetching emails in ${mode} mode, count: ${count}`);
+    console.log(`🔄 Fetching emails for ${userEmail} in ${mode} mode, count: ${count}`);
     
-    openInbox(async function (err, box) {
+    userImap.openInbox(async function (err, box) {
       if (err) {
         return res.status(500).json({ error: "Failed to open inbox: " + err.message });
       }
       
-      console.log(`📥 Total Messages: ${box.messages.total}`);
+      console.log(`📥 ${userEmail} - Total Messages: ${box.messages.total}`);
       
       // Calculate fetch range
       const totalMessages = box.messages.total;
@@ -562,9 +692,9 @@ app.post("/api/fetch-emails", async (req, res) => {
       const fetchEnd = totalMessages;
       const fetchRange = `${fetchStart}:${fetchEnd}`;
 
-      console.log(`📨 Fetching range: ${fetchRange}`);
+      console.log(`📨 ${userEmail} - Fetching range: ${fetchRange}`);
 
-      const f = imapManager.connection.seq.fetch(fetchRange, { 
+      const f = userImap.connection.seq.fetch(fetchRange, { 
         bodies: "",
         struct: true 
       });
@@ -575,7 +705,7 @@ app.post("/api/fetch-emails", async (req, res) => {
       let processingDetails = [];
 
       f.on("message", function (msg, seqno) {
-        console.log(`📨 Processing message #${seqno}`);
+        console.log(`📨 ${userEmail} - Processing message #${seqno}`);
         let buffer = "";
 
         msg.on("body", function (stream) {
@@ -591,9 +721,9 @@ app.post("/api/fetch-emails", async (req, res) => {
             // Generate messageId if missing
             const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
 
-            // Check for duplicates (skip for force mode)
+            // Check for duplicates for this user
             if (mode !== "force") {
-              const isDuplicate = await checkDuplicate(messageId);
+              const isDuplicate = await checkDuplicate(userId, messageId);
               if (isDuplicate) {
                 console.log(`   ⚠️ Duplicate skipped: ${parsed.subject}`);
                 duplicateCount++;
@@ -610,10 +740,12 @@ app.post("/api/fetch-emails", async (req, res) => {
             console.log(`   📎 Processing attachments for: ${parsed.subject}`);
             const attachmentLinks = await processAttachments(parsed.attachments || []);
 
-            // Create email data with enhanced structure
+            // Create email data with user info
             const emailData = createEmailData(parsed, messageId, attachmentLinks, {
               fetchMode: mode,
-              sequenceNumber: seqno
+              sequenceNumber: seqno,
+              userId: userId,
+              userEmail: userEmail
             });
 
             newEmails.push(emailData);
@@ -634,7 +766,7 @@ app.post("/api/fetch-emails", async (req, res) => {
       });
 
       f.once("error", function (err) {
-        console.error("❌ Fetch error:", err);
+        console.error(`❌ Fetch error for ${userEmail}:`, err);
         res.status(500).json({ 
           success: false,
           error: "Fetch error: " + err.message 
@@ -642,12 +774,12 @@ app.post("/api/fetch-emails", async (req, res) => {
       });
 
       f.once("end", async function () {
-        console.log(`🔄 Processing ${newEmails.length} new emails...`);
+        console.log(`🔄 Processing ${newEmails.length} new emails for ${userEmail}...`);
         
         try {
-          // Save to Supabase ONLY
+          // Save to Supabase with user_id
           if (newEmails.length > 0) {
-            console.log(`💾 Saving ${newEmails.length} emails to Supabase...`);
+            console.log(`💾 Saving ${newEmails.length} emails to Supabase for ${userEmail}...`);
             
             const saveOps = newEmails.map(async (email) => {
               try {
@@ -663,6 +795,8 @@ app.post("/api/fetch-emails", async (req, res) => {
                     attachments: email.attachments,
                     has_attachments: email.hasAttachments,
                     attachments_count: email.attachmentsCount,
+                    user_id: userId,
+                    user_email: userEmail,
                     created_at: new Date(),
                     updated_at: new Date()
                   };
@@ -671,7 +805,7 @@ app.post("/api/fetch-emails", async (req, res) => {
                   if (supabaseError) {
                     console.error("   ❌ Supabase save error:", supabaseError);
                   } else {
-                    console.log(`   ✅ Saved to Supabase: ${email.subject}`);
+                    console.log(`   ✅ Saved to Supabase for ${userEmail}: ${email.subject}`);
                   }
                 }
                 
@@ -684,18 +818,19 @@ app.post("/api/fetch-emails", async (req, res) => {
 
             await Promise.allSettled(saveOps);
             clearCache();
-            console.log(`🗑️ Cleared cache`);
+            console.log(`🗑️ Cleared cache for ${userEmail}`);
           }
 
-          console.log(`✅ Fetch completed: ${processedCount} new, ${duplicateCount} duplicates`);
+          console.log(`✅ Fetch completed for ${userEmail}: ${processedCount} new, ${duplicateCount} duplicates`);
           
           res.json({
             success: true,
-            message: `Processed ${processedCount} new emails`,
+            message: `Processed ${processedCount} new emails for ${userEmail}`,
             data: {
               processed: processedCount,
               duplicates: duplicateCount,
               total: processedCount + duplicateCount,
+              userEmail: userEmail,
               emails: newEmails,
               details: processingDetails
             }
@@ -721,17 +856,20 @@ app.post("/api/fetch-emails", async (req, res) => {
 });
 
 // Sync deletions between IMAP and Supabase
-app.post("/api/sync-deletions", async (req, res) => {
+app.post("/api/sync-deletions", authenticateUser, async (req, res) => {
   try {
-    await imapManager.connect();
+    const userId = req.user.id;
+    const userEmail = req.user.email;
     
-    openInbox(async function (err, box) {
+    const userImap = await imapManager.getUserConnection(userId, userEmail);
+    
+    userImap.openInbox(async function (err, box) {
       if (err) {
         return res.status(500).json({ error: "Failed to open inbox: " + err.message });
       }
 
       // Get all message IDs from IMAP
-      const f = imapManager.connection.seq.fetch('1:*', { 
+      const f = userImap.connection.seq.fetch('1:*', { 
         bodies: ['HEADER.FIELDS (MESSAGE-ID)'],
         struct: true 
       });
@@ -756,10 +894,11 @@ app.post("/api/sync-deletions", async (req, res) => {
 
       f.once("end", async function () {
         try {
-          // Get all message IDs from Supabase
+          // Get all message IDs from Supabase for this user
           const { data: dbEmails, error } = await supabase
             .from('emails')
-            .select('message_id');
+            .select('message_id')
+            .eq('user_id', userId);
           
           if (error) throw error;
 
@@ -773,18 +912,20 @@ app.post("/api/sync-deletions", async (req, res) => {
             const { error: deleteError } = await supabase
               .from('emails')
               .delete()
-              .in('message_id', deletedMessageIds);
+              .in('message_id', deletedMessageIds)
+              .eq('user_id', userId);
               
             if (deleteError) throw deleteError;
             
-            console.log(`🗑️ Deleted ${deletedMessageIds.length} emails from database`);
+            console.log(`🗑️ Deleted ${deletedMessageIds.length} emails from database for ${userEmail}`);
             clearCache();
           }
           
           res.json({
             success: true,
             deleted: deletedMessageIds.length,
-            deletedIds: deletedMessageIds
+            deletedIds: deletedMessageIds,
+            userEmail: userEmail
           });
           
         } catch (syncError) {
@@ -800,11 +941,13 @@ app.post("/api/sync-deletions", async (req, res) => {
 });
 
 // NEW: Fast fetch from Supabase only (no IMAP)
-app.post("/api/fast-fetch", async (req, res) => {
+app.post("/api/fast-fetch", authenticateUser, async (req, res) => {
   try {
     const { mode = "latest", count = 50 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
     
-    console.log(`🚀 Fast fetching ${count} emails from Supabase in ${mode} mode`);
+    console.log(`🚀 Fast fetching ${count} emails from Supabase for ${userEmail} in ${mode} mode`);
     
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({ 
@@ -816,6 +959,7 @@ app.post("/api/fast-fetch", async (req, res) => {
     let query = supabase
       .from('emails')
       .select('*')
+      .eq('user_id', userId)
       .order('date', { ascending: false })
       .limit(count);
 
@@ -851,14 +995,15 @@ app.post("/api/fast-fetch", async (req, res) => {
       read: email.read || false
     }));
 
-    console.log(`✅ Fast fetch completed: ${enhancedEmails.length} emails from Supabase`);
+    console.log(`✅ Fast fetch completed: ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
 
     res.json({
       success: true,
-      message: `Fetched ${enhancedEmails.length} emails from database`,
+      message: `Fetched ${enhancedEmails.length} emails from database for ${userEmail}`,
       data: {
         emails: enhancedEmails,
         total: enhancedEmails.length,
+        userEmail: userEmail,
         source: 'supabase_fast'
       }
     });
@@ -872,20 +1017,23 @@ app.post("/api/fast-fetch", async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Get emails from Supabase ONLY
-app.get("/api/emails", async (req, res) => {
+// ✅ UPDATED: Get emails for authenticated user only
+app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
     const { search = "", sort = "date_desc", page = 1, limit = 50 } = req.query;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    // Create cache key
-    const cacheKey = `emails:${search}:${sort}:${pageNum}:${limitNum}`;
+    // Create user-specific cache key
+    const cacheKey = `emails:${userId}:${search}:${sort}:${pageNum}:${limitNum}`;
     const cached = getFromCache(cacheKey);
     
     if (cached) {
-      console.log("📦 Serving from cache");
+      console.log(`📦 Serving from cache for ${userEmail}`);
       return res.json(cached);
     }
 
@@ -895,7 +1043,8 @@ app.get("/api/emails", async (req, res) => {
       });
     }
 
-    let query = supabase.from('emails').select('*', { count: 'exact' });
+    let query = supabase.from('emails').select('*', { count: 'exact' })
+      .eq('user_id', userId); // Only get this user's emails
     
     // Add search if provided
     if (search && search.trim().length > 0) {
@@ -959,12 +1108,13 @@ app.get("/api/emails", async (req, res) => {
       hasMore,
       page: pageNum,
       limit: limitNum,
+      userEmail: userEmail,
       source: 'supabase'
     };
 
     setToCache(cacheKey, response);
 
-    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase`);
+    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
     res.json(response);
 
   } catch (error) {
@@ -996,20 +1146,20 @@ app.get("/api/health", async (req, res) => {
       }
     }
 
-    let imapStatus = "disconnected";
-    try {
-      const imapAlive = await imapManager.checkConnection();
-      imapStatus = imapAlive ? "connected" : "disconnected";
-    } catch (imapErr) {
-      imapStatus = "error";
-    }
+    let imapStatus = "multi_user";
+    const emailConfigStatus = Object.keys(emailConfigs).length > 0 ? "configured" : "not_configured";
 
     res.json({
       status: "ok",
       services: {
         supabase: supabaseStatus,
         storage: storageStatus,
-        imap: imapStatus
+        imap: imapStatus,
+        email_configs: emailConfigStatus
+      },
+      emailConfigs: {
+        count: Object.keys(emailConfigs).length,
+        emails: Object.keys(emailConfigs)
       },
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development'
@@ -1022,21 +1172,33 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Clear cache endpoint
+// Clear cache endpoint - Vercel optimized (no auth required for cache)
 app.post("/api/clear-cache", (req, res) => {
-  const cacheSize = cache.size;
-  clearCache();
-  res.json({ 
-    success: true, 
-    message: `Cleared ${cacheSize} cache entries` 
-  });
+  try {
+    const cacheSize = cache.size;
+    clearCache();
+    console.log(`🗑️ Cache cleared: ${cacheSize} entries`);
+    res.json({ 
+      success: true, 
+      message: `Cleared ${cacheSize} cache entries` 
+    });
+  } catch (error) {
+    console.error('❌ Clear cache error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // ✅ FIXED: Delete email with attachments - Vercel compatible
-app.delete("/api/emails/:messageId", async (req, res) => {
+app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
     const { messageId } = req.params;
-    console.log(`🗑️ DELETE endpoint called for messageId: ${messageId}`);
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    console.log(`🗑️ DELETE endpoint called for messageId: ${messageId} by user: ${userEmail}`);
 
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available");
@@ -1052,6 +1214,7 @@ app.delete("/api/emails/:messageId", async (req, res) => {
       .from('emails')
       .select('*')
       .eq('message_id', messageId)
+      .eq('user_id', userId) // Ensure user can only delete their own emails
       .single();
 
     if (fetchError || !email) {
@@ -1110,7 +1273,8 @@ app.delete("/api/emails/:messageId", async (req, res) => {
     const { error: deleteError } = await supabase
       .from('emails')
       .delete()
-      .eq('message_id', messageId);
+      .eq('message_id', messageId)
+      .eq('user_id', userId); // Ensure user can only delete their own emails
 
     if (deleteError) {
       console.error("❌ Database deletion error:", deleteError);
@@ -1135,6 +1299,7 @@ app.delete("/api/emails/:messageId", async (req, res) => {
       data: {
         messageId: messageId,
         subject: email.subject,
+        userEmail: userEmail,
         attachments: attachmentDeleteResult,
         deletedAt: new Date().toISOString()
       }
@@ -1153,15 +1318,19 @@ app.delete("/api/emails/:messageId", async (req, res) => {
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Email IMAP Backend Server - Supabase Only",
-    version: "3.0.0",
+    message: "Email IMAP Backend Server - Multi-User Support",
+    version: "4.0.0",
     environment: process.env.NODE_ENV || 'development',
     supabase: supabaseEnabled ? "enabled" : "disabled",
+    emailConfigs: {
+      count: Object.keys(emailConfigs).length,
+      emails: Object.keys(emailConfigs)
+    },
     endpoints: {
       "GET /api/health": "Check service status",
-      "GET /api/emails": "Get emails with attachments",
-      "POST /api/fetch-emails": "Fetch new emails",
-      "DELETE /api/emails/:messageId": "Delete email and attachments",
+      "GET /api/emails": "Get emails with attachments (authenticated)",
+      "POST /api/fetch-emails": "Fetch new emails (authenticated)",
+      "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
       "GET /api/debug-env": "Debug environment variables",
       "POST /api/clear-cache": "Clear cache"
@@ -1194,27 +1363,11 @@ async function initializeApp() {
   
   console.log("✅ Application initialized");
   console.log(`📋 Supabase: ${supabaseEnabled ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`📧 Email Configurations: ${Object.keys(emailConfigs).length} loaded`);
 }
 
 // Call initialization
 initializeApp();
 
-// Vercel serverless function handler
-const handler = async (req, res) => {
-  try {
-    // Initialize Supabase on each request to ensure it's ready
-    if (!supabaseEnabled) {
-      initializeSupabase();
-    }
-    
-    return app(req, res);
-  } catch (error) {
-    console.error('Serverless function error:', error);
-    res.status(500).json({
-      error: 'Internal Server Error',
-      message: error.message
-    });
-  }
-};
-
-export default handler;
+// Vercel serverless function handler - SIMPLIFIED
+export default app;
