@@ -1373,3 +1373,93 @@ button:disabled {
 .email-card *:not(.email-card) {
   color: #374151 !important;
 }
+/* Load All Progress Styles */
+.load-all-progress {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 15px;
+  border-radius: 8px;
+  margin: 10px 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.progress-header h4 {
+  margin: 0;
+  font-size: 1.1em;
+}
+
+.progress-stats {
+  font-size: 0.9em;
+  opacity: 0.9;
+}
+
+.progress-bar-container {
+  margin-top: 10px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: rgba(255,255,255,0.3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #4CAF50;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  text-align: center;
+  font-size: 0.9em;
+  margin-top: 5px;
+  opacity: 0.9;
+}
+
+.progress-complete {
+  text-align: center;
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+/* Load All Button */
+.load-all-button {
+  background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.load-all-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #ff5252, #e74c3c);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.4);
+}
+
+.load-all-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Load All Debug Info */
+.load-all-debug {
+  background: #f8f9fa;
+  padding: 10px;
+  border-radius: 4px;
+  margin: 10px 0;
+  border-left: 4px solid #667eea;
+}

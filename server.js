@@ -586,6 +586,140 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
 // ========== API ENDPOINTS ==========
 
+// NEW: Load ALL emails endpoint
+app.post("/api/load-all-emails", authenticateUser, async (req, res) => {
+  console.log(`🚀 Loading ALL emails for user: ${req.user.email}`);
+  try {
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    
+    const userImap = await imapManager.getUserConnection(userId, userEmail);
+    
+    userImap.openInbox(async function (err, box) {
+      if (err) {
+        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+      }
+      
+      console.log(`📥 ${userEmail} - Total Messages: ${box.messages.total}`);
+      
+      // Fetch ALL emails
+      const fetchRange = `1:${box.messages.total}`;
+      console.log(`📨 ${userEmail} - Fetching ALL ${box.messages.total} emails`);
+
+      const f = userImap.connection.seq.fetch(fetchRange, { 
+        bodies: "",
+        struct: true 
+      });
+
+      let processedCount = 0;
+      let duplicateCount = 0;
+      let newEmails = [];
+
+      f.on("message", function (msg, seqno) {
+        let buffer = "";
+
+        msg.on("body", function (stream) {
+          stream.on("data", function (chunk) {
+            buffer += chunk.toString("utf8");
+          });
+        });
+
+        msg.once("end", async function () {
+          try {
+            const parsed = await simpleParser(buffer);
+            const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
+
+            // Skip duplicates
+            const isDuplicate = await checkDuplicate(userId, messageId);
+            if (isDuplicate) {
+              duplicateCount++;
+              return;
+            }
+
+            const attachmentLinks = await processAttachments(parsed.attachments || []);
+            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+              userId: userId,
+              userEmail: userEmail
+            });
+
+            newEmails.push(emailData);
+            processedCount++;
+            
+            // Log progress for large batches
+            if (processedCount % 10 === 0) {
+              console.log(`   📧 Processed ${processedCount}/${box.messages.total} emails...`);
+            }
+            
+          } catch (parseErr) {
+            console.error("Parse error:", parseErr.message);
+          }
+        });
+      });
+
+      f.once("end", async function () {
+        try {
+          // Save to Supabase
+          if (newEmails.length > 0) {
+            console.log(`💾 Saving ${newEmails.length} new emails to Supabase...`);
+            
+            // Process in smaller batches to avoid timeouts
+            const batchSize = 10;
+            for (let i = 0; i < newEmails.length; i += batchSize) {
+              const batch = newEmails.slice(i, i + batchSize);
+              
+              const batchOps = batch.map(async (email) => {
+                const supabaseData = {
+                  message_id: email.messageId,
+                  subject: email.subject,
+                  from_text: email.from,
+                  to_text: email.to,
+                  date: email.date,
+                  text_content: email.text,
+                  html_content: email.html,
+                  attachments: email.attachments,
+                  has_attachments: email.hasAttachments,
+                  attachments_count: email.attachmentsCount,
+                  user_id: userId,
+                  user_email: userEmail,
+                  created_at: new Date()
+                };
+
+                await supabase.from('emails').upsert(supabaseData);
+              });
+
+              await Promise.allSettled(batchOps);
+              console.log(`   ✅ Saved batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(newEmails.length/batchSize)}`);
+            }
+            
+            clearCache();
+          }
+
+          console.log(`✅ Load All completed: ${processedCount} new, ${duplicateCount} duplicates`);
+          
+          res.json({
+            success: true,
+            message: `Loaded ${processedCount} new emails for ${userEmail}`,
+            data: {
+              processed: processedCount,
+              duplicates: duplicateCount,
+              totalInInbox: box.messages.total,
+              userEmail: userEmail
+            }
+          });
+
+        } catch (batchError) {
+          console.error("❌ Batch processing error:", batchError);
+          res.status(500).json({ error: "Processing failed" });
+        }
+      });
+    });
+
+  } catch (error) {
+    console.error("❌ Load All error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Test endpoint to verify attachment URLs
 app.get("/api/test-attachment-urls", async (req, res) => {
   try {
@@ -1330,6 +1464,8 @@ app.get("/", (req, res) => {
       "GET /api/health": "Check service status",
       "GET /api/emails": "Get emails with attachments (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails (authenticated)",
+      "POST /api/load-all-emails": "Load ALL emails from inbox (authenticated)",
+      "POST /api/fast-fetch": "Fast fetch from database only (authenticated)",
       "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
       "GET /api/debug-env": "Debug environment variables",

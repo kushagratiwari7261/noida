@@ -15,6 +15,7 @@ function App() {
   const [error, setError] = useState(null);
   const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
   const [user, setUser] = useState(null); // Track current user
+  const [loadAllProgress, setLoadAllProgress] = useState(null); // Track load all progress
 
   const API_BASE = '';
 
@@ -43,6 +44,71 @@ function App() {
     };
     getUser();
   }, []);
+
+  // NEW: Load ALL emails function
+  const loadAllEmails = async () => {
+    if (fetching) return;
+
+    // Confirm with user since this can take a long time
+    const confirmed = window.confirm(
+      `🚀 LOAD ALL EMAILS\n\nThis will load ALL emails from your inbox. This may take several minutes for large inboxes.\n\n` +
+      `• All emails will be processed and saved to the database\n` +
+      `• Duplicates will be automatically skipped\n` +
+      `• Progress will be shown during the process\n\n` +
+      `Are you sure you want to continue?`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setFetching(true);
+    setFetchStatus('fetching');
+    setLoadAllProgress({ processed: 0, duplicates: 0, total: 0, userEmail: user?.email });
+    setError(null);
+
+    try {
+      console.log('🚀 Starting load all emails...');
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/load-all-emails`, {
+        method: 'POST',
+        headers: headers
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('🚀 Load all result:', result);
+      
+      if (response.ok && result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        setLoadAllProgress(result.data);
+        
+        // Refresh the email list to show newly loaded emails
+        await loadEmails(false, true);
+        
+        console.log('✅ Load all completed successfully');
+      } else {
+        setFetchStatus('error');
+        setError(result.error || 'Failed to load all emails');
+        console.error('❌ Load all failed:', result.error);
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Load all failed:', err);
+    } finally {
+      setFetching(false);
+      // Clear progress after 5 seconds
+      setTimeout(() => {
+        setLoadAllProgress(null);
+      }, 5000);
+    }
+  };
 
   // Enhanced attachment URL processor with better CSV handling
   const processAttachmentUrl = (attachment) => {
@@ -153,7 +219,7 @@ function App() {
     return processedEmail;
   };
 
-  // NEW: Delete email function with authentication
+  // Delete email function with authentication
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
@@ -1001,6 +1067,16 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
+            {/* NEW: Load All Emails Button */}
+            <button 
+              onClick={loadAllEmails} 
+              disabled={fetching}
+              className="load-all-button"
+              title="Load ALL emails from your inbox (may take several minutes)"
+            >
+              🚀 Load All
+            </button>
+
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
@@ -1068,8 +1144,41 @@ function App() {
           </div>
         )}
 
+        {/* Load All Progress Display */}
+        {loadAllProgress && (
+          <div className="load-all-progress">
+            <div className="progress-header">
+              <h4>🚀 Loading All Emails</h4>
+              <span className="progress-stats">
+                {loadAllProgress.processed} new • {loadAllProgress.duplicates} duplicates • {loadAllProgress.totalInInbox} total in inbox
+              </span>
+            </div>
+            {fetchStatus === 'fetching' && (
+              <div className="progress-bar-container">
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill" 
+                    style={{ 
+                      width: `${loadAllProgress.totalInInbox > 0 ? 
+                        ((loadAllProgress.processed + loadAllProgress.duplicates) / loadAllProgress.totalInInbox) * 100 : 0}%` 
+                    }}
+                  ></div>
+                </div>
+                <div className="progress-text">
+                  Processing emails... ({loadAllProgress.processed + loadAllProgress.duplicates} / {loadAllProgress.totalInInbox})
+                </div>
+              </div>
+            )}
+            {fetchStatus === 'success' && (
+              <div className="progress-complete">
+                ✅ Successfully loaded {loadAllProgress.processed} new emails!
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Status Banner */}
-        {statusMessage && (
+        {statusMessage && !loadAllProgress && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
             {fetchStatus === 'fetching' && (
@@ -1099,8 +1208,8 @@ function App() {
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Smart Fetch
                 </button>
-                <button onClick={forceFetchEmails} className="force-fetch-button">
-                  ⚡ Force Fetch
+                <button onClick={loadAllEmails} className="load-all-button">
+                  🚀 Load All Emails
                 </button>
               </div>
             </div>
@@ -1128,6 +1237,15 @@ function App() {
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {user && <p>User: {user.email}</p>}
               {error && <p>Error: {error}</p>}
+              {loadAllProgress && (
+                <div className="load-all-debug">
+                  <h4>Load All Progress:</h4>
+                  <p>Processed: {loadAllProgress.processed}</p>
+                  <p>Duplicates: {loadAllProgress.duplicates}</p>
+                  <p>Total in Inbox: {loadAllProgress.totalInInbox}</p>
+                  <p>User: {loadAllProgress.userEmail}</p>
+                </div>
+              )}
               <div className="attachments-debug">
                 <h4>Attachments Debug:</h4>
                 {emails.slice(0, 3).map((email, idx) => (
