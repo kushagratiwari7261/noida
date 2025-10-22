@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App1.css';
-import { supabase } from '../lib/supabaseClient'; // Import Supabase client
+import { supabase } from '../lib/supabaseClient';
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -13,17 +13,19 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
-  const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
-  const [user, setUser] = useState(null); // Track current user
+  const [deletingEmails, setDeletingEmails] = useState({});
+  const [user, setUser] = useState(null);
+  const [loadAllProgress, setLoadAllProgress] = useState(null);
 
   const API_BASE = '';
 
-  // Get authentication headers
+  // Enhanced authentication with better error handling
   const getAuthHeaders = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        throw new Error('No active session');
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error || !session) {
+        console.error('❌ Authentication error:', error);
+        throw new Error('Authentication required. Please log in again.');
       }
       return {
         'Authorization': `Bearer ${session.access_token}`,
@@ -31,22 +33,103 @@ function App() {
       };
     } catch (error) {
       console.error('❌ Authentication error:', error);
-      throw new Error('Authentication required');
+      throw new Error('Authentication failed');
     }
+  };
+
+  // Enhanced API error handler
+  const handleApiError = async (response, defaultMessage = 'API request failed') => {
+    if (response.status === 401) {
+      setError('Authentication expired. Please log in again.');
+      throw new Error('Authentication expired');
+    }
+    
+    if (!response.ok) {
+      let errorText;
+      try {
+        const errorData = await response.json();
+        errorText = errorData.error || errorData.message || defaultMessage;
+      } catch {
+        errorText = await response.text() || defaultMessage;
+      }
+      console.error('❌ API Error:', errorText);
+      throw new Error(errorText);
+    }
+    
+    return response.json();
   };
 
   // Get user info on component mount
   useEffect(() => {
     const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error) throw error;
+        setUser(user);
+        console.log('✅ User loaded:', user?.email);
+      } catch (error) {
+        console.error('❌ Failed to get user:', error);
+        setError('Failed to load user information');
+      }
     };
     getUser();
   }, []);
 
-  // Enhanced attachment URL processor with better CSV handling
+  // NEW: Load ALL emails function
+  const loadAllEmails = async () => {
+    if (fetching) return;
+
+    const confirmed = window.confirm(
+      `🚀 LOAD ALL EMAILS\n\nThis will load ALL emails from your inbox. This may take several minutes for large inboxes.\n\n` +
+      `• All emails will be processed and saved to the database\n` +
+      `• Duplicates will be automatically skipped\n` +
+      `• Progress will be shown during the process\n\n` +
+      `Are you sure you want to continue?`
+    );
+
+    if (!confirmed) return;
+
+    setFetching(true);
+    setFetchStatus('fetching');
+    setLoadAllProgress({ processed: 0, duplicates: 0, totalInInbox: 0, userEmail: user?.email });
+    setError(null);
+
+    try {
+      console.log('🚀 Starting load all emails...');
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/load-all-emails`, {
+        method: 'POST',
+        headers: headers
+      });
+
+      const result = await handleApiError(response, 'Failed to load all emails');
+      console.log('🚀 Load all result:', result);
+      
+      if (result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        setLoadAllProgress(result.data);
+        
+        // Refresh the email list to show newly loaded emails
+        await loadEmails(false, true);
+        
+        console.log('✅ Load all completed successfully');
+      } else {
+        throw new Error(result.error || 'Failed to load all emails');
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Load all failed:', err);
+    } finally {
+      setFetching(false);
+      setTimeout(() => setLoadAllProgress(null), 5000);
+    }
+  };
+
+  // Enhanced attachment URL processor
   const processAttachmentUrl = (attachment) => {
-    // Try multiple URL properties from backend
     const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
     
     if (!url) {
@@ -54,10 +137,9 @@ function App() {
       return null;
     }
 
-    // Ensure URL is properly formatted
     let processedUrl = url;
     
-    // If URL is relative, make it absolute (shouldn't happen with Supabase)
+    // If URL is relative, make it absolute
     if (processedUrl.startsWith('/')) {
       processedUrl = `${window.location.origin}${processedUrl}`;
     }
@@ -71,7 +153,7 @@ function App() {
     return processedUrl;
   };
 
-  // Enhanced process email data with better attachment handling and CSV protection
+  // Enhanced process email data for new server structure
   const processEmailData = (email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -82,20 +164,22 @@ function App() {
       from_text: email.from_text || email.from,
       to: email.to || email.to_text,
       to_text: email.to_text || email.to,
-      date: email.date,
+      date: email.date || email.created_at,
       text: email.text || email.text_content,
       text_content: email.text_content || email.text,
       html: email.html || email.html_content,
       html_content: email.html_content || email.html,
       attachments: [],
-      hasAttachments: email.hasAttachments || false,
-      attachmentsCount: email.attachmentsCount || 0
+      hasAttachments: email.has_attachments || email.hasAttachments || false,
+      attachmentsCount: email.attachments_count || email.attachmentsCount || 0,
+      user_id: email.user_id,
+      user_email: email.user_email,
+      read: email.read || false
     };
 
     // Process attachments - handle both direct attachments and enhanced structure
     if (Array.isArray(email.attachments) && email.attachments.length > 0) {
       processedEmail.attachments = email.attachments.map((att, index) => {
-        // Use the enhanced URL processor
         const attachmentUrl = processAttachmentUrl(att);
         
         // Determine file type and properties
@@ -144,7 +228,7 @@ function App() {
         });
 
         return processedAtt;
-      }).filter(att => att.filename && att.url); // Only keep attachments with filename and URL
+      }).filter(att => att.filename && att.url);
 
       processedEmail.hasAttachments = processedEmail.attachments.length > 0;
       processedEmail.attachmentsCount = processedEmail.attachments.length;
@@ -153,7 +237,7 @@ function App() {
     return processedEmail;
   };
 
-  // NEW: Delete email function with authentication
+  // Enhanced delete email function
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
@@ -161,16 +245,12 @@ function App() {
       return;
     }
 
-    // Confirm deletion
     const confirmed = window.confirm(
       'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
     );
 
-    if (!confirmed) {
-      return;
-    }
+    if (!confirmed) return;
 
-    // Set deleting state for this email
     setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
 
     try {
@@ -182,19 +262,12 @@ function App() {
         headers: headers
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
+      const result = await handleApiError(response, 'Failed to delete email');
       console.log('🗑️ Delete response:', result);
 
-      if (response.ok && result.success) {
-        // Remove email from local state immediately
+      if (result.success) {
         setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
         console.log('✅ Email deleted successfully');
-        
-        // Show success message
         setFetchStatus('success');
         setTimeout(() => setFetchStatus('idle'), 3000);
       } else {
@@ -204,12 +277,11 @@ function App() {
       console.error('❌ Delete error:', err);
       setError(`Failed to delete email: ${err.message}`);
     } finally {
-      // Clear deleting state
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
   };
 
-  // Enhanced load emails function with proper sorting and authentication
+  // Enhanced load emails function
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -235,9 +307,8 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=100`, // Increased limit to ensure we get latest emails
-        `includeAttachments=true`,
-        `t=${Date.now()}` // Cache busting parameter
+        `limit=100`,
+        `t=${Date.now()}`
       ].join('&');
 
       const headers = await getAuthHeaders();
@@ -245,16 +316,11 @@ function App() {
         headers: headers
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await handleApiError(response, 'Failed to load emails');
       console.log('📧 Backend response:', data);
       
       let emailsToProcess = [];
       
-      // Handle response structure
       if (data.emails && Array.isArray(data.emails)) {
         emailsToProcess = data.emails;
       } else if (Array.isArray(data)) {
@@ -273,7 +339,7 @@ function App() {
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
-        return dateB - dateA; // Descending (newest first)
+        return dateB - dateA;
       });
       
       // Log attachment information
@@ -305,7 +371,7 @@ function App() {
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint with proper email ordering and authentication
+  // Enhanced fetch function using the new unified endpoint
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -322,27 +388,21 @@ function App() {
         headers: headers,
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30 // Increased count for better sampling
+          count: mode === 'force' ? 20 : 30
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
+      const result = await handleApiError(response, `Failed to ${mode} fetch emails`);
       console.log(`📨 ${mode} fetch result:`, result);
       
-      if (response.ok && result.success) {
+      if (result.success) {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // Update with new emails immediately with proper sorting
         if (result.data && result.data.emails && result.data.emails.length > 0) {
           console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
           const processedNewEmails = result.data.emails.map(processEmailData);
           
-          // Sort new emails by date (newest first)
           const sortedNewEmails = processedNewEmails.sort((a, b) => {
             const dateA = new Date(a.date || 0);
             const dateB = new Date(b.date || 0);
@@ -353,7 +413,6 @@ function App() {
             const existingIds = new Set(prevEmails.map(email => email.messageId));
             const uniqueNewEmails = sortedNewEmails.filter(email => !existingIds.has(email.messageId));
             
-            // Combine and sort all emails by date
             const allEmails = [...uniqueNewEmails, ...prevEmails];
             const finalSortedEmails = allEmails.sort((a, b) => {
               const dateA = new Date(a.date || 0);
@@ -365,15 +424,12 @@ function App() {
             return finalSortedEmails;
           });
         } else {
-          // If no new emails, still refresh the list to ensure latest order
           console.log('🔄 No new emails, refreshing list to ensure proper order...');
           await loadEmails(false, true);
         }
         
       } else {
-        setFetchStatus('error');
-        setError(result.error || `Failed to ${mode} fetch emails`);
-        console.error(`❌ ${mode} fetch failed:`, result.error);
+        throw new Error(result.error || `Failed to ${mode} fetch emails`);
       }
     } catch (err) {
       setFetchStatus('error');
@@ -384,7 +440,7 @@ function App() {
     }
   };
 
-  // Individual fetch functions for backward compatibility
+  // Individual fetch functions
   const fetchNewEmails = () => fetchEmails('latest');
   const forceFetchEmails = () => fetchEmails('force');
   const simpleFetchEmails = () => fetchEmails('simple');
@@ -413,7 +469,7 @@ function App() {
     }
   };
 
-  // Fast fetch from Supabase only with authentication
+  // Fast fetch from Supabase only
   const fastFetchEmails = async () => {
     if (fetching) return;
 
@@ -430,18 +486,14 @@ function App() {
         headers: headers,
         body: JSON.stringify({
           mode: 'fast',
-          count: 100 // Fetch more emails quickly
+          count: 100
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
+      const result = await handleApiError(response, 'Failed to fast fetch emails');
       console.log('🚀 Fast fetch result:', result);
       
-      if (response.ok && result.success) {
+      if (result.success) {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
@@ -449,7 +501,6 @@ function App() {
           console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
           const processedEmails = result.data.emails.map(processEmailData);
           
-          // Sort emails by date (newest first)
           const sortedEmails = processedEmails.sort((a, b) => {
             const dateA = new Date(a.date || 0);
             const dateB = new Date(b.date || 0);
@@ -464,9 +515,7 @@ function App() {
         }
         
       } else {
-        setFetchStatus('error');
-        setError(result.error || 'Failed to fast fetch emails');
-        console.error('❌ Fast fetch failed:', result.error);
+        throw new Error(result.error || 'Failed to fast fetch emails');
       }
     } catch (err) {
       setFetchStatus('error');
@@ -477,7 +526,7 @@ function App() {
     }
   };
 
-  // Enhanced download function with CSV protection and better error handling
+  // Enhanced download function
   const downloadFile = async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', {
@@ -487,7 +536,6 @@ function App() {
         isCSV: attachment.isCSV
       });
 
-      // Extra protection for CSV files - require user confirmation
       if (attachment.isCSV) {
         const confirmed = window.confirm(
           `Are you sure you want to download the CSV file "${filename}"?\n\n` +
@@ -518,7 +566,6 @@ function App() {
         return;
       }
 
-      // Use download attribute for direct download
       const link = document.createElement('a');
       link.href = attachment.url;
       link.download = filename;
@@ -531,7 +578,6 @@ function App() {
       
     } catch (error) {
       console.error('❌ Download error:', error);
-      // Fallback: Open in new tab
       if (attachment.url) {
         window.open(attachment.url, '_blank');
       } else {
@@ -570,7 +616,7 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Enhanced attachment rendering with better CSV handling and fixed button positioning
+  // Enhanced attachment rendering
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -759,7 +805,7 @@ function App() {
           </div>
         )}
 
-        {/* CSV File Preview - Limited to prevent auto-download */}
+        {/* CSV File Preview */}
         {isCSV && safeUrl && (
           <div className="csv-preview">
             <div className="csv-preview-content">
@@ -853,7 +899,7 @@ function App() {
     }));
   };
 
-  // Enhanced EmailCard component with delete button and better attachment layout
+  // Enhanced EmailCard component
   const EmailCard = ({ email, index }) => (
     <div className="email-card">
       {/* Delete Button - Top Right */}
@@ -1001,6 +1047,16 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
+            {/* Load All Emails Button */}
+            <button 
+              onClick={loadAllEmails} 
+              disabled={fetching}
+              className="load-all-button"
+              title="Load ALL emails from your inbox (may take several minutes)"
+            >
+              🚀 Load All
+            </button>
+
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
@@ -1068,8 +1124,41 @@ function App() {
           </div>
         )}
 
+        {/* Load All Progress Display */}
+        {loadAllProgress && (
+          <div className="load-all-progress">
+            <div className="progress-header">
+              <h4>🚀 Loading All Emails</h4>
+              <span className="progress-stats">
+                {loadAllProgress.processed} new • {loadAllProgress.duplicates} duplicates • {loadAllProgress.totalInInbox} total in inbox
+              </span>
+            </div>
+            {fetchStatus === 'fetching' && (
+              <div className="progress-bar-container">
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill" 
+                    style={{ 
+                      width: `${loadAllProgress.totalInInbox > 0 ? 
+                        ((loadAllProgress.processed + loadAllProgress.duplicates) / loadAllProgress.totalInInbox) * 100 : 0}%` 
+                    }}
+                  ></div>
+                </div>
+                <div className="progress-text">
+                  Processing emails... ({loadAllProgress.processed + loadAllProgress.duplicates} / {loadAllProgress.totalInInbox})
+                </div>
+              </div>
+            )}
+            {fetchStatus === 'success' && (
+              <div className="progress-complete">
+                ✅ Successfully loaded {loadAllProgress.processed} new emails!
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Status Banner */}
-        {statusMessage && (
+        {statusMessage && !loadAllProgress && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
             {fetchStatus === 'fetching' && (
@@ -1099,8 +1188,8 @@ function App() {
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Smart Fetch
                 </button>
-                <button onClick={forceFetchEmails} className="force-fetch-button">
-                  ⚡ Force Fetch
+                <button onClick={loadAllEmails} className="load-all-button">
+                  🚀 Load All Emails
                 </button>
               </div>
             </div>
@@ -1128,6 +1217,15 @@ function App() {
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {user && <p>User: {user.email}</p>}
               {error && <p>Error: {error}</p>}
+              {loadAllProgress && (
+                <div className="load-all-debug">
+                  <h4>Load All Progress:</h4>
+                  <p>Processed: {loadAllProgress.processed}</p>
+                  <p>Duplicates: {loadAllProgress.duplicates}</p>
+                  <p>Total in Inbox: {loadAllProgress.totalInInbox}</p>
+                  <p>User: {loadAllProgress.userEmail}</p>
+                </div>
+              )}
               <div className="attachments-debug">
                 <h4>Attachments Debug:</h4>
                 {emails.slice(0, 3).map((email, idx) => (
