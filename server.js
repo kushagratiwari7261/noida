@@ -1241,6 +1241,104 @@ app.get("/api/debug-db", authenticateUser, async (req, res) => {
     });
   }
 });
+// TEMPORARY: Test database without authentication
+app.get("/api/test-db-no-auth", async (req, res) => {
+  try {
+    console.log("🧪 Testing database without auth...");
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        error: "Supabase not available",
+        enabled: supabaseEnabled,
+        client: !!supabase
+      });
+    }
+
+    // Test 1: Check if emails table exists
+    const { data: emailsData, error: emailsError } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(5);
+
+    // Test 2: Try to count emails
+    const { data: countData, error: countError } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact', head: true });
+
+    // Test 3: Check database connection with simple query
+    const { data: testData, error: testError } = await supabase
+      .from('emails')
+      .select('count')
+      .limit(1);
+
+    res.json({
+      success: true,
+      tests: {
+        table_exists: emailsError ? `❌ ${emailsError.message}` : "✅ Table exists",
+        can_query: countError ? `❌ ${countError.message}` : `✅ Can query (${countData} emails)`,
+        connection: testError ? `❌ ${testError.message}` : "✅ Database connected"
+      },
+      sample_data: emailsData || "No data",
+      errors: {
+        emails_error: emailsError,
+        count_error: countError,
+        test_error: testError
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Database test error:", error);
+    res.json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+// Test Supabase connection details
+app.get("/api/test-supabase", async (req, res) => {
+  try {
+    console.log("🧪 Testing Supabase connection...");
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        error: "Supabase client not initialized",
+        enabled: supabaseEnabled,
+        client: !!supabase
+      });
+    }
+
+    // Test basic Supabase connection
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(1);
+
+    res.json({
+      success: true,
+      supabase_status: {
+        enabled: supabaseEnabled,
+        connected: !error,
+        error: error ? error.message : null,
+        code: error ? error.code : null
+      },
+      environment: {
+        has_url: !!process.env.SUPABASE_URL,
+        has_key: !!process.env.SUPABASE_ANON_KEY,
+        url_length: process.env.SUPABASE_URL ? process.env.SUPABASE_URL.length : 0,
+        key_length: process.env.SUPABASE_ANON_KEY ? process.env.SUPABASE_ANON_KEY.length : 0
+      }
+    });
+
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 // Enhanced Health check
 app.get("/api/health", async (req, res) => {
   try {
