@@ -14,9 +14,9 @@ function App() {
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
   const [deletingEmails, setDeletingEmails] = useState({});
-  const [user, setUser] = useState(null); // Add user state
+  const [user, setUser] = useState(null);
 
-  const API_BASE = 'http://localhost:3001'; // Update with your backend URL
+  const API_BASE = 'http://localhost:3001';
 
   // Get authentication token
   const getAuthToken = async () => {
@@ -32,7 +32,7 @@ function App() {
     }
   };
 
-  // Enhanced fetch with authentication
+  // Enhanced fetch with authentication and better error handling
   const fetchWithAuth = async (url, options = {}) => {
     const token = await getAuthToken();
     
@@ -58,178 +58,38 @@ function App() {
     }
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      // Try to get error details from response
+      let errorDetails = `HTTP error! status: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorDetails = errorData.error || errorData.message || errorDetails;
+      } catch (e) {
+        // If response is not JSON, use status text
+        errorDetails = response.statusText || errorDetails;
+      }
+      throw new Error(errorDetails);
     }
 
     return response;
   };
 
-  // Enhanced attachment URL processor with better CSV handling
-  const processAttachmentUrl = (attachment) => {
-    // Try multiple URL properties from backend
-    const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
-    
-    if (!url) {
-      console.warn('❌ No URL found for attachment:', attachment);
-      return null;
-    }
-
-    // Ensure URL is properly formatted
-    let processedUrl = url;
-    
-    // If URL is relative, make it absolute (shouldn't happen with Supabase)
-    if (processedUrl.startsWith('/')) {
-      processedUrl = `${window.location.origin}${processedUrl}`;
-    }
-
-    console.log('🔗 Processed attachment URL:', {
-      original: url,
-      processed: processedUrl,
-      filename: attachment.filename
-    });
-
-    return processedUrl;
-  };
-
-  // Enhanced process email data with better attachment handling and CSV protection
-  const processEmailData = (email) => {
-    const processedEmail = {
-      id: email._id || email.id || email.messageId || email.message_id,
-      _id: email._id || email.id || email.messageId || email.message_id,
-      messageId: email.messageId || email.message_id,
-      subject: email.subject || '(No Subject)',
-      from: email.from || email.from_text,
-      from_text: email.from_text || email.from,
-      to: email.to || email.to_text,
-      to_text: email.to_text || email.to,
-      date: email.date,
-      text: email.text || email.text_content,
-      text_content: email.text_content || email.text,
-      html: email.html || email.html_content,
-      html_content: email.html_content || email.html,
-      attachments: [],
-      hasAttachments: email.hasAttachments || false,
-      attachmentsCount: email.attachmentsCount || 0
-    };
-
-    // Process attachments - handle both direct attachments and enhanced structure
-    if (Array.isArray(email.attachments) && email.attachments.length > 0) {
-      processedEmail.attachments = email.attachments.map((att, index) => {
-        // Use the enhanced URL processor
-        const attachmentUrl = processAttachmentUrl(att);
-        
-        // Determine file type and properties
-        const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
-        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
-        const isImage = att.isImage || mimeType.startsWith('image/');
-        const isPDF = att.isPdf || mimeType === 'application/pdf';
-        const isText = att.isText || mimeType.startsWith('text/');
-        const isAudio = att.isAudio || mimeType.startsWith('audio/');
-        const isVideo = att.isVideo || mimeType.startsWith('video/');
-        const isCSV = filename.toLowerCase().endsWith('.csv') || mimeType.includes('csv');
-
-        const processedAtt = {
-          id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
-          filename: filename,
-          name: att.name || filename,
-          originalFilename: att.originalFilename || filename,
-          url: attachmentUrl,
-          publicUrl: att.publicUrl || attachmentUrl,
-          downloadUrl: att.downloadUrl || attachmentUrl,
-          previewUrl: att.previewUrl || (isImage ? attachmentUrl : null),
-          type: mimeType,
-          contentType: mimeType,
-          mimeType: mimeType,
-          size: att.size || 0,
-          extension: att.extension || filename.split('.').pop() || 'bin',
-          isImage: isImage,
-          isPdf: isPDF,
-          isText: isText,
-          isAudio: isAudio,
-          isVideo: isVideo,
-          isCSV: isCSV,
-          path: att.path,
-          displayName: att.displayName || filename,
-          originalData: att
-        };
-
-        console.log('📎 Enhanced attachment processed:', {
-          filename: processedAtt.filename,
-          url: processedAtt.url,
-          type: processedAtt.type,
-          size: processedAtt.size,
-          isImage: processedAtt.isImage,
-          isPdf: processedAtt.isPdf,
-          isCSV: processedAtt.isCSV
-        });
-
-        return processedAtt;
-      }).filter(att => att.filename && att.url); // Only keep attachments with filename and URL
-
-      processedEmail.hasAttachments = processedEmail.attachments.length > 0;
-      processedEmail.attachmentsCount = processedEmail.attachments.length;
-    }
-
-    return processedEmail;
-  };
-
-  // NEW: Delete email function with authentication
-  const deleteEmail = async (emailId, messageId) => {
-    if (!emailId && !messageId) {
-      console.error('❌ No email ID or message ID provided for deletion');
-      setError('Cannot delete email: Missing identifier');
-      return;
-    }
-
-    // Confirm deletion
-    const confirmed = window.confirm(
-      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    // Set deleting state for this email
-    setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
-
-    try {
-      console.log('🗑️ Deleting email:', { emailId, messageId });
-
-      const response = await fetchWithAuth(`${API_BASE}/api/emails/${messageId}`, {
-        method: 'DELETE',
-      });
-
-      const result = await response.json();
-      console.log('🗑️ Delete response:', result);
-
-      if (response.ok && result.success) {
-        // Remove email from local state immediately
-        setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
-        console.log('✅ Email deleted successfully');
-        
-        // Show success message
-        setFetchStatus('success');
-        setTimeout(() => setFetchStatus('idle'), 3000);
-      } else {
-        throw new Error(result.error || 'Failed to delete email');
-      }
-    } catch (err) {
-      console.error('❌ Delete error:', err);
-      setError(`Failed to delete email: ${err.message}`);
-    } finally {
-      // Clear deleting state
-      setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
-    }
-  };
-
-  // Enhanced load emails function with proper sorting and authentication
+  // Enhanced load emails function with better error handling
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+
+      // Test backend connection first
+      try {
+        const healthResponse = await fetch(`${API_BASE}/api/health`);
+        const healthData = await healthResponse.json();
+        console.log('🏥 Backend health:', healthData.status);
+      } catch (healthErr) {
+        console.error('❌ Backend health check failed:', healthErr);
+        throw new Error('Backend server is not responding. Please check if the server is running.');
+      }
 
       // Clear cache first if force refresh
       if (forceRefresh) {
@@ -254,6 +114,11 @@ function App() {
       const data = await response.json();
       
       console.log('📧 Backend response:', data);
+      
+      // Check if response indicates success
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load emails from server');
+      }
       
       let emailsToProcess = [];
       
@@ -289,20 +154,29 @@ function App() {
     } catch (err) {
       console.error('❌ Fetch error:', err);
       setEmails([]);
-      setError(`Failed to load emails: ${err.message}`);
       
-      // If authentication failed, redirect to login
+      let errorMessage = `Failed to load emails: ${err.message}`;
+      
+      // More specific error messages
       if (err.message.includes('Authentication failed')) {
+        errorMessage = 'Authentication failed. Please log in again.';
         setTimeout(() => {
           window.location.href = '/login';
         }, 2000);
+      } else if (err.message.includes('Backend server is not responding')) {
+        errorMessage = 'Backend server is not responding. Please check if the server is running on port 3001.';
+      } else if (err.message.includes('Failed to load emails from server')) {
+        errorMessage = `Server error: ${err.message}`;
       }
+      
+      setError(errorMessage);
+      
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // Enhanced fetch function with authentication
+  // Enhanced fetch function with better error handling
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -355,7 +229,6 @@ function App() {
   // Individual fetch functions for backward compatibility
   const fetchNewEmails = () => fetchEmails('latest');
   const forceFetchEmails = () => fetchEmails('force');
-  const simpleFetchEmails = () => fetchEmails('simple');
 
   // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
@@ -381,29 +254,168 @@ function App() {
     }
   };
 
-  // Fast fetch from Supabase only (remove if endpoint doesn't exist)
-  const fastFetchEmails = async () => {
-    setError('Fast fetch endpoint not available. Use Smart Fetch instead.');
-    return;
+  // Test backend connection
+  const testBackendConnection = async () => {
+    try {
+      setError(null);
+      console.log('🧪 Testing backend connection...');
+      
+      const response = await fetch(`${API_BASE}/api/health`);
+      const data = await response.json();
+      
+      console.log('🏥 Backend health:', data);
+      
+      if (data.status === 'healthy') {
+        setError('✅ Backend is healthy and running!');
+        setTimeout(() => setError(null), 3000);
+      } else {
+        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+      }
+    } catch (err) {
+      setError(`❌ Cannot connect to backend: ${err.message}`);
+    }
   };
 
-  // Enhanced download function with CSV protection and better error handling
-  const downloadFile = async (attachment, filename) => {
+  // Rest of your existing functions remain the same...
+  const processAttachmentUrl = (attachment) => {
+    const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
+    
+    if (!url) {
+      console.warn('❌ No URL found for attachment:', attachment);
+      return null;
+    }
+
+    let processedUrl = url;
+    
+    if (processedUrl.startsWith('/')) {
+      processedUrl = `${window.location.origin}${processedUrl}`;
+    }
+
+    console.log('🔗 Processed attachment URL:', {
+      original: url,
+      processed: processedUrl,
+      filename: attachment.filename
+    });
+
+    return processedUrl;
+  };
+
+  const processEmailData = (email) => {
+    const processedEmail = {
+      id: email._id || email.id || email.messageId || email.message_id,
+      _id: email._id || email.id || email.messageId || email.message_id,
+      messageId: email.messageId || email.message_id,
+      subject: email.subject || '(No Subject)',
+      from: email.from || email.from_text,
+      from_text: email.from_text || email.from,
+      to: email.to || email.to_text,
+      to_text: email.to_text || email.to,
+      date: email.date,
+      text: email.text || email.text_content,
+      text_content: email.text_content || email.text,
+      html: email.html || email.html_content,
+      html_content: email.html_content || email.html,
+      attachments: [],
+      hasAttachments: email.hasAttachments || false,
+      attachmentsCount: email.attachmentsCount || 0
+    };
+
+    if (Array.isArray(email.attachments) && email.attachments.length > 0) {
+      processedEmail.attachments = email.attachments.map((att, index) => {
+        const attachmentUrl = processAttachmentUrl(att);
+        const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
+        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
+        const isImage = att.isImage || mimeType.startsWith('image/');
+        const isPDF = att.isPdf || mimeType === 'application/pdf';
+        const isText = att.isText || mimeType.startsWith('text/');
+        const isAudio = att.isAudio || mimeType.startsWith('audio/');
+        const isVideo = att.isVideo || mimeType.startsWith('video/');
+        const isCSV = filename.toLowerCase().endsWith('.csv') || mimeType.includes('csv');
+
+        const processedAtt = {
+          id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
+          filename: filename,
+          name: att.name || filename,
+          originalFilename: att.originalFilename || filename,
+          url: attachmentUrl,
+          publicUrl: att.publicUrl || attachmentUrl,
+          downloadUrl: att.downloadUrl || attachmentUrl,
+          previewUrl: att.previewUrl || (isImage ? attachmentUrl : null),
+          type: mimeType,
+          contentType: mimeType,
+          mimeType: mimeType,
+          size: att.size || 0,
+          extension: att.extension || filename.split('.').pop() || 'bin',
+          isImage: isImage,
+          isPdf: isPDF,
+          isText: isText,
+          isAudio: isAudio,
+          isVideo: isVideo,
+          isCSV: isCSV,
+          path: att.path,
+          displayName: att.displayName || filename,
+          originalData: att
+        };
+
+        return processedAtt;
+      }).filter(att => att.filename && att.url);
+
+      processedEmail.hasAttachments = processedEmail.attachments.length > 0;
+      processedEmail.attachmentsCount = processedEmail.attachments.length;
+    }
+
+    return processedEmail;
+  };
+
+  const deleteEmail = async (emailId, messageId) => {
+    if (!emailId && !messageId) {
+      console.error('❌ No email ID or message ID provided for deletion');
+      setError('Cannot delete email: Missing identifier');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
+    );
+
+    if (!confirmed) return;
+
+    setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
+
     try {
-      console.log('⬇️ Downloading attachment:', {
-        filename,
-        url: attachment.url,
-        type: attachment.type,
-        isCSV: attachment.isCSV
+      console.log('🗑️ Deleting email:', { emailId, messageId });
+      const response = await fetchWithAuth(`${API_BASE}/api/emails/${messageId}`, {
+        method: 'DELETE',
       });
 
-      // Extra protection for CSV files - require user confirmation
+      const result = await response.json();
+      console.log('🗑️ Delete response:', result);
+
+      if (response.ok && result.success) {
+        setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
+        console.log('✅ Email deleted successfully');
+        setFetchStatus('success');
+        setTimeout(() => setFetchStatus('idle'), 3000);
+      } else {
+        throw new Error(result.error || 'Failed to delete email');
+      }
+    } catch (err) {
+      console.error('❌ Delete error:', err);
+      setError(`Failed to delete email: ${err.message}`);
+    } finally {
+      setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
+    }
+  };
+
+  // Rest of your existing functions (downloadFile, getFileIcon, getFileSize, renderAttachment, etc.)
+  const downloadFile = async (attachment, filename) => {
+    try {
+      console.log('⬇️ Downloading attachment:', { filename, url: attachment.url, type: attachment.type });
+
       if (attachment.isCSV) {
         const confirmed = window.confirm(
-          `Are you sure you want to download the CSV file "${filename}"?\n\n` +
-          `This will save the file to your downloads folder.`
+          `Are you sure you want to download the CSV file "${filename}"?\n\nThis will save the file to your downloads folder.`
         );
-        
         if (!confirmed) {
           console.log('❌ CSV download cancelled by user');
           return;
@@ -414,7 +426,6 @@ function App() {
         throw new Error('No URL available for download');
       }
 
-      // Use download attribute for direct download
       const link = document.createElement('a');
       link.href = attachment.url;
       link.download = filename;
@@ -427,7 +438,6 @@ function App() {
       
     } catch (error) {
       console.error('❌ Download error:', error);
-      // Fallback: Open in new tab
       if (attachment.url) {
         window.open(attachment.url, '_blank');
       } else {
@@ -436,7 +446,6 @@ function App() {
     }
   };
 
-  // Enhanced file icon function
   const getFileIcon = (mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
@@ -466,7 +475,6 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Enhanced attachment rendering with better CSV handling and fixed button positioning
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -474,30 +482,17 @@ function App() {
     const fileIcon = getFileIcon(mimeType, filename);
     const isImage = attachment.isImage || mimeType?.startsWith('image/');
     const isPDF = attachment.isPdf || mimeType === 'application/pdf';
-    const isText = attachment.isText || mimeType?.startsWith('text/');
-    const isAudio = attachment.isAudio || mimeType?.startsWith('audio/');
-    const isVideo = attachment.isVideo || mimeType?.startsWith('video/');
     const isCSV = attachment.isCSV || filename.toLowerCase().endsWith('.csv');
-    const isExpandable = isImage || isPDF;
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
-    
-    // Enhanced problematic file detection
+    const safeUrl = attachment.url;
+
+    // For problematic files
     const isProblematicFile = 
       attachment.url?.includes('godaddy') || 
       attachment.url?.includes('tracking') ||
       attachment.url?.includes('pixel') ||
-      attachment.url?.includes('beacon') ||
-      attachment.url?.includes('analytics') ||
-      attachment.url?.includes('gem.') ||
-      filename.match(/\.(gif)$/i) ||
-      filename.match(/track|pixel|beacon|analytics|spacer|forward/i) ||
-      (isImage && filename.match(/\.gif$/i)) ||
-      (filename === 'native_forward.gif') ||
-      (attachment.url && attachment.url.match(/native_forward\.gif$/i));
+      filename.match(/track|pixel|beacon|analytics|spacer|forward/i);
 
-    const safeUrl = attachment.url;
-
-    // For problematic files, show minimal info and block loading
     if (isProblematicFile) {
       return (
         <div key={attachment.id} className="attachment-item blocked-attachment">
@@ -513,10 +508,7 @@ function App() {
             <div className="attachment-actions">
               <button 
                 className="download-btn blocked"
-                onClick={() => {
-                  console.log('Blocked tracking pixel:', filename, attachment.url);
-                  alert('Tracking pixels are blocked for privacy and performance reasons.');
-                }}
+                onClick={() => alert('Tracking pixels are blocked for privacy and performance reasons.')}
                 title="Blocked - Tracking Pixel"
                 disabled
               >
@@ -541,7 +533,7 @@ function App() {
             </div>
           </div>
           <div className="attachment-actions">
-            {isExpandable && safeUrl && (
+            {(isImage || isPDF) && safeUrl && (
               <button 
                 className="expand-btn"
                 onClick={() => toggleImageExpand(emailIndex, index)}
@@ -561,7 +553,6 @@ function App() {
           </div>
         </div>
 
-        {/* Image Preview */}
         {isImage && safeUrl && (
           <div className={`image-preview ${isExpanded ? 'expanded' : ''}`}>
             <img
@@ -577,9 +568,6 @@ function App() {
                 const fallback = e.target.parentElement.querySelector('.image-fallback');
                 if (fallback) fallback.style.display = 'block';
               }}
-              onLoad={(e) => {
-                console.log('✅ Image loaded successfully:', safeUrl);
-              }}
             />
             <div className="image-fallback" style={{display: 'none'}}>
               🖼️ Image not available - <a href={safeUrl} target="_blank" rel="noopener noreferrer">Open in new tab</a>
@@ -592,10 +580,6 @@ function App() {
                     alt={filename}
                     className="expanded-image"
                     crossOrigin="anonymous"
-                    onError={(e) => {
-                      e.target.style.display = 'none';
-                      e.target.parentElement.innerHTML = '<div class="error-message">Failed to load image</div>';
-                    }}
                   />
                   <button 
                     className="close-expanded-btn"
@@ -609,7 +593,6 @@ function App() {
           </div>
         )}
 
-        {/* PDF Preview */}
         {isPDF && safeUrl && (
           <div className={`pdf-preview ${isExpanded ? 'expanded' : ''}`}>
             {isExpanded ? (
@@ -637,25 +620,6 @@ function App() {
           </div>
         )}
 
-        {/* Text File Preview */}
-        {isText && safeUrl && !isCSV && (
-          <div className="text-preview">
-            <div className="text-preview-content">
-              <h5>Text File Preview:</h5>
-              <iframe
-                src={safeUrl}
-                title={filename}
-                className="text-iframe"
-                loading="lazy"
-              />
-              <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="full-view-link">
-                📄 Open full text
-              </a>
-            </div>
-          </div>
-        )}
-
-        {/* CSV File Preview - Limited to prevent auto-download */}
         {isCSV && safeUrl && (
           <div className="csv-preview">
             <div className="csv-preview-content">
@@ -679,58 +643,6 @@ function App() {
           </div>
         )}
 
-        {/* Audio Preview */}
-        {isAudio && safeUrl && (
-          <div className="audio-preview">
-            <div className="audio-player">
-              <audio controls className="audio-element">
-                <source src={safeUrl} type={mimeType} />
-                Your browser does not support the audio element.
-              </audio>
-              <a href={safeUrl} download={filename} className="download-audio">
-                💾 Download Audio
-              </a>
-            </div>
-          </div>
-        )}
-
-        {/* Video Preview */}
-        {isVideo && safeUrl && (
-          <div className="video-preview">
-            <div className="video-player">
-              <video controls className="video-element" preload="metadata">
-                <source src={safeUrl} type={mimeType} />
-                Your browser does not support the video element.
-              </video>
-              <a href={safeUrl} download={filename} className="download-video">
-                💾 Download Video
-              </a>
-            </div>
-          </div>
-        )}
-
-        {/* Generic file info for non-previewable files */}
-        {!isImage && !isPDF && !isText && !isAudio && !isVideo && !isCSV && safeUrl && (
-          <div className="file-preview">
-            <div className="file-info-detailed">
-              <p><strong>Type:</strong> {mimeType || 'Unknown'}</p>
-              <p><strong>Size:</strong> {fileSize || 'Unknown'}</p>
-              <div className="file-actions">
-                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="direct-link">
-                  🔗 Open directly
-                </a>
-                <button 
-                  onClick={() => downloadFile(attachment, filename)}
-                  className="download-direct"
-                >
-                  💾 Download
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* No URL available */}
         {!safeUrl && (
           <div className="no-url-warning">
             <p>⚠️ No download URL available for this attachment</p>
@@ -749,10 +661,9 @@ function App() {
     }));
   };
 
-  // Enhanced EmailCard component with delete button and better attachment layout
+  // Enhanced EmailCard component
   const EmailCard = ({ email, index }) => (
     <div className="email-card">
-      {/* Delete Button - Top Right */}
       <div className="email-actions-top">
         <button 
           className="delete-email-btn"
@@ -879,6 +790,15 @@ function App() {
               <div className="user-info">
                 <p>Logged in as: <strong>{user?.email}</strong></p>
               </div>
+              <div className="sidebar-actions">
+                <button 
+                  onClick={testBackendConnection}
+                  className="test-connection-btn"
+                  title="Test backend connection"
+                >
+                  🧪 Test Connection
+                </button>
+              </div>
             </>
           )}
         </div>
@@ -985,6 +905,9 @@ function App() {
                 </button>
                 <button onClick={forceFetchEmails} className="force-fetch-button">
                   ⚡ Force Fetch
+                </button>
+                <button onClick={testBackendConnection} className="test-connection-btn">
+                  🧪 Test Connection
                 </button>
               </div>
             </div>
