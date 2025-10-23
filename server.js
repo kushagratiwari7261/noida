@@ -472,7 +472,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ✅ FIXED: Get ALL emails without pagination (for initial load)
+// ✅ FIXED: Get ALL emails without pagination (for initial load) - UPDATED
 app.get("/api/all-emails", authenticateUser, async (req, res) => {
   try {
     const { limit = 10000 } = req.query;
@@ -481,11 +481,25 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
 
     console.log(`📧 Fetching ALL emails (no pagination) for ${userEmail}, limit: ${limit}`);
 
+    // Check if Supabase is available
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        error: "Supabase is not available"
+      console.error("❌ Supabase not available for user:", userEmail);
+      return res.status(503).json({
+        success: false,
+        error: "Database service temporarily unavailable",
+        userEmail: userEmail
       });
     }
+
+    // Validate user ID
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID"
+      });
+    }
+
+    console.log(`🔍 Querying Supabase for user ${userId} (${userEmail})`);
 
     // Get ALL emails for this user, newest first
     const { data: emails, error, count } = await supabase
@@ -498,8 +512,10 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
     if (error) {
       console.error("❌ Supabase query error:", error);
       return res.status(500).json({
-        error: "Failed to fetch emails from Supabase",
-        details: error.message
+        success: false,
+        error: "Failed to fetch emails from database",
+        details: error.message,
+        userEmail: userEmail
       });
     }
 
@@ -532,21 +548,24 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
     }));
 
     const response = {
+      success: true,
       emails: enhancedEmails,
       total: count || 0,
       userEmail: userEmail,
       source: 'supabase_all',
-      message: `Loaded ALL ${enhancedEmails.length} emails from database`
+      message: `Loaded ${enhancedEmails.length} emails from database`
     };
 
-    console.log(`✅ Sending ALL ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
+    console.log(`✅ Successfully sent ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
     res.json(response);
 
   } catch (error) {
     console.error("❌ All emails fetch error:", error);
     res.status(500).json({
+      success: false,
       error: "Failed to fetch all emails",
-      details: error.message
+      details: error.message,
+      userEmail: req.user?.email
     });
   }
 });
@@ -574,8 +593,10 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     }
 
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({ 
-        error: "Supabase is not available" 
+      return res.status(503).json({ 
+        success: false,
+        error: "Database service temporarily unavailable",
+        userEmail: userEmail
       });
     }
 
@@ -610,8 +631,10 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     if (error) {
       console.error("❌ Supabase query error:", error);
       return res.status(500).json({ 
+        success: false,
         error: "Failed to fetch emails from Supabase",
-        details: error.message 
+        details: error.message,
+        userEmail: userEmail
       });
     }
 
@@ -647,6 +670,7 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     const hasMore = pageNum < totalPages;
 
     const response = {
+      success: true,
       emails: enhancedEmails,
       total: count || 0,
       hasMore,
@@ -666,8 +690,10 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
     res.status(500).json({ 
+      success: false,
       error: "Failed to fetch emails",
-      details: error.message 
+      details: error.message,
+      userEmail: req.user?.email
     });
   }
 });
@@ -682,9 +708,10 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
     console.log(`🔍 Searching emails in Supabase for user ${userEmail}: "${searchTerm}", page: ${page}, limit: ${limit}`);
 
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
+      return res.status(503).json({
         success: false,
-        error: "Supabase is not available"
+        error: "Database service temporarily unavailable",
+        userEmail: userEmail
       });
     }
 
@@ -714,7 +741,8 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       return res.status(500).json({
         success: false,
         error: "Failed to search emails",
-        details: error.message
+        details: error.message,
+        userEmail: userEmail
       });
     }
 
@@ -771,7 +799,8 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
     console.error("❌ Search emails error:", error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      userEmail: req.user?.email
     });
   }
 });
@@ -787,7 +816,10 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
     const password = emailConfigs[userEmail];
 
     if (!password) {
-      return res.status(400).json({ error: "Email configuration not found" });
+      return res.status(400).json({ 
+        success: false,
+        error: "Email configuration not found" 
+      });
     }
 
     console.log(`🔄 ${force ? 'FORCE ' : ''}Fetching ${count} LATEST emails for ${userEmail}`);
@@ -804,7 +836,10 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
     connection.openBox("INBOX", true, async (err, box) => {
       if (err) {
         connection.end();
-        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+        return res.status(500).json({ 
+          success: false,
+          error: "Failed to open inbox: " + err.message 
+        });
       }
       
       console.log(`📥 ${userEmail} - Total Messages in INBOX: ${box.messages.total}`);
@@ -1019,7 +1054,10 @@ app.post("/api/force-refresh", authenticateUser, async (req, res) => {
     const password = emailConfigs[userEmail];
 
     if (!password) {
-      return res.status(400).json({ error: "Email configuration not found" });
+      return res.status(400).json({ 
+        success: false,
+        error: "Email configuration not found" 
+      });
     }
 
     console.log(`⚡ FORCE REFRESH called for ${userEmail}, count: ${count}`);
@@ -1034,7 +1072,10 @@ app.post("/api/force-refresh", authenticateUser, async (req, res) => {
     connection.openBox("INBOX", true, async (err, box) => {
       if (err) {
         connection.end();
-        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+        return res.status(500).json({ 
+          success: false,
+          error: "Failed to open inbox: " + err.message 
+        });
       }
       
       console.log(`📥 ${userEmail} - Total Messages in INBOX: ${box.messages.total}`);
@@ -1231,7 +1272,7 @@ app.post("/api/force-refresh", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ FIXED: Get email statistics endpoint
+// ✅ FIXED: Get email statistics endpoint - UPDATED
 app.get("/api/email-stats", authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1240,9 +1281,18 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
     console.log(`📊 Getting email statistics for ${userEmail}`);
 
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
+      return res.status(503).json({
         success: false,
-        error: "Supabase is not available"
+        error: "Database service temporarily unavailable",
+        userEmail: userEmail
+      });
+    }
+
+    // Validate user ID
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid user ID"
       });
     }
 
@@ -1253,6 +1303,7 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
       .eq('user_id', userId);
 
     if (countError) {
+      console.error("❌ Count error:", countError);
       throw countError;
     }
 
@@ -1263,14 +1314,24 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
       .eq('user_id', userId)
       .eq('has_attachments', true);
 
-    // Get date range
-    const { data: dateRange, error: dateError } = await supabase
+    if (attachError) {
+      console.error("❌ Attachments count error:", attachError);
+      // Don't throw, just log and continue
+    }
+
+    // Get date range - oldest email
+    const { data: oldestEmail, error: oldestError } = await supabase
       .from('emails')
       .select('date')
       .eq('user_id', userId)
       .order('date', { ascending: true })
       .limit(1);
 
+    if (oldestError) {
+      console.error("❌ Oldest email error:", oldestError);
+    }
+
+    // Get date range - latest email
     const { data: latestEmail, error: latestError } = await supabase
       .from('emails')
       .select('date')
@@ -1278,13 +1339,17 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
       .order('date', { ascending: false })
       .limit(1);
 
+    if (latestError) {
+      console.error("❌ Latest email error:", latestError);
+    }
+
     res.json({
       success: true,
       data: {
         totalEmails: totalCount || 0,
         emailsWithAttachments: withAttachmentsCount || 0,
         dateRange: {
-          oldest: dateRange?.[0]?.date || null,
+          oldest: oldestEmail?.[0]?.date || null,
           latest: latestEmail?.[0]?.date || null
         },
         userEmail: userEmail
@@ -1295,7 +1360,8 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
     console.error("❌ Email stats error:", error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      userEmail: req.user?.email
     });
   }
 });
@@ -1370,9 +1436,10 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     console.log(`🗑️ Deleting email for ${userEmail}: ${messageId}`);
 
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
+      return res.status(503).json({
         success: false,
-        error: "Supabase is not available"
+        error: "Database service temporarily unavailable",
+        userEmail: userEmail
       });
     }
 
