@@ -87,40 +87,64 @@ let supabaseEnabled = false;
 
 const initializeSupabase = () => {
   try {
-    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-      // Use the same ANON_KEY that your frontend uses
-      supabase = createClient(
-        process.env.SUPABASE_URL,
-        process.env.SUPABASE_ANON_KEY,
-        {
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-            detectSessionInUrl: false
-          },
-          global: {
-            headers: {
-              'X-Client-Info': 'email-backend'
-            }
-          }
-        }
-      );
-      
-      supabaseEnabled = true;
-      console.log("✅ Supabase client created successfully");
-      console.log("🔗 Supabase URL:", process.env.SUPABASE_URL);
-      return true;
-    } else {
+    // Use the same environment variable names as your frontend
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
       console.error("❌ Supabase environment variables not set");
-      console.log("SUPABASE_URL:", process.env.SUPABASE_URL ? "Set" : "Missing");
-      console.log("SUPABASE_ANON_KEY:", process.env.SUPABASE_ANON_KEY ? "Set" : "Missing");
+      console.log("SUPABASE_URL:", supabaseUrl ? "Set" : "Missing");
+      console.log("SUPABASE_KEY:", supabaseKey ? "Set" : "Missing");
       supabaseEnabled = false;
       return false;
     }
+
+    console.log("🔗 Initializing Supabase with URL:", supabaseUrl);
+    
+    supabase = createClient(
+      supabaseUrl,
+      supabaseKey,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
+        },
+        global: {
+          headers: {
+            'X-Client-Info': 'email-backend'
+          }
+        }
+      }
+    );
+    
+    supabaseEnabled = true;
+    console.log("✅ Supabase client created successfully");
+    
+    // Test the connection
+    testSupabaseConnection();
+    return true;
   } catch (error) {
     console.error("❌ Failed to create Supabase client:", error.message);
     supabaseEnabled = false;
     return false;
+  }
+};
+
+// Test Supabase connection
+const testSupabaseConnection = async () => {
+  try {
+    if (supabaseEnabled && supabase) {
+      console.log("🧪 Testing Supabase connection...");
+      const { data, error } = await supabase.auth.getUser();
+      if (error) {
+        console.error("❌ Supabase connection test failed:", error.message);
+      } else {
+        console.log("✅ Supabase connection test successful");
+      }
+    }
+  } catch (error) {
+    console.error("❌ Supabase connection test error:", error.message);
   }
 };
 
@@ -579,6 +603,108 @@ app.get("/api/test-auth", authenticateUser, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Test failed"
+    });
+  }
+});
+
+// Auth endpoints
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: "Email and password are required"
+      });
+    }
+
+    if (!supabaseEnabled) {
+      return res.status(500).json({
+        success: false,
+        error: "Authentication service unavailable"
+      });
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password: password
+    });
+
+    if (error) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid email or password"
+      });
+    }
+
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(email);
+    if (allowedAccounts.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: "Your account doesn't have access to any email accounts. Please contact administrator."
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Login successful",
+      data: {
+        user: data.user,
+        session: data.session,
+        allowedAccounts: allowedAccounts
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Login error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Login failed"
+    });
+  }
+});
+
+app.post("/api/auth/logout", authenticateUser, async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader.substring(7);
+
+    if (supabaseEnabled) {
+      await supabase.auth.signOut();
+    }
+
+    res.json({
+      success: true,
+      message: "Logout successful"
+    });
+  } catch (error) {
+    console.error("❌ Logout error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Logout failed"
+    });
+  }
+});
+
+// ADD THIS MISSING ENDPOINT - User Profile
+app.get("/api/auth/profile", authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+
+    res.json({
+      success: true,
+      data: {
+        user: req.user,
+        allowedAccounts: allowedAccounts
+      }
+    });
+  } catch (error) {
+    console.error("❌ Profile fetch error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch profile"
     });
   }
 });
