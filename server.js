@@ -586,6 +586,123 @@ async function saveEmailToSupabase(email) {
 
 // ========== ENHANCED API ENDPOINTS ==========
 
+// Debug authentication
+app.get("/api/debug-auth", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    console.log("🔐 Auth header:", authHeader);
+    
+    if (!authHeader) {
+      return res.json({
+        success: false,
+        error: "No authorization header",
+        has_header: false
+      });
+    }
+
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.json({
+        success: false,
+        error: "Invalid authorization format",
+        header: authHeader.substring(0, 50) + '...'
+      });
+    }
+
+    const token = authHeader.substring(7);
+    console.log("🔐 Token length:", token.length);
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        error: "Supabase not available",
+        enabled: supabaseEnabled
+      });
+    }
+
+    // Test token verification
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error) {
+      console.error("❌ Token verification failed:", error);
+      return res.json({
+        success: false,
+        error: "Token verification failed",
+        details: error.message,
+        code: error.code
+      });
+    }
+
+    if (!user) {
+      return res.json({
+        success: false,
+        error: "No user found for token"
+      });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        email: user.email,
+        id: user.id
+      },
+      token_info: {
+        length: token.length,
+        first_20: token.substring(0, 20) + '...'
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Auth debug error:", error);
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test emails with better error handling
+app.get("/api/test-emails-auth", authenticateUser, async (req, res) => {
+  try {
+    console.log("🧪 Testing emails with auth for user:", req.user.email);
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase not available"
+      });
+    }
+
+    const { data: emails, error } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(10);
+
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Database query failed",
+        details: error.message,
+        code: error.code
+      });
+    }
+
+    res.json({
+      success: true,
+      user: req.user.email,
+      email_count: emails.length,
+      emails: emails
+    });
+
+  } catch (error) {
+    console.error("❌ Test emails error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Test endpoint to verify Supabase connection
 app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
@@ -1189,6 +1306,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     });
   }
 });
+
 // Add this to your server.js for debugging
 app.get("/api/debug-db", authenticateUser, async (req, res) => {
   try {
@@ -1241,6 +1359,7 @@ app.get("/api/debug-db", authenticateUser, async (req, res) => {
     });
   }
 });
+
 // TEMPORARY: Test database without authentication
 app.get("/api/test-db-no-auth", async (req, res) => {
   try {
@@ -1296,6 +1415,7 @@ app.get("/api/test-db-no-auth", async (req, res) => {
     });
   }
 });
+
 // Test Supabase connection details
 app.get("/api/test-supabase", async (req, res) => {
   try {
@@ -1339,6 +1459,7 @@ app.get("/api/test-supabase", async (req, res) => {
     });
   }
 });
+
 // Enhanced Health check
 app.get("/api/health", async (req, res) => {
   try {
