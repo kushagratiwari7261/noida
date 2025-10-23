@@ -157,9 +157,9 @@ initializeSupabase();
 
 // User-Email Mapping Configuration
 const USER_EMAIL_MAPPING = {
-  "info@seal.co.in": [1],
-  "pankaj.singh@seal.co.in": [2],
-  "admin@seal.co.in": [1, 2]
+  "info@seal.co.in": [1],        // Can only access IMAP account 1
+  "pankaj.singh@seal.co.in": [2], // Can only access IMAP account 2  
+  "admin@seal.co.in": [1, 2]     // Can access both IMAP accounts
 };
 
 // Enhanced Email Configuration Manager
@@ -252,12 +252,12 @@ const emailConfigManager = new EmailConfigManager();
 // Enhanced Authentication Middleware for Supabase JWT tokens
 const authenticateUser = async (req, res, next) => {
   try {
-    console.log("🔐 Starting authentication for:", req.path);
+    console.log("🔐 Starting authentication for:", req.method, req.path);
     
     const authHeader = req.headers.authorization;
     
     if (!authHeader) {
-      console.log("❌ No authorization header found");
+      console.log("❌ No authorization header");
       return res.status(401).json({
         success: false,
         error: "Authentication required. Please log in."
@@ -282,8 +282,21 @@ const authenticateUser = async (req, res, next) => {
       });
     }
     
-    console.log("🔐 Token received, verifying with Supabase...");
+    console.log("🔐 Token received, length:", token.length);
 
+    // DEVELOPMENT BYPASS - Remove in production
+    if (process.env.NODE_ENV === 'development') {
+      console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
+      // Set a test user - change this email to test different access levels
+      req.user = { 
+        email: "pankaj.singh@seal.co.in", // Change to "info@seal.co.in" or "admin@seal.co.in" to test
+        id: "dev-user" 
+      };
+      console.log("🔐 Development user set:", req.user.email);
+      return next();
+    }
+
+    // Check if Supabase is available
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available for authentication");
       return res.status(500).json({
@@ -293,13 +306,15 @@ const authenticateUser = async (req, res, next) => {
     }
 
     // Verify the JWT token with Supabase
+    console.log("🔐 Verifying token with Supabase...");
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error) {
       console.error("❌ Supabase token verification failed:", error.message);
+      console.error("Error details:", error);
       
-      // More specific error messages
-      if (error.message?.includes('JWT')) {
+      // More specific error handling
+      if (error.message?.includes('JWT') || error.message?.includes('token')) {
         return res.status(401).json({
           success: false,
           error: "Invalid authentication token. Please log in again.",
@@ -322,8 +337,22 @@ const authenticateUser = async (req, res, next) => {
       });
     }
 
+    if (!user.email) {
+      console.log("❌ No email found in user object");
+      return res.status(401).json({
+        success: false,
+        error: "User email not found. Please log in again."
+      });
+    }
+
     console.log(`✅ Authenticated user: ${user.email} (${user.id})`);
-    req.user = user;
+    
+    // Set user info for authorization
+    req.user = {
+      email: user.email,
+      id: user.id
+    };
+    
     next();
   } catch (error) {
     console.error("❌ Authentication process error:", error);
@@ -652,15 +681,49 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// Debug endpoint to check user info and access
+app.get("/api/debug-user", authenticateUser, (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    
+    res.json({
+      success: true,
+      debug: {
+        authenticatedUser: req.user,
+        userEmail: userEmail,
+        allowedAccounts: allowedAccounts,
+        canAccessAccount1: emailConfigManager.canUserAccessAccount(userEmail, 1),
+        canAccessAccount2: emailConfigManager.canUserAccessAccount(userEmail, 2),
+        allMappings: USER_EMAIL_MAPPING,
+        allConfigs: emailConfigManager.getAllConfigs()
+      }
+    });
+  } catch (error) {
+    console.error("❌ Debug error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Test authentication
 app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    
     res.json({
       success: true,
       message: "Authentication successful",
       user: {
-        email: req.user.email,
+        email: userEmail,
         id: req.user.id
+      },
+      access: {
+        allowedAccounts: allowedAccounts,
+        canAccessAll: allowedAccounts.length > 0
       },
       timestamp: new Date().toISOString()
     });
@@ -683,7 +746,11 @@ app.get("/api/auth/profile", authenticateUser, async (req, res) => {
       success: true,
       data: {
         user: req.user,
-        allowedAccounts: allowedAccounts
+        allowedAccounts: allowedAccounts,
+        accessInfo: {
+          canAccessEmailArchive: allowedAccounts.length > 0,
+          accessibleAccountCount: allowedAccounts.length
+        }
       }
     });
   } catch (error) {
@@ -756,10 +823,32 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       .from('emails')
       .select('*', { count: 'exact' });
 
-    // TEMPORARILY DISABLE account filtering - database doesn't have account_id column yet
-    // TODO: Add account_id column to emails table and re-enable this filtering
-    console.log(`🔍 Account filtering temporarily disabled - database schema needs account_id column`);
-    console.log(`🔐 User ${userEmail} can access all emails (no account restrictions)`);
+    // Apply account filtering based on user access
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
+    
+    if (accountId !== "all") {
+      // Specific account requested
+      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+        return res.status(403).json({
+          success: false,
+          error: "Access denied to this email account"
+        });
+      }
+      query = query.eq('account_id', parseInt(accountId));
+    } else {
+      // Show all accessible accounts
+      if (allowedAccountIds.length > 0) {
+        query = query.in('account_id', allowedAccountIds);
+      } else {
+        return res.status(403).json({
+          success: false,
+          error: "No email accounts accessible"
+        });
+      }
+    }
+
+    console.log(`🔐 User ${userEmail} can access accounts:`, allowedAccountIds);
 
     // Add search if provided
     if (search && search.trim().length > 0) {
@@ -829,7 +918,11 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       total: count || 0,
       hasMore,
       page: pageNum,
-      limit: limitNum
+      limit: limitNum,
+      userAccess: {
+        email: userEmail,
+        allowedAccounts: allowedAccountIds
+      }
     };
 
     res.json(response);
@@ -1062,7 +1155,11 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
         successfulAccounts: successfulAccounts.length,
         totalProcessed
       },
-      accounts: allResults
+      accounts: allResults,
+      userAccess: {
+        email: userEmail,
+        allowedAccounts: accountsToProcess.map(acc => acc.id)
+      }
     });
 
   } catch (error) {
@@ -1191,6 +1288,7 @@ app.listen(PORT, () => {
   console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
   console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`👤 User-Email Mapping:`, USER_EMAIL_MAPPING);
 });
 
 export default app;
