@@ -742,6 +742,73 @@ app.get("/api/test-emails-table", async (req, res) => {
   }
 });
 
+// NEW: Create emails table if it doesn't exist
+app.post("/api/create-emails-table", async (req, res) => {
+  try {
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Supabase not available"
+      });
+    }
+
+    // First check if table exists
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(1);
+
+    if (error && error.code === '42P01') {
+      // Table doesn't exist - we would need to create it
+      // Note: This requires admin privileges. In practice, you'd create the table manually in Supabase dashboard
+      return res.json({
+        success: false,
+        message: "Emails table doesn't exist. Please create it manually in Supabase dashboard.",
+        sql: `
+          CREATE TABLE emails (
+            id BIGSERIAL PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            account_id INTEGER NOT NULL,
+            subject TEXT,
+            from_text TEXT,
+            to_text TEXT,
+            date TIMESTAMPTZ,
+            text_content TEXT,
+            html_content TEXT,
+            attachments JSONB DEFAULT '[]',
+            has_attachments BOOLEAN DEFAULT false,
+            attachments_count INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(message_id, account_id)
+          );
+        `
+      });
+    }
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: "Error checking emails table",
+        details: error.message
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Emails table exists and is accessible",
+      tableExists: true
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Failed to check emails table",
+      details: error.message
+    });
+  }
+});
+
 // Debug endpoint to check user info and access
 app.get("/api/debug-user", authenticateUser, (req, res) => {
   try {
