@@ -1,28 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import './App1.css';
-
-// Initialize Supabase client for frontend with proper error handling
-const getSupabaseClient = () => {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error('❌ Supabase environment variables are missing');
-    console.log('VITE_SUPABASE_URL:', supabaseUrl);
-    console.log('VITE_SUPABASE_ANON_KEY:', supabaseAnonKey ? 'Set' : 'Not set');
-    return null;
-  }
-
-  try {
-    return createClient(supabaseUrl, supabaseAnonKey);
-  } catch (error) {
-    console.error('❌ Failed to create Supabase client:', error);
-    return null;
-  }
-};
-
-const supabase = getSupabaseClient();
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -35,233 +12,43 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
-  const [deletingEmails, setDeletingEmails] = useState({});
-  
-  // Authentication states
-  const [user, setUser] = useState(null);
-  const [session, setSession] = useState(null);
-  const [emailAccounts, setEmailAccounts] = useState([]);
-  const [selectedAccount, setSelectedAccount] = useState('all');
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
 
-  const API_BASE = import.meta.env.VITE_API_BASE || '';
+  const API_BASE = '';
 
-  // Check for existing session on component mount
-  useEffect(() => {
-    checkAuth();
-  }, []);
-
-  // Check authentication status
-  const checkAuth = async () => {
-    if (!supabase) {
-      setError('Supabase client not initialized. Please check environment variables.');
-      return;
-    }
-
-    try {
-      const { data: { session: currentSession }, error } = await supabase.auth.getSession();
-      
-      if (error) {
-        console.error('❌ Session check error:', error);
-        setError('Authentication error: ' + error.message);
-        return;
-      }
-
-      if (currentSession) {
-        console.log('✅ User is authenticated:', currentSession.user.email);
-        setSession(currentSession);
-        setUser(currentSession.user);
-        await loadUserProfile(currentSession);
-      } else {
-        console.log('ℹ️ No active session found');
-      }
-    } catch (err) {
-      console.error('❌ Auth check error:', err);
-      setError('Failed to check authentication status');
-    }
-  };
-
-  // Load user profile and allowed accounts
-  const loadUserProfile = async (currentSession) => {
-    if (!currentSession) return;
-
-    try {
-      console.log('🔐 Loading user profile with token...');
-      const response = await fetch(`${API_BASE}/api/auth/profile`, {
-        headers: {
-          'Authorization': `Bearer ${currentSession.access_token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        if (result.success) {
-          setEmailAccounts(result.data.allowedAccounts || []);
-          console.log('📧 Loaded allowed accounts:', result.data.allowedAccounts);
-          
-          // Load emails after profile is loaded
-          await loadEmails(true, false, currentSession);
-        } else {
-          console.error('❌ Profile load failed:', result.error);
-        }
-      } else if (response.status === 401) {
-        console.log('🔐 Token expired, signing out...');
-        await handleLogout();
-        setError('Session expired. Please log in again.');
-      } else {
-        const errorText = await response.text();
-        console.error('❌ Profile load HTTP error:', response.status, errorText);
-        setError('Failed to load user profile');
-      }
-    } catch (err) {
-      console.error('❌ Profile load error:', err);
-      setError('Failed to load user profile');
-    }
-  };
-
-  // Login function using Supabase directly (not your backend login)
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    if (loginLoading) return;
-
-    if (!supabase) {
-      setError('Supabase client not initialized. Please check environment variables.');
-      return;
-    }
-
-    setLoginLoading(true);
-    setError(null);
-
-    try {
-      console.log('🔐 Attempting login with:', loginForm.email);
-      
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: loginForm.email.trim().toLowerCase(),
-        password: loginForm.password
-      });
-
-      if (error) {
-        console.error('❌ Supabase login error:', error);
-        setError(error.message || 'Login failed. Please check your credentials.');
-        return;
-      }
-
-      if (data.session) {
-        console.log('✅ Login successful:', data.user.email);
-        setSession(data.session);
-        setUser(data.user);
-        setLoginForm({ email: '', password: '' });
-        
-        // Load user profile and emails after successful login
-        await loadUserProfile(data.session);
-      } else {
-        setError('Login failed. No session returned.');
-      }
-    } catch (err) {
-      console.error('❌ Login error:', err);
-      setError('Login failed: ' + err.message);
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  // Logout function
-  const handleLogout = async () => {
-    try {
-      if (supabase) {
-        const { error } = await supabase.auth.signOut();
-        if (error) {
-          console.error('❌ Logout error:', error);
-        }
-      }
-    } catch (err) {
-      console.error('❌ Logout error:', err);
-    } finally {
-      setSession(null);
-      setUser(null);
-      setEmailAccounts([]);
-      setEmails([]);
-      setSelectedAccount('all');
-      setError(null);
-    }
-  };
-
-  // Enhanced API call function with authentication
-  const makeAuthenticatedRequest = async (url, options = {}) => {
-    if (!session) {
-      throw new Error('No active session. Please log in again.');
-    }
-
-    const config = {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${session.access_token}`,
-        ...options.headers,
-      }
-    };
-
-    console.log('🌐 Making API request to:', url);
-    console.log('🔐 Using token:', session.access_token.substring(0, 20) + '...');
-
-    const response = await fetch(`${API_BASE}${url}`, config);
+  // Enhanced attachment URL processor with better CSV handling
+  const processAttachmentUrl = (attachment) => {
+    // Try multiple URL properties from backend
+    const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
     
-    if (response.status === 401) {
-      console.log('🔐 Token expired, logging out...');
-      await handleLogout();
-      throw new Error('Session expired. Please log in again.');
+    if (!url) {
+      console.warn('❌ No URL found for attachment:', attachment);
+      return null;
     }
 
-    if (response.status === 403) {
-      const result = await response.json();
-      throw new Error(result.error || 'Access denied');
+    // Ensure URL is properly formatted
+    let processedUrl = url;
+    
+    // If URL is relative, make it absolute (shouldn't happen with Supabase)
+    if (processedUrl.startsWith('/')) {
+      processedUrl = `${window.location.origin}${processedUrl}`;
     }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ API request failed:', response.status, errorText);
-      throw new Error(`Request failed with status ${response.status}`);
-    }
+    console.log('🔗 Processed attachment URL:', {
+      original: url,
+      processed: processedUrl,
+      filename: attachment.filename
+    });
 
-    return response;
+    return processedUrl;
   };
 
-  // Test API connection
-  const testApiConnection = async () => {
-    if (!session) {
-      setError('Please log in first');
-      return;
-    }
-
-    try {
-      console.log('🧪 Testing API connection...');
-      
-      // Test health endpoint
-      const healthResponse = await fetch(`${API_BASE}/api/health`);
-      const healthData = await healthResponse.json();
-      console.log('🏥 Health check:', healthData);
-
-      // Test auth endpoint
-      const authResponse = await makeAuthenticatedRequest('/api/test-auth');
-      const authData = await authResponse.json();
-      console.log('🔐 Auth test:', authData);
-
-      alert('✅ API connection test successful!');
-    } catch (err) {
-      console.error('❌ API test failed:', err);
-      alert('❌ API test failed: ' + err.message);
-    }
-  };
-
-  // Process email data
+  // Enhanced process email data with better attachment handling and CSV protection
   const processEmailData = (email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
       _id: email._id || email.id || email.messageId || email.message_id,
       messageId: email.messageId || email.message_id,
-      accountId: email.accountId || email.account_id,
       subject: email.subject || '(No Subject)',
       from: email.from || email.from_text,
       from_text: email.from_text || email.from,
@@ -272,152 +59,119 @@ function App() {
       text_content: email.text_content || email.text,
       html: email.html || email.html_content,
       html_content: email.html_content || email.html,
-      attachments: email.attachments || [],
-      hasAttachments: email.hasAttachments || email.has_attachments || false,
-      attachmentsCount: email.attachmentsCount || email.attachments_count || 0
+      attachments: [],
+      hasAttachments: email.hasAttachments || false,
+      attachmentsCount: email.attachmentsCount || 0
     };
+
+    // Process attachments - handle both direct attachments and enhanced structure
+    if (Array.isArray(email.attachments) && email.attachments.length > 0) {
+      processedEmail.attachments = email.attachments.map((att, index) => {
+        // Use the enhanced URL processor
+        const attachmentUrl = processAttachmentUrl(att);
+        
+        // Determine file type and properties
+        const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
+        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
+        const isImage = att.isImage || mimeType.startsWith('image/');
+        const isPDF = att.isPdf || mimeType === 'application/pdf';
+        const isText = att.isText || mimeType.startsWith('text/');
+        const isAudio = att.isAudio || mimeType.startsWith('audio/');
+        const isVideo = att.isVideo || mimeType.startsWith('video/');
+        const isCSV = filename.toLowerCase().endsWith('.csv') || mimeType.includes('csv');
+
+        const processedAtt = {
+          id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
+          filename: filename,
+          name: att.name || filename,
+          originalFilename: att.originalFilename || filename,
+          url: attachmentUrl,
+          publicUrl: att.publicUrl || attachmentUrl,
+          downloadUrl: att.downloadUrl || attachmentUrl,
+          previewUrl: att.previewUrl || (isImage ? attachmentUrl : null),
+          type: mimeType,
+          contentType: mimeType,
+          mimeType: mimeType,
+          size: att.size || 0,
+          extension: att.extension || filename.split('.').pop() || 'bin',
+          isImage: isImage,
+          isPdf: isPDF,
+          isText: isText,
+          isAudio: isAudio,
+          isVideo: isVideo,
+          isCSV: isCSV,
+          path: att.path,
+          displayName: att.displayName || filename,
+          originalData: att
+        };
+
+        console.log('📎 Enhanced attachment processed:', {
+          filename: processedAtt.filename,
+          url: processedAtt.url,
+          type: processedAtt.type,
+          size: processedAtt.size,
+          isImage: processedAtt.isImage,
+          isPdf: processedAtt.isPdf,
+          isCSV: processedAtt.isCSV
+        });
+
+        return processedAtt;
+      }).filter(att => att.filename && att.url); // Only keep attachments with filename and URL
+
+      processedEmail.hasAttachments = processedEmail.attachments.length > 0;
+      processedEmail.attachmentsCount = processedEmail.attachments.length;
+    }
 
     return processedEmail;
   };
 
-  // Load emails with authentication
-  const loadEmails = async (showLoading = true, forceRefresh = false, currentSession = null) => {
-    const authSession = currentSession || session;
-    
-    if (!authSession) {
-      setError('Please log in to view emails');
-      return;
-    }
-
-    if (showLoading) setLoading(true);
-    setError(null);
-
-    try {
-      if (forceRefresh) {
-        try {
-          await makeAuthenticatedRequest('/api/clear-cache', { method: 'POST' });
-        } catch (cacheErr) {
-          console.log('⚠️ Cache clear failed, continuing...');
-        }
-      }
-
-      const queries = [
-        `search=${encodeURIComponent(search)}`,
-        `sort=${sort}`,
-        `page=1`,
-        `limit=20`,
-        `accountId=${selectedAccount}`,
-        `t=${Date.now()}`
-      ].join('&');
-
-      console.log('📧 Loading emails with query:', queries);
-      const response = await makeAuthenticatedRequest(`/api/emails?${queries}`);
-
-      const data = await response.json();
-      console.log('📧 Email API response:', data);
-      
-      if (data.success && data.emails) {
-        const processedEmails = data.emails.map(processEmailData);
-        const sortedEmails = processedEmails.sort((a, b) => {
-          const dateA = new Date(a.date || 0);
-          const dateB = new Date(b.date || 0);
-          return dateB - dateA;
-        });
-        
-        setEmails(sortedEmails);
-        console.log('✅ Emails loaded:', sortedEmails.length);
-      } else {
-        setEmails([]);
-        if (data.error) {
-          setError(data.error);
-        }
-      }
-      
-    } catch (err) {
-      console.error('❌ Fetch error:', err);
-      setError(`Failed to load emails: ${err.message}`);
-      setEmails([]);
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  };
-
-  // Fetch emails with authentication
-  const fetchEmails = async (mode = 'latest') => {
-    if (!session) {
-      setError('Please log in to fetch emails');
-      return;
-    }
-
-    if (fetching) {
-      console.log('⏳ Fetch already in progress, skipping...');
-      return;
-    }
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('📥 Fetching emails with mode:', mode);
-      const response = await makeAuthenticatedRequest('/api/fetch-emails', {
-        method: 'POST',
-        body: JSON.stringify({
-          mode: mode,
-          count: 10,
-          accountId: selectedAccount
-        })
-      });
-
-      const result = await response.json();
-      console.log('📥 Fetch emails response:', result);
-      
-      if (result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        await loadEmails(false, true);
-      } else {
-        throw new Error(result.error || 'Fetch failed');
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-    } finally {
-      setFetching(false);
-    }
-  };
-
-  // Delete email with authentication
+  // NEW: Delete email function
   const deleteEmail = async (emailId, messageId) => {
-    if (!session) {
-      setError('Please log in to delete emails');
-      return;
-    }
-
     if (!emailId && !messageId) {
+      console.error('❌ No email ID or message ID provided for deletion');
       setError('Cannot delete email: Missing identifier');
       return;
     }
 
-    const deleteId = messageId || emailId;
-
+    // Confirm deletion
     const confirmed = window.confirm(
       'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
+    // Set deleting state for this email
     setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
 
     try {
-      const response = await makeAuthenticatedRequest(`/api/emails/${deleteId}`, {
-        method: 'DELETE'
+      console.log('🗑️ Deleting email:', { emailId, messageId });
+
+      const response = await fetch(`${API_BASE}/api/delete-email`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emailId: emailId,
+          messageId: messageId
+        })
       });
 
-      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-      if (result.success) {
+      const result = await response.json();
+      console.log('🗑️ Delete response:', result);
+
+      if (response.ok && result.success) {
+        // Remove email from local state immediately
         setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
+        console.log('✅ Email deleted successfully');
+        
+        // Show success message
         setFetchStatus('success');
         setTimeout(() => setFetchStatus('idle'), 3000);
       } else {
@@ -427,15 +181,186 @@ function App() {
       console.error('❌ Delete error:', err);
       setError(`Failed to delete email: ${err.message}`);
     } finally {
+      // Clear deleting state
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
   };
 
-  // Individual fetch functions
+  // Enhanced load emails function with proper sorting
+  const loadEmails = async (showLoading = true, forceRefresh = false) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    try {
+      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+
+      // Clear cache first if force refresh
+      if (forceRefresh) {
+        try {
+          await fetch(`${API_BASE}/api/clear-cache`, { method: 'POST' });
+          console.log('🗑️ Cache cleared');
+        } catch (cacheErr) {
+          console.log('⚠️ Cache clear failed, continuing...');
+        }
+      }
+
+      const queries = [
+        `search=${encodeURIComponent(search)}`,
+        `sort=${sort}`,
+        `page=1`,
+        `limit=100`, // Increased limit to ensure we get latest emails
+        `includeAttachments=true`,
+        `t=${Date.now()}` // Cache busting parameter
+      ].join('&');
+
+      const response = await fetch(`${API_BASE}/api/emails?${queries}`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('📧 Backend response:', data);
+      
+      let emailsToProcess = [];
+      
+      // Handle response structure
+      if (data.emails && Array.isArray(data.emails)) {
+        emailsToProcess = data.emails;
+      } else if (Array.isArray(data)) {
+        emailsToProcess = data;
+      } else {
+        console.log('❌ No emails found in response');
+        setEmails([]);
+        return;
+      }
+      
+      console.log('📧 Loaded emails:', emailsToProcess.length);
+      
+      const processedEmails = emailsToProcess.map(processEmailData);
+      
+      // Sort emails by date to ensure latest first
+      const sortedEmails = processedEmails.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        return dateB - dateA; // Descending (newest first)
+      });
+      
+      // Log attachment information
+      const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
+      console.log('📎 Total attachments found:', totalAttachments);
+      
+      sortedEmails.forEach((email, index) => {
+        if (email.attachments.length > 0) {
+          console.log(`Email ${index} attachments:`, email.attachments.map(att => ({
+            filename: att.filename,
+            url: att.url,
+            type: att.type,
+            isImage: att.isImage,
+            isCSV: att.isCSV,
+            size: att.size
+          })));
+        }
+      });
+      
+      setEmails(sortedEmails);
+      console.log('✅ Emails set in state:', sortedEmails.length);
+      
+    } catch (err) {
+      console.error('❌ Fetch error:', err);
+      setEmails([]);
+      setError(`Failed to load emails: ${err.message}`);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  // Enhanced fetch function using the new unified endpoint with proper email ordering
+  const fetchEmails = async (mode = 'latest') => {
+    if (fetching) return;
+
+    setFetching(true);
+    setFetchStatus('fetching');
+    setError(null);
+
+    try {
+      console.log(`🔄 Starting ${mode} fetch...`);
+      
+      const response = await fetch(`${API_BASE}/api/fetch-emails`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode: mode,
+          count: mode === 'force' ? 20 : 30 // Increased count for better sampling
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log(`📨 ${mode} fetch result:`, result);
+      
+      if (response.ok && result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        
+        // Update with new emails immediately with proper sorting
+        if (result.data && result.data.emails && result.data.emails.length > 0) {
+          console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
+          const processedNewEmails = result.data.emails.map(processEmailData);
+          
+          // Sort new emails by date (newest first)
+          const sortedNewEmails = processedNewEmails.sort((a, b) => {
+            const dateA = new Date(a.date || 0);
+            const dateB = new Date(b.date || 0);
+            return dateB - dateA;
+          });
+          
+          setEmails(prevEmails => {
+            const existingIds = new Set(prevEmails.map(email => email.messageId));
+            const uniqueNewEmails = sortedNewEmails.filter(email => !existingIds.has(email.messageId));
+            
+            // Combine and sort all emails by date
+            const allEmails = [...uniqueNewEmails, ...prevEmails];
+            const finalSortedEmails = allEmails.sort((a, b) => {
+              const dateA = new Date(a.date || 0);
+              const dateB = new Date(b.date || 0);
+              return dateB - dateA;
+            });
+            
+            console.log(`🔄 Email state updated: ${uniqueNewEmails.length} new, ${finalSortedEmails.length} total`);
+            return finalSortedEmails;
+          });
+        } else {
+          // If no new emails, still refresh the list to ensure latest order
+          console.log('🔄 No new emails, refreshing list to ensure proper order...');
+          await loadEmails(false, true);
+        }
+        
+      } else {
+        setFetchStatus('error');
+        setError(result.error || `Failed to ${mode} fetch emails`);
+        console.error(`❌ ${mode} fetch failed:`, result.error);
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error(`❌ ${mode} fetch failed:`, err);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // Individual fetch functions for backward compatibility
   const fetchNewEmails = () => fetchEmails('latest');
   const forceFetchEmails = () => fetchEmails('force');
+  const simpleFetchEmails = () => fetchEmails('simple');
 
-  // Refresh emails
+  // Refresh emails - force reload from database
   const forceRefreshEmails = async () => {
     if (fetching) return;
 
@@ -444,24 +369,128 @@ function App() {
     setError(null);
 
     try {
+      console.log('🔄 Force refreshing emails...');
       await loadEmails(true, true);
+
       setFetchStatus('success');
       setLastFetchTime(new Date());
+      console.log('✅ Force refresh completed');
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
+      console.error('❌ Force refresh failed:', err);
     } finally {
       setFetching(false);
     }
   };
 
-  // Download file function
+  // Fast fetch from Supabase only
+  const fastFetchEmails = async () => {
+    if (fetching) return;
+
+    setFetching(true);
+    setFetchStatus('fetching');
+    setError(null);
+
+    try {
+      console.log('🚀 Fast fetching emails from Supabase...');
+      
+      const response = await fetch(`${API_BASE}/api/fast-fetch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mode: 'fast',
+          count: 100 // Fetch more emails quickly
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('🚀 Fast fetch result:', result);
+      
+      if (response.ok && result.success) {
+        setFetchStatus('success');
+        setLastFetchTime(new Date());
+        
+        if (result.data && result.data.emails && result.data.emails.length > 0) {
+          console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
+          const processedEmails = result.data.emails.map(processEmailData);
+          
+          // Sort emails by date (newest first)
+          const sortedEmails = processedEmails.sort((a, b) => {
+            const dateA = new Date(a.date || 0);
+            const dateB = new Date(b.date || 0);
+            return dateB - dateA;
+          });
+          
+          setEmails(sortedEmails);
+          console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
+        } else {
+          console.log('🔄 No emails found in fast fetch');
+          setEmails([]);
+        }
+        
+      } else {
+        setFetchStatus('error');
+        setError(result.error || 'Failed to fast fetch emails');
+        console.error('❌ Fast fetch failed:', result.error);
+      }
+    } catch (err) {
+      setFetchStatus('error');
+      setError(err.message);
+      console.error('❌ Fast fetch failed:', err);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  // Enhanced download function with CSV protection and better error handling
   const downloadFile = async (attachment, filename) => {
     try {
+      console.log('⬇️ Downloading attachment:', {
+        filename,
+        url: attachment.url,
+        type: attachment.type,
+        isCSV: attachment.isCSV
+      });
+
+      // Extra protection for CSV files - require user confirmation
+      if (attachment.isCSV) {
+        const confirmed = window.confirm(
+          `Are you sure you want to download the CSV file "${filename}"?\n\n` +
+          `This will save the file to your downloads folder.`
+        );
+        
+        if (!confirmed) {
+          console.log('❌ CSV download cancelled by user');
+          return;
+        }
+      }
+
       if (!attachment.url) {
         throw new Error('No URL available for download');
       }
 
+      // Test if URL is accessible
+      try {
+        const testResponse = await fetch(attachment.url, { method: 'HEAD' });
+        if (!testResponse.ok) {
+          console.warn('⚠️ URL might not be directly accessible, opening in new tab');
+          window.open(attachment.url, '_blank');
+          return;
+        }
+      } catch (testError) {
+        console.warn('⚠️ URL test failed, opening in new tab:', testError);
+        window.open(attachment.url, '_blank');
+        return;
+      }
+
+      // Use download attribute for direct download
       const link = document.createElement('a');
       link.href = attachment.url;
       link.download = filename;
@@ -474,6 +503,7 @@ function App() {
       
     } catch (error) {
       console.error('❌ Download error:', error);
+      // Fallback: Open in new tab
       if (attachment.url) {
         window.open(attachment.url, '_blank');
       } else {
@@ -482,7 +512,7 @@ function App() {
     }
   };
 
-  // File icon function
+  // Enhanced file icon function
   const getFileIcon = (mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
@@ -495,6 +525,12 @@ function App() {
     if (mimeType.includes('csv') || extension === 'csv') return '📋';
     if (mimeType.includes('word') || extension === 'docx' || extension === 'doc') return '📝';
     if (mimeType.includes('zip') || extension === 'zip' || extension === 'rar' || extension === '7z') return '📦';
+    if (mimeType.includes('text') || extension === 'txt') return '📄';
+    if (mimeType.includes('audio') || extension === 'mp3' || extension === 'wav' || extension === 'ogg') return '🎵';
+    if (mimeType.includes('video') || extension === 'mp4' || extension === 'avi' || extension === 'mov') return '🎬';
+    if (mimeType.includes('presentation') || extension === 'ppt' || extension === 'pptx') return '📊';
+    if (extension === 'exe' || extension === 'msi') return '⚙️';
+    if (extension === 'js' || extension === 'html' || extension === 'css') return '💻';
     
     return '📎';
   };
@@ -506,7 +542,7 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  // Attachment rendering
+  // Enhanced attachment rendering with better CSV handling and fixed button positioning
   const renderAttachment = (attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -514,8 +550,59 @@ function App() {
     const fileIcon = getFileIcon(mimeType, filename);
     const isImage = attachment.isImage || mimeType?.startsWith('image/');
     const isPDF = attachment.isPdf || mimeType === 'application/pdf';
+    const isText = attachment.isText || mimeType?.startsWith('text/');
+    const isAudio = attachment.isAudio || mimeType?.startsWith('audio/');
+    const isVideo = attachment.isVideo || mimeType?.startsWith('video/');
+    const isCSV = attachment.isCSV || filename.toLowerCase().endsWith('.csv');
+    const isExpandable = isImage || isPDF;
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
+    
+    // Enhanced problematic file detection
+    const isProblematicFile = 
+      attachment.url?.includes('godaddy') || 
+      attachment.url?.includes('tracking') ||
+      attachment.url?.includes('pixel') ||
+      attachment.url?.includes('beacon') ||
+      attachment.url?.includes('analytics') ||
+      attachment.url?.includes('gem.') ||
+      filename.match(/\.(gif)$/i) ||
+      filename.match(/track|pixel|beacon|analytics|spacer|forward/i) ||
+      (isImage && filename.match(/\.gif$/i)) ||
+      (filename === 'native_forward.gif') ||
+      (attachment.url && attachment.url.match(/native_forward\.gif$/i));
+
     const safeUrl = attachment.url;
+
+    // For problematic files, show minimal info and block loading
+    if (isProblematicFile) {
+      return (
+        <div key={attachment.id} className="attachment-item blocked-attachment">
+          <div className="attachment-header">
+            <span className="file-icon">🚫</span>
+            <div className="file-info">
+              <span className="filename">{filename}</span>
+              {fileSize && <span className="file-size">{fileSize}</span>}
+              <div className="tracking-warning">
+                <small>Tracking pixel blocked for privacy</small>
+              </div>
+            </div>
+            <div className="attachment-actions">
+              <button 
+                className="download-btn blocked"
+                onClick={() => {
+                  console.log('Blocked tracking pixel:', filename, attachment.url);
+                  alert('Tracking pixels are blocked for privacy and performance reasons.');
+                }}
+                title="Blocked - Tracking Pixel"
+                disabled
+              >
+                🚫
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div key={attachment.id} className="attachment-item">
@@ -524,9 +611,13 @@ function App() {
           <div className="file-info">
             <span className="filename">{filename}</span>
             {fileSize && <span className="file-size">{fileSize}</span>}
+            <div className="file-type">
+              <small>{mimeType || 'Unknown type'}</small>
+              {isCSV && <span className="csv-badge">CSV</span>}
+            </div>
           </div>
           <div className="attachment-actions">
-            {isImage && safeUrl && (
+            {isExpandable && safeUrl && (
               <button 
                 className="expand-btn"
                 onClick={() => toggleImageExpand(emailIndex, index)}
@@ -546,6 +637,7 @@ function App() {
           </div>
         </div>
 
+        {/* Image Preview */}
         {isImage && safeUrl && (
           <div className={`image-preview ${isExpanded ? 'expanded' : ''}`}>
             <img
@@ -554,7 +646,20 @@ function App() {
               className="attachment-image"
               onClick={() => toggleImageExpand(emailIndex, index)}
               loading="lazy"
+              crossOrigin="anonymous"
+              onError={(e) => {
+                console.error('❌ Image failed to load:', safeUrl);
+                e.target.style.display = 'none';
+                const fallback = e.target.parentElement.querySelector('.image-fallback');
+                if (fallback) fallback.style.display = 'block';
+              }}
+              onLoad={(e) => {
+                console.log('✅ Image loaded successfully:', safeUrl);
+              }}
             />
+            <div className="image-fallback" style={{display: 'none'}}>
+              🖼️ Image not available - <a href={safeUrl} target="_blank" rel="noopener noreferrer">Open in new tab</a>
+            </div>
             {isExpanded && (
               <div className="image-overlay" onClick={() => toggleImageExpand(emailIndex, index)}>
                 <div className="expanded-image-container">
@@ -562,6 +667,11 @@ function App() {
                     src={safeUrl}
                     alt={filename}
                     className="expanded-image"
+                    crossOrigin="anonymous"
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      e.target.parentElement.innerHTML = '<div class="error-message">Failed to load image</div>';
+                    }}
                   />
                   <button 
                     className="close-expanded-btn"
@@ -572,6 +682,135 @@ function App() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* PDF Preview */}
+        {isPDF && safeUrl && (
+          <div className={`pdf-preview ${isExpanded ? 'expanded' : ''}`}>
+            {isExpanded ? (
+              <div className="pdf-full-view">
+                <button 
+                  className="close-pdf-btn"
+                  onClick={() => toggleImageExpand(emailIndex, index)}
+                >
+                  ✕ Close PDF
+                </button>
+                <iframe
+                  src={safeUrl}
+                  title={filename}
+                  className="pdf-iframe"
+                  loading="lazy"
+                />
+              </div>
+            ) : (
+              <div className="pdf-thumbnail" onClick={() => toggleImageExpand(emailIndex, index)}>
+                <div className="pdf-icon">📄</div>
+                <span className="pdf-filename">{filename}</span>
+                <button className="view-pdf-btn">View PDF</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Text File Preview */}
+        {isText && safeUrl && !isCSV && (
+          <div className="text-preview">
+            <div className="text-preview-content">
+              <h5>Text File Preview:</h5>
+              <iframe
+                src={safeUrl}
+                title={filename}
+                className="text-iframe"
+                loading="lazy"
+              />
+              <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="full-view-link">
+                📄 Open full text
+              </a>
+            </div>
+          </div>
+        )}
+
+        {/* CSV File Preview - Limited to prevent auto-download */}
+        {isCSV && safeUrl && (
+          <div className="csv-preview">
+            <div className="csv-preview-content">
+              <h5>📋 CSV File</h5>
+              <div className="csv-warning">
+                <p>⚠️ CSV files may contain data that could be automatically processed.</p>
+                <p>Click download to save this file to your computer.</p>
+              </div>
+              <div className="csv-actions">
+                <button 
+                  className="download-csv-btn"
+                  onClick={() => downloadFile(attachment, filename)}
+                >
+                  💾 Download CSV
+                </button>
+                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="view-csv-link">
+                  🔗 Open in new tab
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Audio Preview */}
+        {isAudio && safeUrl && (
+          <div className="audio-preview">
+            <div className="audio-player">
+              <audio controls className="audio-element">
+                <source src={safeUrl} type={mimeType} />
+                Your browser does not support the audio element.
+              </audio>
+              <a href={safeUrl} download={filename} className="download-audio">
+                💾 Download Audio
+              </a>
+            </div>
+          </div>
+        )}
+
+        {/* Video Preview */}
+        {isVideo && safeUrl && (
+          <div className="video-preview">
+            <div className="video-player">
+              <video controls className="video-element" preload="metadata">
+                <source src={safeUrl} type={mimeType} />
+                Your browser does not support the video element.
+              </video>
+              <a href={safeUrl} download={filename} className="download-video">
+                💾 Download Video
+              </a>
+            </div>
+          </div>
+        )}
+
+        {/* Generic file info for non-previewable files */}
+        {!isImage && !isPDF && !isText && !isAudio && !isVideo && !isCSV && safeUrl && (
+          <div className="file-preview">
+            <div className="file-info-detailed">
+              <p><strong>Type:</strong> {mimeType || 'Unknown'}</p>
+              <p><strong>Size:</strong> {fileSize || 'Unknown'}</p>
+              <div className="file-actions">
+                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="direct-link">
+                  🔗 Open directly
+                </a>
+                <button 
+                  onClick={() => downloadFile(attachment, filename)}
+                  className="download-direct"
+                >
+                  💾 Download
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* No URL available */}
+        {!safeUrl && (
+          <div className="no-url-warning">
+            <p>⚠️ No download URL available for this attachment</p>
+            <p><small>Filename: {filename}</small></p>
           </div>
         )}
       </div>
@@ -586,86 +825,82 @@ function App() {
     }));
   };
 
-  // EmailCard component
-  const EmailCard = ({ email, index }) => {
-    const accountInfo = emailAccounts.find(acc => acc.id === email.accountId);
-    
-    return (
-      <div className="email-card">
-        <div className="email-actions-top">
-          <button 
-            className="delete-email-btn"
-            onClick={() => deleteEmail(email.id, email.messageId)}
-            disabled={deletingEmails[email.id]}
-            title="Permanently delete this email and all attachments"
-          >
-            {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
-          </button>
-        </div>
-
-        <div className="email-header">
-          <div className="email-subject">
-            <h3>{email.subject || '(No Subject)'}</h3>
-            {email.hasAttachments && (
-              <span className="attachment-badge">
-                📎 {email.attachmentsCount}
-              </span>
-            )}
-            {accountInfo && (
-              <span className="account-badge" title={`From account: ${accountInfo.email}`}>
-                👤 {accountInfo.name}
-              </span>
-            )}
-          </div>
-          <span className="email-date">
-            {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
-          </span>
-        </div>
-
-        <div className="email-from">
-          <strong>From:</strong> 
-          <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
-        </div>
-
-        <div
-          className="email-body"
-          dangerouslySetInnerHTML={{
-            __html:
-              email.html_content || email.html ||
-              email.text_content?.replace(/\n/g, '<br/>') ||
-              email.text?.replace(/\n/g, '<br/>') ||
-              '<p className="no-content">(No Content)</p>',
-          }}
-        />
-
-        {email.hasAttachments && (
-          <div className="attachments-section">
-            <div className="attachments-header">
-              <h4>📎 Attachments ({email.attachmentsCount})</h4>
-            </div>
-            <div className="attachments-grid">
-              {email.attachments.map((attachment, attachmentIndex) =>
-                renderAttachment(attachment, attachmentIndex, index)
-              )}
-            </div>
-          </div>
-        )}
+  // Enhanced EmailCard component with delete button and better attachment layout
+  const EmailCard = ({ email, index }) => (
+    <div className="email-card">
+      {/* Delete Button - Top Right */}
+      <div className="email-actions-top">
+        <button 
+          className="delete-email-btn"
+          onClick={() => deleteEmail(email.id, email.messageId)}
+          disabled={deletingEmails[email.id]}
+          title="Permanently delete this email and all attachments"
+        >
+          {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
+        </button>
       </div>
-    );
-  };
 
-  // Load emails when dependencies change
+      <div className="email-header">
+        <div className="email-subject">
+          <h3>{email.subject || '(No Subject)'}</h3>
+          {email.hasAttachments && (
+            <span className="attachment-badge">
+              📎 {email.attachmentsCount}
+            </span>
+          )}
+        </div>
+        <span className="email-date">
+          {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
+        </span>
+      </div>
+
+      <div className="email-from">
+        <strong>From:</strong> 
+        <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
+      </div>
+
+      <div
+        className="email-body"
+        dangerouslySetInnerHTML={{
+          __html:
+            email.html_content || email.html ||
+            email.text_content?.replace(/\n/g, '<br/>') ||
+            email.text?.replace(/\n/g, '<br/>') ||
+            '<p className="no-content">(No Content)</p>',
+        }}
+      />
+
+      {email.hasAttachments && (
+        <div className="attachments-section">
+          <div className="attachments-header">
+            <h4>📎 Attachments ({email.attachmentsCount})</h4>
+          </div>
+          <div className="attachments-grid">
+            {email.attachments.map((attachment, attachmentIndex) =>
+              renderAttachment(attachment, attachmentIndex, index)
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // Load emails when component mounts
   useEffect(() => {
-    if (session) {
-      const timer = setTimeout(() => {
-        loadEmails(true, false);
-      }, 500);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [search, sort, selectedAccount, session]);
+    console.log('🎯 Component mounted, loading emails...');
+    loadEmails(true, true);
+  }, []);
 
-  // Reset fetch status
+  // Load emails when search or sort changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadEmails(true, false);
+    }, 500);
+    
+    return () => clearTimeout(timer);
+  }, [search, sort]);
+
+  // Reset fetch status after 5 seconds
   useEffect(() => {
     if (fetchStatus === 'success' || fetchStatus === 'error') {
       const timer = setTimeout(() => {
@@ -678,7 +913,7 @@ function App() {
   const getStatusMessage = () => {
     switch (fetchStatus) {
       case 'fetching':
-        return { message: '🔄 Fetching latest emails...', type: 'info' };
+        return { message: '🔄 Fetching latest emails from server...', type: 'info' };
       case 'success':
         return { message: '✅ Successfully fetched emails!', type: 'success' };
       case 'error':
@@ -690,86 +925,6 @@ function App() {
 
   const statusMessage = getStatusMessage();
 
-  // Show initialization error
-  if (!supabase) {
-    return (
-      <div className="error-container">
-        <h1>❌ Configuration Error</h1>
-        <p>Supabase client could not be initialized.</p>
-        <p>Please check your environment variables:</p>
-        <ul>
-          <li>VITE_SUPABASE_URL: {import.meta.env.VITE_SUPABASE_URL ? 'Set' : 'Missing'}</li>
-          <li>VITE_SUPABASE_ANON_KEY: {import.meta.env.VITE_SUPABASE_ANON_KEY ? 'Set' : 'Missing'}</li>
-        </ul>
-        <p>Make sure these variables are set in your .env file.</p>
-      </div>
-    );
-  }
-
-  // Login Form
-  if (!session) {
-    return (
-      <div className="login-container">
-        <div className="login-form">
-          <h1>📧 Email Archive</h1>
-          <p>Please log in to access your emails</p>
-          
-          {error && (
-            <div className="error-banner">
-              ❌ {error}
-              <button onClick={() => setError(null)} className="close-error">✕</button>
-            </div>
-          )}
-
-          <form onSubmit={handleLogin}>
-            <div className="form-group">
-              <label>Email:</label>
-              <input
-                type="email"
-                value={loginForm.email}
-                onChange={e => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
-                required
-                disabled={loginLoading}
-                placeholder="Enter your email"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Password:</label>
-              <input
-                type="password"
-                value={loginForm.password}
-                onChange={e => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
-                required
-                disabled={loginLoading}
-                placeholder="Enter your password"
-              />
-            </div>
-
-            <button 
-              type="submit" 
-              disabled={loginLoading}
-              className="login-button"
-            >
-              {loginLoading ? '🔄 Logging in...' : '🔑 Login'}
-            </button>
-          </form>
-
-          <div className="login-info">
-            <h3>Demo Accounts:</h3>
-            <ul>
-              <li><strong>info@seal.co.in</strong> - Access to Account 1 only</li>
-              <li><strong>pankaj.singh@seal.co.in</strong> - Access to Account 2 only</li>
-              <li><strong>admin@seal.co.in</strong> - Access to all accounts</li>
-            </ul>
-            <p><em>Note: You need to create these users in your Supabase Auth first.</em></p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Main App
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -787,44 +942,7 @@ function App() {
         <div className="sidebar-content">
           {!sidebarCollapsed && (
             <>
-              {/* User Info */}
-              <div className="user-info">
-                <p><strong>👤 {user.email}</strong></p>
-                <button 
-                  onClick={handleLogout}
-                  className="logout-button"
-                >
-                  🚪 Logout
-                </button>
-              </div>
-
-              {/* Account Selection */}
-              <div className="account-selector">
-                <label>Email Account:</label>
-                <select 
-                  value={selectedAccount} 
-                  onChange={e => setSelectedAccount(e.target.value)}
-                  className="account-select"
-                >
-                  <option value="all">All Accessible Accounts</option>
-                  {emailAccounts.map(account => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Test Connection Button */}
-              <div className="test-connection">
-                <button 
-                  onClick={testApiConnection}
-                  className="test-button"
-                  title="Test API connection"
-                >
-                  🧪 Test Connection
-                </button>
-              </div>
+              {/* Sidebar content can be added here if needed */}
             </>
           )}
         </div>
@@ -832,29 +950,26 @@ function App() {
 
       {/* Main Content */}
       <div className="main-content">
+        {/* Compact Header */}
         <header className="app-header-compact">
           <div className="header-top">
-            <h1>📧 Email Archive</h1>
+            <h1>📧 Email Inbox</h1>
             <div className="header-stats">
               <span className="email-count-badge">📊 {emails.length} emails</span>
-              {selectedAccount !== 'all' && (
-                <span className="account-filter-badge">
-                  👤 {emailAccounts.find(acc => acc.id.toString() === selectedAccount)?.name || 'Account'}
-                </span>
-              )}
               {lastFetchTime && (
                 <span className="last-fetch">Last: {lastFetchTime.toLocaleTimeString()}</span>
               )}
             </div>
           </div>
 
+          {/* Compact Controls */}
           <div className="compact-controls">
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
               className={`fetch-button ${fetching ? 'fetching' : ''}`}
             >
-              {fetching ? '🔄' : '📥'} Fetch Emails
+              {fetching ? '🔄' : '📥'} Smart Fetch
             </button>
 
             <button 
@@ -863,6 +978,24 @@ function App() {
               className="force-fetch-button"
             >
               ⚡ Force Fetch
+            </button>
+
+            {/* Fast Fetch Button */}
+            <button 
+              onClick={fastFetchEmails} 
+              disabled={fetching}
+              className="fast-fetch-button"
+              title="Quickly load emails from database"
+            >
+              🚀 Fast Fetch
+            </button>
+
+            <button 
+              onClick={simpleFetchEmails} 
+              disabled={fetching}
+              className="simple-fetch-button"
+            >
+              📨 Simple Fetch
             </button>
 
             <button 
@@ -890,6 +1023,7 @@ function App() {
           </div>
         </header>
 
+        {/* Error Display */}
         {error && (
           <div className="error-banner">
             ❌ {error}
@@ -897,6 +1031,7 @@ function App() {
           </div>
         )}
 
+        {/* Status Banner */}
         {statusMessage && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
@@ -910,6 +1045,7 @@ function App() {
           </div>
         )}
 
+        {/* Email List */}
         <div className="email-content-area">
           {loading && (
             <div className="loading-state">
@@ -924,10 +1060,10 @@ function App() {
               <p>Try fetching emails from your inbox</p>
               <div className="empty-actions">
                 <button onClick={fetchNewEmails} className="fetch-button">
-                  📥 Fetch Emails
+                  📥 Smart Fetch
                 </button>
-                <button onClick={testApiConnection} className="test-button">
-                  🧪 Test Connection
+                <button onClick={forceFetchEmails} className="force-fetch-button">
+                  ⚡ Force Fetch
                 </button>
               </div>
             </div>
@@ -940,6 +1076,37 @@ function App() {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Debug Info */}
+        <div className="debug-info">
+          <details>
+            <summary>Debug Info</summary>
+            <div className="debug-content">
+              <p>Backend: {API_BASE}</p>
+              <p>Current emails: {emails.length}</p>
+              <p>Loading: {loading ? 'Yes' : 'No'}</p>
+              <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
+              <p>Fetch Status: {fetchStatus}</p>
+              <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
+              {error && <p>Error: {error}</p>}
+              <div className="attachments-debug">
+                <h4>Attachments Debug:</h4>
+                {emails.slice(0, 3).map((email, idx) => (
+                  email.hasAttachments && (
+                    <div key={idx}>
+                      <p>Email {idx}: {email.attachmentsCount} attachments</p>
+                      {email.attachments.map((att, attIdx) => (
+                        <div key={attIdx} style={{marginLeft: '20px', fontSize: '12px'}}>
+                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'} - {att.isCSV ? '📋 CSV' : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                ))}
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </div>

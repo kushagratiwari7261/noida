@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 
 // Enhanced Middleware with better error handling
 app.use(cors({
@@ -136,9 +136,14 @@ const testSupabaseConnection = async () => {
   try {
     if (supabaseEnabled && supabase) {
       console.log("🧪 Testing Supabase connection...");
-      const { data, error } = await supabase.auth.getUser();
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .limit(1);
+      
       if (error) {
         console.error("❌ Supabase connection test failed:", error.message);
+        console.error("Error details:", error);
       } else {
         console.log("✅ Supabase connection test successful");
       }
@@ -292,7 +297,6 @@ const authenticateUser = async (req, res, next) => {
     
     if (error) {
       console.error("❌ Supabase token verification failed:", error.message);
-      console.error("❌ Supabase error details:", error);
       
       // More specific error messages
       if (error.message?.includes('JWT')) {
@@ -323,7 +327,6 @@ const authenticateUser = async (req, res, next) => {
     next();
   } catch (error) {
     console.error("❌ Authentication process error:", error);
-    console.error("❌ Error stack:", error.stack);
     return res.status(401).json({
       success: false,
       error: "Authentication failed",
@@ -584,126 +587,72 @@ async function saveEmailToSupabase(email) {
   }
 }
 
-// ========== ENHANCED API ENDPOINTS ==========
+// ========== API ENDPOINTS ==========
 
-// Debug authentication
-app.get("/api/debug-auth", async (req, res) => {
+// Health check
+app.get("/api/health", async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    console.log("🔐 Auth header:", authHeader);
+    let supabaseStatus = "not_configured";
+    let supabaseDetails = {};
     
-    if (!authHeader) {
-      return res.json({
-        success: false,
-        error: "No authorization header",
-        has_header: false
-      });
-    }
+    if (supabaseEnabled && supabase) {
+      try {
+        const startTime = Date.now();
+        const { data, error } = await supabase
+          .from('emails')
+          .select('message_id')
+          .limit(1);
+        const responseTime = Date.now() - startTime;
 
-    if (!authHeader.startsWith('Bearer ')) {
-      return res.json({
-        success: false,
-        error: "Invalid authorization format",
-        header: authHeader.substring(0, 50) + '...'
-      });
-    }
-
-    const token = authHeader.substring(7);
-    console.log("🔐 Token length:", token.length);
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        error: "Supabase not available",
-        enabled: supabaseEnabled
-      });
-    }
-
-    // Test token verification
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error) {
-      console.error("❌ Token verification failed:", error);
-      return res.json({
-        success: false,
-        error: "Token verification failed",
-        details: error.message,
-        code: error.code
-      });
-    }
-
-    if (!user) {
-      return res.json({
-        success: false,
-        error: "No user found for token"
-      });
-    }
-
-    res.json({
-      success: true,
-      user: {
-        email: user.email,
-        id: user.id
-      },
-      token_info: {
-        length: token.length,
-        first_20: token.substring(0, 20) + '...'
+        if (error) {
+          supabaseStatus = "disconnected";
+          supabaseDetails = {
+            error: error.message,
+            code: error.code
+          };
+        } else {
+          supabaseStatus = "connected";
+          supabaseDetails = {
+            responseTime: `${responseTime}ms`,
+            canQuery: true
+          };
+        }
+      } catch (error) {
+        supabaseStatus = "error";
+        supabaseDetails = {
+          error: error.message
+        };
       }
-    });
-
-  } catch (error) {
-    console.error("❌ Auth debug error:", error);
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Test emails with better error handling
-app.get("/api/test-emails-auth", authenticateUser, async (req, res) => {
-  try {
-    console.log("🧪 Testing emails with auth for user:", req.user.email);
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        success: false,
-        error: "Supabase not available"
-      });
     }
 
-    const { data: emails, error } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(10);
-
-    if (error) {
-      console.error("❌ Supabase query error:", error);
-      return res.status(500).json({
-        success: false,
-        error: "Database query failed",
-        details: error.message,
-        code: error.code
-      });
-    }
+    const healthStatus = supabaseStatus === "connected" ? "healthy" : "degraded";
 
     res.json({
-      success: true,
-      user: req.user.email,
-      email_count: emails.length,
-      emails: emails
+      status: healthStatus,
+      timestamp: new Date().toISOString(),
+      services: {
+        supabase: {
+          status: supabaseStatus,
+          enabled: supabaseEnabled,
+          ...supabaseDetails
+        },
+        email_configs: {
+          count: emailConfigManager.getAllConfigs().length,
+          loaded: emailConfigManager.getAllConfigs().length > 0
+        }
+      },
+      environment: process.env.NODE_ENV || 'development'
     });
-
   } catch (error) {
-    console.error("❌ Test emails error:", error);
     res.status(500).json({
-      success: false,
-      error: error.message
+      status: "unhealthy",
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Test endpoint to verify Supabase connection
+// Test authentication
 app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
     res.json({
@@ -724,87 +673,7 @@ app.get("/api/test-auth", authenticateUser, async (req, res) => {
   }
 });
 
-// Auth endpoints
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "Email and password are required"
-      });
-    }
-
-    if (!supabaseEnabled) {
-      return res.status(500).json({
-        success: false,
-        error: "Authentication service unavailable"
-      });
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password: password
-    });
-
-    if (error) {
-      return res.status(401).json({
-        success: false,
-        error: "Invalid email or password"
-      });
-    }
-
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(email);
-    if (allowedAccounts.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: "Your account doesn't have access to any email accounts. Please contact administrator."
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Login successful",
-      data: {
-        user: data.user,
-        session: data.session,
-        allowedAccounts: allowedAccounts
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Login error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Login failed"
-    });
-  }
-});
-
-app.post("/api/auth/logout", authenticateUser, async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader.substring(7);
-
-    if (supabaseEnabled) {
-      await supabase.auth.signOut();
-    }
-
-    res.json({
-      success: true,
-      message: "Logout successful"
-    });
-  } catch (error) {
-    console.error("❌ Logout error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Logout failed"
-    });
-  }
-});
-
-// ADD THIS MISSING ENDPOINT - User Profile
+// User profile
 app.get("/api/auth/profile", authenticateUser, async (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -872,15 +741,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       skip
     });
 
-    // Cache key
-    const cacheKey = `emails:${userEmail}:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
-    const cached = getFromCache(cacheKey);
-
-    if (cached) {
-      console.log("📦 Serving from cache");
-      return res.json(cached);
-    }
-
     // Enhanced Supabase availability check
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available - enabled:", supabaseEnabled, "client:", !!supabase);
@@ -916,16 +776,14 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         query = query.in('account_id', allowedAccountIds);
       } else {
         console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
-        const emptyResponse = {
+        return res.json({
           success: true,
           emails: [],
           total: 0,
           hasMore: false,
           page: pageNum,
           limit: limitNum
-        };
-        setToCache(cacheKey, emptyResponse);
-        return res.json(emptyResponse);
+        });
       }
     }
 
@@ -1000,7 +858,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       limit: limitNum
     };
 
-    setToCache(cacheKey, response);
     res.json(response);
 
   } catch (error) {
@@ -1307,222 +1164,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
-// Add this to your server.js for debugging
-app.get("/api/debug-db", authenticateUser, async (req, res) => {
-  try {
-    console.log("🧪 Testing database connection...");
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        error: "Supabase client not available",
-        enabled: supabaseEnabled,
-        client: !!supabase
-      });
-    }
-
-    // Test 1: Basic connection
-    const { data: testData, error: testError } = await supabase
-      .from('emails')
-      .select('count')
-      .limit(1);
-
-    // Test 2: Check if table exists
-    const { data: tableCheck, error: tableError } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(1);
-
-    // Test 3: Check schema
-    const { data: schemaCheck, error: schemaError } = await supabase
-      .from('emails')
-      .select('message_id, subject, date')
-      .limit(1);
-
-    res.json({
-      success: true,
-      tests: {
-        basic_connection: testError ? `❌ ${testError.message}` : "✅ Connected",
-        table_exists: tableError ? `❌ ${tableError.message}` : "✅ Table exists",
-        schema_check: schemaError ? `❌ ${schemaError.message}` : "✅ Schema valid"
-      },
-      sample_data: tableCheck || "No data",
-      user: req.user.email
-    });
-
-  } catch (error) {
-    console.error("❌ Debug DB error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
-// TEMPORARY: Test database without authentication
-app.get("/api/test-db-no-auth", async (req, res) => {
-  try {
-    console.log("🧪 Testing database without auth...");
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        error: "Supabase not available",
-        enabled: supabaseEnabled,
-        client: !!supabase
-      });
-    }
-
-    // Test 1: Check if emails table exists
-    const { data: emailsData, error: emailsError } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(5);
-
-    // Test 2: Try to count emails
-    const { data: countData, error: countError } = await supabase
-      .from('emails')
-      .select('*', { count: 'exact', head: true });
-
-    // Test 3: Check database connection with simple query
-    const { data: testData, error: testError } = await supabase
-      .from('emails')
-      .select('count')
-      .limit(1);
-
-    res.json({
-      success: true,
-      tests: {
-        table_exists: emailsError ? `❌ ${emailsError.message}` : "✅ Table exists",
-        can_query: countError ? `❌ ${countError.message}` : `✅ Can query (${countData} emails)`,
-        connection: testError ? `❌ ${testError.message}` : "✅ Database connected"
-      },
-      sample_data: emailsData || "No data",
-      errors: {
-        emails_error: emailsError,
-        count_error: countError,
-        test_error: testError
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Database test error:", error);
-    res.json({
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
-// Test Supabase connection details
-app.get("/api/test-supabase", async (req, res) => {
-  try {
-    console.log("🧪 Testing Supabase connection...");
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        error: "Supabase client not initialized",
-        enabled: supabaseEnabled,
-        client: !!supabase
-      });
-    }
-
-    // Test basic Supabase connection
-    const { data, error } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(1);
-
-    res.json({
-      success: true,
-      supabase_status: {
-        enabled: supabaseEnabled,
-        connected: !error,
-        error: error ? error.message : null,
-        code: error ? error.code : null
-      },
-      environment: {
-        has_url: !!process.env.SUPABASE_URL,
-        has_key: !!process.env.SUPABASE_ANON_KEY,
-        url_length: process.env.SUPABASE_URL ? process.env.SUPABASE_URL.length : 0,
-        key_length: process.env.SUPABASE_ANON_KEY ? process.env.SUPABASE_ANON_KEY.length : 0
-      }
-    });
-
-  } catch (error) {
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Enhanced Health check
-app.get("/api/health", async (req, res) => {
-  try {
-    let supabaseStatus = "not_configured";
-    let supabaseDetails = {};
-    
-    if (supabaseEnabled && supabase) {
-      try {
-        const startTime = Date.now();
-        const { data, error } = await supabase
-          .from('emails')
-          .select('message_id')
-          .limit(1);
-        const responseTime = Date.now() - startTime;
-
-        if (error) {
-          supabaseStatus = "disconnected";
-          supabaseDetails = {
-            error: error.message,
-            code: error.code
-          };
-        } else {
-          supabaseStatus = "connected";
-          supabaseDetails = {
-            responseTime: `${responseTime}ms`,
-            canQuery: true
-          };
-        }
-      } catch (error) {
-        supabaseStatus = "error";
-        supabaseDetails = {
-          error: error.message
-        };
-      }
-    }
-
-    const healthStatus = supabaseStatus === "connected" ? "healthy" : "degraded";
-
-    res.json({
-      status: healthStatus,
-      timestamp: new Date().toISOString(),
-      services: {
-        supabase: {
-          status: supabaseStatus,
-          enabled: supabaseEnabled,
-          ...supabaseDetails
-        },
-        email_configs: {
-          count: emailConfigManager.getAllConfigs().length,
-          loaded: emailConfigManager.getAllConfigs().length > 0
-        }
-      },
-      environment: process.env.NODE_ENV || 'development'
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "unhealthy",
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
 // Clear cache
 app.post("/api/clear-cache", (req, res) => {
   clearCache();
@@ -1570,15 +1211,12 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Start server (for local development)
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
-    console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  });
-}
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
+  console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+});
 
-// Export for Vercel
 export default app;
