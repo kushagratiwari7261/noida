@@ -5,7 +5,6 @@ import { simpleParser } from "mailparser";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
-import handler from "./api/fetch-latest";
 
 // Load environment variables
 if (process.env.NODE_ENV !== 'production') {
@@ -781,7 +780,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
-// Get emails with authentication and authorization
+// Get emails with authentication and authorization - FIXED VERSION
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
     const { 
@@ -797,15 +796,20 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
+    console.log(`📧 Fetching emails for user: ${userEmail}, account: ${accountId}`);
+
     const cacheKey = `emails:${userEmail}:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
     const cached = getFromCache(cacheKey);
     
     if (cached) {
+      console.log("📦 Serving from cache");
       return res.json(cached);
     }
 
     if (!supabaseEnabled || !supabase) {
+      console.error("❌ Supabase not available");
       return res.status(500).json({ 
+        success: false,
         error: "Supabase is not available" 
       });
     }
@@ -817,6 +821,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     // Apply account filtering based on user access
     if (accountId !== "all") {
       if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+        console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
         return res.status(403).json({
           success: false,
           error: "Access denied to this email account"
@@ -826,9 +831,12 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     } else {
       // Show only emails from accounts user has access to
       const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
+      console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
+      
       if (allowedAccountIds.length > 0) {
         query = query.in('account_id', allowedAccountIds);
       } else {
+        console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
         return res.json({
           success: true,
           emails: [],
@@ -840,10 +848,12 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       }
     }
     
+    // Add search if provided
     if (search && search.trim().length > 0) {
       query = query.or(`subject.ilike.%${search}%,from_text.ilike.%${search}%,text_content.ilike.%${search}%`);
     }
     
+    // Add sorting
     if (sort === "date_asc") {
       query = query.order('date', { ascending: true });
     } else if (sort === "subject_asc") {
@@ -854,23 +864,29 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       query = query.order('date', { ascending: false });
     }
     
+    // Add pagination
     query = query.range(skip, skip + limitNum - 1);
     
+    console.log(`🔍 Executing Supabase query...`);
     const { data: emails, error, count } = await query;
     
     if (error) {
       console.error("❌ Supabase query error:", error);
       return res.status(500).json({ 
-        error: "Failed to fetch emails from Supabase"
+        success: false,
+        error: "Failed to fetch emails from Supabase",
+        details: error.message
       });
     }
 
-    const hasMore = skip + emails.length < count;
+    console.log(`✅ Found ${emails?.length || 0} emails`);
+
+    const hasMore = skip + (emails?.length || 0) < (count || 0);
 
     const response = {
       success: true,
-      emails: emails,
-      total: count,
+      emails: emails || [],
+      total: count || 0,
       hasMore,
       page: pageNum,
       limit: limitNum
@@ -883,7 +899,8 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     console.error("❌ Emails fetch error:", error);
     res.status(500).json({ 
       success: false,
-      error: "Failed to fetch emails"
+      error: "Failed to fetch emails",
+      details: error.message
     });
   }
 });
@@ -1018,4 +1035,14 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-export default handler;
+// Start server (for local development)
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
+    console.log(`🔐 Authentication enabled`);
+  });
+}
+
+// Export for Vercel
+export default app;
