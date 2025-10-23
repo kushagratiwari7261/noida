@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App1.css';
-import { supabase } from './lib/supabaseClient'; // Import Supabase client
+import { supabase } from '../lib/supabaseClient'; // Import Supabase client
 
 function App() {
   const [emails, setEmails] = useState([]);
