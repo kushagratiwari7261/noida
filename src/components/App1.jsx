@@ -69,9 +69,12 @@ function App() {
       }
 
       if (currentSession) {
+        console.log('✅ User is authenticated:', currentSession.user.email);
         setSession(currentSession);
         setUser(currentSession.user);
-        await loadUserProfile();
+        await loadUserProfile(currentSession);
+      } else {
+        console.log('ℹ️ No active session found');
       }
     } catch (err) {
       console.error('❌ Auth check error:', err);
@@ -80,26 +83,37 @@ function App() {
   };
 
   // Load user profile and allowed accounts
-  const loadUserProfile = async () => {
-    if (!session) return;
+  const loadUserProfile = async (currentSession) => {
+    if (!currentSession) return;
 
     try {
+      console.log('🔐 Loading user profile with token...');
       const response = await fetch(`${API_BASE}/api/auth/profile`, {
         headers: {
-          'Authorization': `Bearer ${session.access_token}`
+          'Authorization': `Bearer ${currentSession.access_token}`,
+          'Content-Type': 'application/json'
         }
       });
 
       if (response.ok) {
         const result = await response.json();
         if (result.success) {
-          setEmailAccounts(result.data.allowedAccounts);
+          setEmailAccounts(result.data.allowedAccounts || []);
           console.log('📧 Loaded allowed accounts:', result.data.allowedAccounts);
+          
+          // Load emails after profile is loaded
+          await loadEmails(true, false, currentSession);
+        } else {
+          console.error('❌ Profile load failed:', result.error);
         }
       } else if (response.status === 401) {
-        // Token expired
-        handleLogout();
+        console.log('🔐 Token expired, signing out...');
+        await handleLogout();
         setError('Session expired. Please log in again.');
+      } else {
+        const errorText = await response.text();
+        console.error('❌ Profile load HTTP error:', response.status, errorText);
+        setError('Failed to load user profile');
       }
     } catch (err) {
       console.error('❌ Profile load error:', err);
@@ -107,7 +121,7 @@ function App() {
     }
   };
 
-  // Login function
+  // Login function using Supabase directly (not your backend login)
   const handleLogin = async (e) => {
     e.preventDefault();
     if (loginLoading) return;
@@ -121,28 +135,32 @@ function App() {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(loginForm)
+      console.log('🔐 Attempting login with:', loginForm.email);
+      
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginForm.email.trim().toLowerCase(),
+        password: loginForm.password
       });
 
-      const result = await response.json();
+      if (error) {
+        console.error('❌ Supabase login error:', error);
+        setError(error.message || 'Login failed. Please check your credentials.');
+        return;
+      }
 
-      if (response.ok && result.success) {
-        setSession(result.data.session);
-        setUser(result.data.user);
-        setEmailAccounts(result.data.allowedAccounts);
+      if (data.session) {
+        console.log('✅ Login successful:', data.user.email);
+        setSession(data.session);
+        setUser(data.user);
         setLoginForm({ email: '', password: '' });
         
-        // Load emails after successful login
-        await loadEmails(true, true);
+        // Load user profile and emails after successful login
+        await loadUserProfile(data.session);
       } else {
-        setError(result.error || 'Login failed');
+        setError('Login failed. No session returned.');
       }
     } catch (err) {
+      console.error('❌ Login error:', err);
       setError('Login failed: ' + err.message);
     } finally {
       setLoginLoading(false);
@@ -152,44 +170,47 @@ function App() {
   // Logout function
   const handleLogout = async () => {
     try {
-      if (session) {
-        await fetch(`${API_BASE}/api/auth/logout`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`
-          }
-        });
+      if (supabase) {
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          console.error('❌ Logout error:', error);
+        }
       }
     } catch (err) {
-      console.error('Logout error:', err);
+      console.error('❌ Logout error:', err);
     } finally {
       setSession(null);
       setUser(null);
       setEmailAccounts([]);
       setEmails([]);
       setSelectedAccount('all');
+      setError(null);
     }
   };
 
   // Enhanced API call function with authentication
   const makeAuthenticatedRequest = async (url, options = {}) => {
+    if (!session) {
+      throw new Error('No active session. Please log in again.');
+    }
+
     const config = {
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
         ...options.headers,
       }
     };
 
-    if (session) {
-      config.headers['Authorization'] = `Bearer ${session.access_token}`;
-    }
+    console.log('🌐 Making API request to:', url);
+    console.log('🔐 Using token:', session.access_token.substring(0, 20) + '...');
 
     const response = await fetch(`${API_BASE}${url}`, config);
     
     if (response.status === 401) {
-      // Token expired, logout user
-      handleLogout();
+      console.log('🔐 Token expired, logging out...');
+      await handleLogout();
       throw new Error('Session expired. Please log in again.');
     }
 
@@ -198,7 +219,40 @@ function App() {
       throw new Error(result.error || 'Access denied');
     }
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ API request failed:', response.status, errorText);
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+
     return response;
+  };
+
+  // Test API connection
+  const testApiConnection = async () => {
+    if (!session) {
+      setError('Please log in first');
+      return;
+    }
+
+    try {
+      console.log('🧪 Testing API connection...');
+      
+      // Test health endpoint
+      const healthResponse = await fetch(`${API_BASE}/api/health`);
+      const healthData = await healthResponse.json();
+      console.log('🏥 Health check:', healthData);
+
+      // Test auth endpoint
+      const authResponse = await makeAuthenticatedRequest('/api/test-auth');
+      const authData = await authResponse.json();
+      console.log('🔐 Auth test:', authData);
+
+      alert('✅ API connection test successful!');
+    } catch (err) {
+      console.error('❌ API test failed:', err);
+      alert('❌ API test failed: ' + err.message);
+    }
   };
 
   // Process email data
@@ -227,8 +281,10 @@ function App() {
   };
 
   // Load emails with authentication
-  const loadEmails = async (showLoading = true, forceRefresh = false) => {
-    if (!session) {
+  const loadEmails = async (showLoading = true, forceRefresh = false, currentSession = null) => {
+    const authSession = currentSession || session;
+    
+    if (!authSession) {
       setError('Please log in to view emails');
       return;
     }
@@ -254,13 +310,11 @@ function App() {
         `t=${Date.now()}`
       ].join('&');
 
+      console.log('📧 Loading emails with query:', queries);
       const response = await makeAuthenticatedRequest(`/api/emails?${queries}`);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const data = await response.json();
+      console.log('📧 Email API response:', data);
       
       if (data.success && data.emails) {
         const processedEmails = data.emails.map(processEmailData);
@@ -274,6 +328,9 @@ function App() {
         console.log('✅ Emails loaded:', sortedEmails.length);
       } else {
         setEmails([]);
+        if (data.error) {
+          setError(data.error);
+        }
       }
       
     } catch (err) {
@@ -302,6 +359,7 @@ function App() {
     setError(null);
 
     try {
+      console.log('📥 Fetching emails with mode:', mode);
       const response = await makeAuthenticatedRequest('/api/fetch-emails', {
         method: 'POST',
         body: JSON.stringify({
@@ -311,11 +369,8 @@ function App() {
         })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const result = await response.json();
+      console.log('📥 Fetch emails response:', result);
       
       if (result.success) {
         setFetchStatus('success');
@@ -358,10 +413,6 @@ function App() {
       const response = await makeAuthenticatedRequest(`/api/emails/${deleteId}`, {
         method: 'DELETE'
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
 
       const result = await response.json();
 
@@ -660,7 +711,7 @@ function App() {
     return (
       <div className="login-container">
         <div className="login-form">
-          <h1>📧 Email Access</h1>
+          <h1>📧 Email Archive</h1>
           <p>Please log in to access your emails</p>
           
           {error && (
@@ -763,6 +814,17 @@ function App() {
                   ))}
                 </select>
               </div>
+
+              {/* Test Connection Button */}
+              <div className="test-connection">
+                <button 
+                  onClick={testApiConnection}
+                  className="test-button"
+                  title="Test API connection"
+                >
+                  🧪 Test Connection
+                </button>
+              </div>
             </>
           )}
         </div>
@@ -772,7 +834,7 @@ function App() {
       <div className="main-content">
         <header className="app-header-compact">
           <div className="header-top">
-            <h1>📧 Email Inbox</h1>
+            <h1>📧 Email Archive</h1>
             <div className="header-stats">
               <span className="email-count-badge">📊 {emails.length} emails</span>
               {selectedAccount !== 'all' && (
@@ -863,6 +925,9 @@ function App() {
               <div className="empty-actions">
                 <button onClick={fetchNewEmails} className="fetch-button">
                   📥 Fetch Emails
+                </button>
+                <button onClick={testApiConnection} className="test-button">
+                  🧪 Test Connection
                 </button>
               </div>
             </div>

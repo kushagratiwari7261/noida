@@ -87,28 +87,33 @@ let supabaseEnabled = false;
 
 const initializeSupabase = () => {
   try {
-    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+      // Use the same ANON_KEY that your frontend uses
       supabase = createClient(
         process.env.SUPABASE_URL,
-        process.env.SUPABASE_SERVICE_KEY,
+        process.env.SUPABASE_ANON_KEY,
         {
           auth: {
             persistSession: false,
-            autoRefreshToken: false
+            autoRefreshToken: false,
+            detectSessionInUrl: false
           },
-          db: {
-            schema: 'public'
+          global: {
+            headers: {
+              'X-Client-Info': 'email-backend'
+            }
           }
         }
       );
       
       supabaseEnabled = true;
       console.log("✅ Supabase client created successfully");
+      console.log("🔗 Supabase URL:", process.env.SUPABASE_URL);
       return true;
     } else {
       console.error("❌ Supabase environment variables not set");
       console.log("SUPABASE_URL:", process.env.SUPABASE_URL ? "Set" : "Missing");
-      console.log("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY ? "Set" : "Missing");
+      console.log("SUPABASE_ANON_KEY:", process.env.SUPABASE_ANON_KEY ? "Set" : "Missing");
       supabaseEnabled = false;
       return false;
     }
@@ -215,46 +220,69 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// Enhanced Authentication Middleware
+// Enhanced Authentication Middleware for Supabase JWT tokens
 const authenticateUser = async (req, res, next) => {
   try {
-    console.log("🔐 Starting authentication...");
+    console.log("🔐 Starting authentication for:", req.path);
+    
     const authHeader = req.headers.authorization;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log("❌ No authorization header or invalid format");
+    if (!authHeader) {
+      console.log("❌ No authorization header found");
       return res.status(401).json({
         success: false,
         error: "Authentication required. Please log in."
       });
     }
 
+    if (!authHeader.startsWith('Bearer ')) {
+      console.log("❌ Invalid authorization format");
+      return res.status(401).json({
+        success: false,
+        error: "Invalid authentication format. Use Bearer token."
+      });
+    }
+
     const token = authHeader.substring(7);
     
     if (!token || token.length < 10) {
-      console.log("❌ Invalid token format");
+      console.log("❌ Token too short or empty");
       return res.status(401).json({
         success: false,
         error: "Invalid authentication token."
       });
     }
     
-    if (!supabaseEnabled) {
-      console.error("❌ Supabase not enabled for authentication");
+    console.log("🔐 Token received, verifying with Supabase...");
+
+    if (!supabaseEnabled || !supabase) {
+      console.error("❌ Supabase not available for authentication");
       return res.status(500).json({
         success: false,
         error: "Authentication service unavailable"
       });
     }
 
-    console.log("🔐 Verifying token with Supabase...");
+    // Verify the JWT token with Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error) {
-      console.error("❌ Supabase auth error:", error.message);
+      console.error("❌ Supabase token verification failed:", error.message);
+      console.error("❌ Supabase error details:", error);
+      
+      // More specific error messages
+      if (error.message?.includes('JWT')) {
+        return res.status(401).json({
+          success: false,
+          error: "Invalid authentication token. Please log in again.",
+          details: "JWT token is invalid"
+        });
+      }
+      
       return res.status(401).json({
         success: false,
-        error: "Invalid or expired token. Please log in again."
+        error: "Authentication failed. Please log in again.",
+        details: error.message
       });
     }
 
@@ -266,14 +294,16 @@ const authenticateUser = async (req, res, next) => {
       });
     }
 
-    console.log(`✅ Authenticated user: ${user.email}`);
+    console.log(`✅ Authenticated user: ${user.email} (${user.id})`);
     req.user = user;
     next();
   } catch (error) {
-    console.error("❌ Authentication error:", error);
+    console.error("❌ Authentication process error:", error);
+    console.error("❌ Error stack:", error.stack);
     return res.status(401).json({
       success: false,
-      error: "Authentication failed"
+      error: "Authentication failed",
+      details: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
 };
@@ -322,7 +352,7 @@ const authorizeEmailAccess = (accountId = null) => {
   };
 };
 
-// IMAP Connection Manager (unchanged but kept for completeness)
+// IMAP Connection Manager
 class IMAPConnectionManager {
   constructor() {
     this.connections = new Map();
@@ -454,7 +484,7 @@ class IMAPConnection {
 
 const imapManager = new IMAPConnectionManager();
 
-// Helper functions (unchanged)
+// Helper functions
 async function checkDuplicate(messageId, accountId) {
   const cacheKey = `duplicate:${messageId}:${accountId}`;
   const cached = getFromCache(cacheKey);
@@ -532,103 +562,23 @@ async function saveEmailToSupabase(email) {
 
 // ========== ENHANCED API ENDPOINTS ==========
 
-// Auth endpoints (unchanged but kept for completeness)
-app.post("/api/auth/login", async (req, res) => {
+// Test endpoint to verify Supabase connection
+app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "Email and password are required"
-      });
-    }
-
-    if (!supabaseEnabled) {
-      return res.status(500).json({
-        success: false,
-        error: "Authentication service unavailable"
-      });
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password: password
-    });
-
-    if (error) {
-      return res.status(401).json({
-        success: false,
-        error: "Invalid email or password"
-      });
-    }
-
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(email);
-    if (allowedAccounts.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: "Your account doesn't have access to any email accounts. Please contact administrator."
-      });
-    }
-
     res.json({
       success: true,
-      message: "Login successful",
-      data: {
-        user: data.user,
-        session: data.session,
-        allowedAccounts: allowedAccounts
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Login error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Login failed"
-    });
-  }
-});
-
-app.post("/api/auth/logout", authenticateUser, async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader.substring(7);
-
-    if (supabaseEnabled) {
-      await supabase.auth.signOut();
-    }
-
-    res.json({
-      success: true,
-      message: "Logout successful"
+      message: "Authentication successful",
+      user: {
+        email: req.user.email,
+        id: req.user.id
+      },
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error("❌ Logout error:", error);
+    console.error("❌ Test auth error:", error);
     res.status(500).json({
       success: false,
-      error: "Logout failed"
-    });
-  }
-});
-
-app.get("/api/auth/profile", authenticateUser, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-
-    res.json({
-      success: true,
-      data: {
-        user: req.user,
-        allowedAccounts: allowedAccounts
-      }
-    });
-  } catch (error) {
-    console.error("❌ Profile fetch error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch profile"
+      error: "Test failed"
     });
   }
 });
@@ -840,7 +790,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
   }
 });
 
-// Email fetching endpoint (unchanged)
+// Email fetching endpoint
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
     const { 
