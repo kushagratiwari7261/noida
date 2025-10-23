@@ -155,11 +155,12 @@ const testSupabaseConnection = async () => {
 
 initializeSupabase();
 
-// User-Email Mapping Configuration
+// User-Email Mapping Configuration - UPDATED WITH CORRECT EMAILS
 const USER_EMAIL_MAPPING = {
-  "info@seal.co.in": [1],        // Can only access IMAP account 1
-  "pankaj.singh@seal.co.in": [2], // Can only access IMAP account 2  
-  "admin@seal.co.in": [1, 2]     // Can access both IMAP accounts
+  "info@seal.co.in": [1],                    // Can only access IMAP account 1
+  "pankaj.singh@seal.co.in": [2],           // Can only access IMAP account 2  
+  "anshuman.singh@seal.co.in": [1, 2],      // Can access both IMAP accounts
+  "transport@seal.co.in": [1, 2]            // Can access both IMAP accounts
 };
 
 // Enhanced Email Configuration Manager
@@ -284,12 +285,12 @@ const authenticateUser = async (req, res, next) => {
     
     console.log("🔐 Token received, length:", token.length);
 
-    // DEVELOPMENT BYPASS - Remove in production
+    // DEVELOPMENT BYPASS - UPDATED WITH CORRECT EMAIL
     if (process.env.NODE_ENV === 'development') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
-      // Set a test user - change this email to test different access levels
+      // Set a test user - using anshuman.singh@seal.co.in which has access to both accounts
       req.user = { 
-        email: "pankaj.singh@seal.co.in", // Change to "info@seal.co.in" or "admin@seal.co.in" to test
+        email: "anshuman.singh@seal.co.in", // Has access to both accounts
         id: "dev-user" 
       };
       console.log("🔐 Development user set:", req.user.email);
@@ -681,6 +682,51 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// Test Supabase connection
+app.get("/api/test-supabase", async (req, res) => {
+  try {
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        message: "Supabase not initialized",
+        enabled: supabaseEnabled,
+        client: !!supabase
+      });
+    }
+
+    // Test simple query
+    const { data, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .limit(5);
+
+    if (error) {
+      return res.json({
+        success: false,
+        message: "Supabase query failed",
+        error: error.message,
+        code: error.code,
+        details: error.details
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Supabase connection successful",
+      emailsCount: count || 0,
+      sampleData: data || [],
+      enabled: supabaseEnabled
+    });
+
+  } catch (error) {
+    res.json({
+      success: false,
+      message: "Supabase test failed",
+      error: error.message
+    });
+  }
+});
+
 // Debug endpoint to check user info and access
 app.get("/api/debug-user", authenticateUser, (req, res) => {
   try {
@@ -790,13 +836,13 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       search = "",
       sort = "date_desc",
       page = 1,
-      limit = 20,
+      limit = 100,
       accountId = "all"
     } = req.query;
 
     const userEmail = req.user.email;
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
     console.log(`📧 Fetching emails for user: ${userEmail}`, {
@@ -910,11 +956,33 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
+    // Process emails to ensure consistent structure for frontend
+    const processedEmails = (emails || []).map(email => ({
+      _id: email.id || email.message_id,
+      id: email.id || email.message_id,
+      messageId: email.message_id,
+      message_id: email.message_id,
+      subject: email.subject || '(No Subject)',
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: Array.isArray(email.attachments) ? email.attachments : [],
+      hasAttachments: email.has_attachments || (Array.isArray(email.attachments) && email.attachments.length > 0),
+      attachmentsCount: email.attachments_count || (Array.isArray(email.attachments) ? email.attachments.length : 0),
+      account_id: email.account_id
+    }));
+
     const hasMore = skip + (emails?.length || 0) < (count || 0);
     
     const response = {
       success: true,
-      emails: emails || [],
+      emails: processedEmails,
       total: count || 0,
       hasMore,
       page: pageNum,
@@ -925,30 +993,13 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       }
     };
 
+    console.log(`📨 Sending response with ${processedEmails.length} emails`);
     res.json(response);
 
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
     console.error("Error stack:", error.stack);
 
-    // Handle timeout specifically
-    if (error.message === 'Query timeout') {
-      return res.status(504).json({
-        success: false,
-        error: "Query timeout - please try again or use smaller search terms",
-        details: "The database query took too long to complete"
-      });
-    }
-
-    // Handle access denied
-    if (error.message === 'Access denied to this email account') {
-      return res.status(403).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    // Generic error response
     res.status(500).json({
       success: false,
       error: "Failed to fetch emails from database",
