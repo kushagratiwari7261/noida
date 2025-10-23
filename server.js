@@ -482,8 +482,8 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
     console.log(`📧 Fetching ALL emails (no pagination) for ${userEmail}, limit: ${limit}`);
 
     if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({ 
-        error: "Supabase is not available" 
+      return res.status(500).json({
+        error: "Supabase is not available"
       });
     }
 
@@ -497,9 +497,9 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
 
     if (error) {
       console.error("❌ Supabase query error:", error);
-      return res.status(500).json({ 
+      return res.status(500).json({
         error: "Failed to fetch emails from Supabase",
-        details: error.message 
+        details: error.message
       });
     }
 
@@ -544,9 +544,9 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
 
   } catch (error) {
     console.error("❌ All emails fetch error:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Failed to fetch all emails",
-      details: error.message 
+      details: error.message
     });
   }
 });
