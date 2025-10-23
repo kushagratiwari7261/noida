@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App1.css';
+import { supabase } from './lib/supabaseClient'; // Import Supabase client
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -12,9 +13,56 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
-  const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
+  const [deletingEmails, setDeletingEmails] = useState({});
+  const [user, setUser] = useState(null); // Add user state
 
-  const API_BASE = '';
+  const API_BASE = 'http://localhost:3002'; // Update with your backend URL
+
+  // Get authentication token
+  const getAuthToken = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        return session.access_token;
+      }
+      return null;
+    } catch (error) {
+      console.error('❌ Error getting auth token:', error);
+      return null;
+    }
+  };
+
+  // Enhanced fetch with authentication
+  const fetchWithAuth = async (url, options = {}) => {
+    const token = await getAuthToken();
+    
+    if (!token) {
+      throw new Error('No authentication token found. Please log in again.');
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+      ...options.headers,
+    };
+
+    console.log('🔐 Making authenticated request to:', url);
+    
+    const response = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    if (response.status === 401) {
+      throw new Error('Authentication failed. Please log in again.');
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response;
+  };
 
   // Enhanced attachment URL processor with better CSV handling
   const processAttachmentUrl = (attachment) => {
@@ -125,7 +173,7 @@ function App() {
     return processedEmail;
   };
 
-  // NEW: Delete email function
+  // NEW: Delete email function with authentication
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
@@ -148,20 +196,9 @@ function App() {
     try {
       console.log('🗑️ Deleting email:', { emailId, messageId });
 
-      const response = await fetch(`${API_BASE}/api/delete-email`, {
+      const response = await fetchWithAuth(`${API_BASE}/api/emails/${messageId}`, {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          emailId: emailId,
-          messageId: messageId
-        })
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
 
       const result = await response.json();
       console.log('🗑️ Delete response:', result);
@@ -186,7 +223,7 @@ function App() {
     }
   };
 
-  // Enhanced load emails function with proper sorting
+  // Enhanced load emails function with proper sorting and authentication
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -197,7 +234,7 @@ function App() {
       // Clear cache first if force refresh
       if (forceRefresh) {
         try {
-          await fetch(`${API_BASE}/api/clear-cache`, { method: 'POST' });
+          await fetchWithAuth(`${API_BASE}/api/clear-cache`, { method: 'POST' });
           console.log('🗑️ Cache cleared');
         } catch (cacheErr) {
           console.log('⚠️ Cache clear failed, continuing...');
@@ -208,18 +245,14 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=100`, // Increased limit to ensure we get latest emails
+        `limit=100`,
         `includeAttachments=true`,
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
 
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
+      const response = await fetchWithAuth(`${API_BASE}/api/emails?${queries}`);
       const data = await response.json();
+      
       console.log('📧 Backend response:', data);
       
       let emailsToProcess = [];
@@ -250,19 +283,6 @@ function App() {
       const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
       console.log('📎 Total attachments found:', totalAttachments);
       
-      sortedEmails.forEach((email, index) => {
-        if (email.attachments.length > 0) {
-          console.log(`Email ${index} attachments:`, email.attachments.map(att => ({
-            filename: att.filename,
-            url: att.url,
-            type: att.type,
-            isImage: att.isImage,
-            isCSV: att.isCSV,
-            size: att.size
-          })));
-        }
-      });
-      
       setEmails(sortedEmails);
       console.log('✅ Emails set in state:', sortedEmails.length);
       
@@ -270,12 +290,19 @@ function App() {
       console.error('❌ Fetch error:', err);
       setEmails([]);
       setError(`Failed to load emails: ${err.message}`);
+      
+      // If authentication failed, redirect to login
+      if (err.message.includes('Authentication failed')) {
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 2000);
+      }
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint with proper email ordering
+  // Enhanced fetch function with authentication
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -286,20 +313,13 @@ function App() {
     try {
       console.log(`🔄 Starting ${mode} fetch...`);
       
-      const response = await fetch(`${API_BASE}/api/fetch-emails`, {
+      const response = await fetchWithAuth(`${API_BASE}/api/fetch-emails`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30 // Increased count for better sampling
+          count: mode === 'force' ? 20 : 30
         })
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
 
       const result = await response.json();
       console.log(`📨 ${mode} fetch result:`, result);
@@ -308,38 +328,8 @@ function App() {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // Update with new emails immediately with proper sorting
-        if (result.data && result.data.emails && result.data.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.data.emails.length, 'new emails');
-          const processedNewEmails = result.data.emails.map(processEmailData);
-          
-          // Sort new emails by date (newest first)
-          const sortedNewEmails = processedNewEmails.sort((a, b) => {
-            const dateA = new Date(a.date || 0);
-            const dateB = new Date(b.date || 0);
-            return dateB - dateA;
-          });
-          
-          setEmails(prevEmails => {
-            const existingIds = new Set(prevEmails.map(email => email.messageId));
-            const uniqueNewEmails = sortedNewEmails.filter(email => !existingIds.has(email.messageId));
-            
-            // Combine and sort all emails by date
-            const allEmails = [...uniqueNewEmails, ...prevEmails];
-            const finalSortedEmails = allEmails.sort((a, b) => {
-              const dateA = new Date(a.date || 0);
-              const dateB = new Date(b.date || 0);
-              return dateB - dateA;
-            });
-            
-            console.log(`🔄 Email state updated: ${uniqueNewEmails.length} new, ${finalSortedEmails.length} total`);
-            return finalSortedEmails;
-          });
-        } else {
-          // If no new emails, still refresh the list to ensure latest order
-          console.log('🔄 No new emails, refreshing list to ensure proper order...');
-          await loadEmails(false, true);
-        }
+        // Refresh the email list after fetch
+        await loadEmails(false, true);
         
       } else {
         setFetchStatus('error');
@@ -350,6 +340,13 @@ function App() {
       setFetchStatus('error');
       setError(err.message);
       console.error(`❌ ${mode} fetch failed:`, err);
+      
+      // If authentication failed, redirect to login
+      if (err.message.includes('Authentication failed')) {
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 2000);
+      }
     } finally {
       setFetching(false);
     }
@@ -384,69 +381,10 @@ function App() {
     }
   };
 
-  // Fast fetch from Supabase only
+  // Fast fetch from Supabase only (remove if endpoint doesn't exist)
   const fastFetchEmails = async () => {
-    if (fetching) return;
-
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('🚀 Fast fetching emails from Supabase...');
-      
-      const response = await fetch(`${API_BASE}/api/fast-fetch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          mode: 'fast',
-          count: 100 // Fetch more emails quickly
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-      console.log('🚀 Fast fetch result:', result);
-      
-      if (response.ok && result.success) {
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        if (result.data && result.data.emails && result.data.emails.length > 0) {
-          console.log('🚀 Immediately updating with', result.data.emails.length, 'emails from Supabase');
-          const processedEmails = result.data.emails.map(processEmailData);
-          
-          // Sort emails by date (newest first)
-          const sortedEmails = processedEmails.sort((a, b) => {
-            const dateA = new Date(a.date || 0);
-            const dateB = new Date(b.date || 0);
-            return dateB - dateA;
-          });
-          
-          setEmails(sortedEmails);
-          console.log('✅ Fast fetch completed:', sortedEmails.length, 'emails loaded');
-        } else {
-          console.log('🔄 No emails found in fast fetch');
-          setEmails([]);
-        }
-        
-      } else {
-        setFetchStatus('error');
-        setError(result.error || 'Failed to fast fetch emails');
-        console.error('❌ Fast fetch failed:', result.error);
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Fast fetch failed:', err);
-    } finally {
-      setFetching(false);
-    }
+    setError('Fast fetch endpoint not available. Use Smart Fetch instead.');
+    return;
   };
 
   // Enhanced download function with CSV protection and better error handling
@@ -474,20 +412,6 @@ function App() {
 
       if (!attachment.url) {
         throw new Error('No URL available for download');
-      }
-
-      // Test if URL is accessible
-      try {
-        const testResponse = await fetch(attachment.url, { method: 'HEAD' });
-        if (!testResponse.ok) {
-          console.warn('⚠️ URL might not be directly accessible, opening in new tab');
-          window.open(attachment.url, '_blank');
-          return;
-        }
-      } catch (testError) {
-        console.warn('⚠️ URL test failed, opening in new tab:', testError);
-        window.open(attachment.url, '_blank');
-        return;
       }
 
       // Use download attribute for direct download
@@ -885,6 +809,16 @@ function App() {
     </div>
   );
 
+  // Get current user on component mount
+  useEffect(() => {
+    const getUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setUser(user);
+      console.log('👤 Current user:', user?.email);
+    };
+    getUser();
+  }, []);
+
   // Load emails when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
@@ -942,7 +876,9 @@ function App() {
         <div className="sidebar-content">
           {!sidebarCollapsed && (
             <>
-              {/* Sidebar content can be added here if needed */}
+              <div className="user-info">
+                <p>Logged in as: <strong>{user?.email}</strong></p>
+              </div>
             </>
           )}
         </div>
@@ -958,6 +894,9 @@ function App() {
               <span className="email-count-badge">📊 {emails.length} emails</span>
               {lastFetchTime && (
                 <span className="last-fetch">Last: {lastFetchTime.toLocaleTimeString()}</span>
+              )}
+              {user && (
+                <span className="user-email">User: {user.email}</span>
               )}
             </div>
           </div>
@@ -978,24 +917,6 @@ function App() {
               className="force-fetch-button"
             >
               ⚡ Force Fetch
-            </button>
-
-            {/* Fast Fetch Button */}
-            <button 
-              onClick={fastFetchEmails} 
-              disabled={fetching}
-              className="fast-fetch-button"
-              title="Quickly load emails from database"
-            >
-              🚀 Fast Fetch
-            </button>
-
-            <button 
-              onClick={simpleFetchEmails} 
-              disabled={fetching}
-              className="simple-fetch-button"
-            >
-              📨 Simple Fetch
             </button>
 
             <button 
@@ -1084,27 +1005,13 @@ function App() {
             <summary>Debug Info</summary>
             <div className="debug-content">
               <p>Backend: {API_BASE}</p>
+              <p>Current user: {user?.email}</p>
               <p>Current emails: {emails.length}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
               {error && <p>Error: {error}</p>}
-              <div className="attachments-debug">
-                <h4>Attachments Debug:</h4>
-                {emails.slice(0, 3).map((email, idx) => (
-                  email.hasAttachments && (
-                    <div key={idx}>
-                      <p>Email {idx}: {email.attachmentsCount} attachments</p>
-                      {email.attachments.map((att, attIdx) => (
-                        <div key={attIdx} style={{marginLeft: '20px', fontSize: '12px'}}>
-                          {att.filename} - {att.url ? '✅ URL' : '❌ No URL'} - {att.type} - {att.isImage ? '🖼️' : '📎'} - {att.isCSV ? '📋 CSV' : ''}
-                        </div>
-                      ))}
-                    </div>
-                  )
-                ))}
-              </div>
             </div>
           </details>
         </div>
