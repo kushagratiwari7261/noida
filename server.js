@@ -18,10 +18,23 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
+// Enhanced Middleware with better error handling
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "*",
+  credentials: true
+}));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`📨 ${req.method} ${req.path}`, {
+    query: req.query,
+    body: req.method !== 'GET' ? req.body : undefined,
+    timestamp: new Date().toISOString()
+  });
+  next();
+});
 
 // Cache configuration
 const cache = new Map();
@@ -29,32 +42,46 @@ const CACHE_TTL = 300000;
 const MAX_CACHE_SIZE = 100;
 
 function getFromCache(key) {
-  const cached = cache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
+  try {
+    const cached = cache.get(key);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
+    cache.delete(key);
+    return null;
+  } catch (error) {
+    console.error("❌ Cache get error:", error);
+    return null;
   }
-  cache.delete(key);
-  return null;
 }
 
 function setToCache(key, data) {
-  if (cache.size >= MAX_CACHE_SIZE) {
-    const firstKey = cache.keys().next().value;
-    cache.delete(firstKey);
+  try {
+    if (cache.size >= MAX_CACHE_SIZE) {
+      const firstKey = cache.keys().next().value;
+      cache.delete(firstKey);
+    }
+    
+    cache.set(key, {
+      data,
+      timestamp: Date.now(),
+      size: JSON.stringify(data).length
+    });
+  } catch (error) {
+    console.error("❌ Cache set error:", error);
   }
-  
-  cache.set(key, {
-    data,
-    timestamp: Date.now(),
-    size: JSON.stringify(data).length
-  });
 }
 
 function clearCache() {
-  cache.clear();
+  try {
+    cache.clear();
+    console.log("✅ Cache cleared successfully");
+  } catch (error) {
+    console.error("❌ Cache clear error:", error);
+  }
 }
 
-// Supabase client
+// Enhanced Supabase client with better error handling
 let supabase = null;
 let supabaseEnabled = false;
 
@@ -68,6 +95,9 @@ const initializeSupabase = () => {
           auth: {
             persistSession: false,
             autoRefreshToken: false
+          },
+          db: {
+            schema: 'public'
           }
         }
       );
@@ -77,6 +107,8 @@ const initializeSupabase = () => {
       return true;
     } else {
       console.error("❌ Supabase environment variables not set");
+      console.log("SUPABASE_URL:", process.env.SUPABASE_URL ? "Set" : "Missing");
+      console.log("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY ? "Set" : "Missing");
       supabaseEnabled = false;
       return false;
     }
@@ -91,13 +123,12 @@ initializeSupabase();
 
 // User-Email Mapping Configuration
 const USER_EMAIL_MAPPING = {
-  // Format: user_email: [allowed_email_account_ids]
-  "info@seal.co.in": [1], // info@seal.co.in can only access account 1
-  "pankaj.singh@seal.co.in": [2], // pankaj.singh@seal.co.in can only access account 2
-  "admin@seal.co.in": [1, 2] // admin can access all accounts
+  "info@seal.co.in": [1],
+  "pankaj.singh@seal.co.in": [2],
+  "admin@seal.co.in": [1, 2]
 };
 
-// Email Configuration Manager
+// Enhanced Email Configuration Manager
 class EmailConfigManager {
   constructor() {
     this.configs = new Map();
@@ -107,11 +138,18 @@ class EmailConfigManager {
   loadConfigs() {
     try {
       let configIndex = 1;
+      let loadedCount = 0;
+      
       while (true) {
         const configKey = `EMAIL_CONFIG_${configIndex}`;
         const configValue = process.env[configKey];
         
-        if (!configValue) break;
+        if (!configValue) {
+          if (configIndex === 1) {
+            console.warn("⚠️ No email configurations found in environment variables");
+          }
+          break;
+        }
 
         const [email, password] = configValue.split(':');
         if (email && password) {
@@ -122,47 +160,69 @@ class EmailConfigManager {
             name: `Account ${configIndex} (${email.trim()})`
           });
           console.log(`✅ Loaded email config ${configIndex}: ${email}`);
+          loadedCount++;
+        } else {
+          console.error(`❌ Invalid email configuration format for ${configKey}`);
         }
         configIndex++;
       }
 
-      console.log(`📧 Loaded ${this.configs.size} email configurations`);
+      console.log(`📧 Loaded ${loadedCount} email configurations`);
     } catch (error) {
       console.error("❌ Error loading email configs:", error);
     }
   }
 
   getConfig(configId) {
-    return this.configs.get(parseInt(configId));
+    const id = parseInt(configId);
+    if (isNaN(id)) {
+      console.error(`❌ Invalid config ID: ${configId}`);
+      return null;
+    }
+    return this.configs.get(id);
   }
 
   getAllConfigs() {
     return Array.from(this.configs.values());
   }
 
-  // Get allowed accounts for a user
   getAllowedAccounts(userEmail) {
-    const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
-    return this.getAllConfigs().filter(config => 
-      allowedAccountIds.includes(config.id)
-    );
+    try {
+      const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
+      console.log(`🔐 User ${userEmail} allowed accounts:`, allowedAccountIds);
+      return this.getAllConfigs().filter(config => 
+        allowedAccountIds.includes(config.id)
+      );
+    } catch (error) {
+      console.error("❌ Error getting allowed accounts:", error);
+      return [];
+    }
   }
 
-  // Check if user can access account
   canUserAccessAccount(userEmail, accountId) {
-    const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
-    return allowedAccountIds.includes(parseInt(accountId));
+    try {
+      const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
+      const accountIdNum = parseInt(accountId);
+      const canAccess = allowedAccountIds.includes(accountIdNum);
+      console.log(`🔐 Access check: ${userEmail} -> account ${accountId}: ${canAccess}`);
+      return canAccess;
+    } catch (error) {
+      console.error("❌ Error checking account access:", error);
+      return false;
+    }
   }
 }
 
 const emailConfigManager = new EmailConfigManager();
 
-// Authentication Middleware
+// Enhanced Authentication Middleware
 const authenticateUser = async (req, res, next) => {
   try {
+    console.log("🔐 Starting authentication...");
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.log("❌ No authorization header or invalid format");
       return res.status(401).json({
         success: false,
         error: "Authentication required. Please log in."
@@ -171,24 +231,42 @@ const authenticateUser = async (req, res, next) => {
 
     const token = authHeader.substring(7);
     
+    if (!token || token.length < 10) {
+      console.log("❌ Invalid token format");
+      return res.status(401).json({
+        success: false,
+        error: "Invalid authentication token."
+      });
+    }
+    
     if (!supabaseEnabled) {
+      console.error("❌ Supabase not enabled for authentication");
       return res.status(500).json({
         success: false,
         error: "Authentication service unavailable"
       });
     }
 
-    // Verify the JWT token with Supabase
+    console.log("🔐 Verifying token with Supabase...");
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
-    if (error || !user) {
+    if (error) {
+      console.error("❌ Supabase auth error:", error.message);
       return res.status(401).json({
         success: false,
         error: "Invalid or expired token. Please log in again."
       });
     }
 
-    // Add user to request object
+    if (!user) {
+      console.log("❌ No user found for token");
+      return res.status(401).json({
+        success: false,
+        error: "User not found. Please log in again."
+      });
+    }
+
+    console.log(`✅ Authenticated user: ${user.email}`);
     req.user = user;
     next();
   } catch (error) {
@@ -200,33 +278,39 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Authorization Middleware for Email Accounts
+// Enhanced Authorization Middleware for Email Accounts
 const authorizeEmailAccess = (accountId = null) => {
   return (req, res, next) => {
     try {
       const userEmail = req.user.email;
       const targetAccountId = accountId || req.body.accountId || req.query.accountId;
       
+      console.log(`🔐 Authorization check for ${userEmail}, account: ${targetAccountId}`);
+      
       // If no specific account requested, check if user has any access
       if (!targetAccountId || targetAccountId === 'all') {
         const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
         if (allowedAccounts.length === 0) {
+          console.log(`❌ User ${userEmail} has no allowed accounts`);
           return res.status(403).json({
             success: false,
             error: "Access denied. No email accounts assigned to your user."
           });
         }
+        console.log(`✅ User ${userEmail} authorized for accounts:`, allowedAccounts.map(a => a.id));
         return next();
       }
       
       // Check specific account access
       if (!emailConfigManager.canUserAccessAccount(userEmail, targetAccountId)) {
+        console.log(`❌ User ${userEmail} not authorized for account ${targetAccountId}`);
         return res.status(403).json({
           success: false,
           error: "Access denied. You don't have permission to access this email account."
         });
       }
       
+      console.log(`✅ User ${userEmail} authorized for account ${targetAccountId}`);
       next();
     } catch (error) {
       console.error("❌ Authorization error:", error);
@@ -238,7 +322,7 @@ const authorizeEmailAccess = (accountId = null) => {
   };
 };
 
-// IMAP Connection Manager
+// IMAP Connection Manager (unchanged but kept for completeness)
 class IMAPConnectionManager {
   constructor() {
     this.connections = new Map();
@@ -370,7 +454,7 @@ class IMAPConnection {
 
 const imapManager = new IMAPConnectionManager();
 
-// Helper functions
+// Helper functions (unchanged)
 async function checkDuplicate(messageId, accountId) {
   const cacheKey = `duplicate:${messageId}:${accountId}`;
   const cached = getFromCache(cacheKey);
@@ -446,9 +530,9 @@ async function saveEmailToSupabase(email) {
   }
 }
 
-// ========== API ENDPOINTS ==========
+// ========== ENHANCED API ENDPOINTS ==========
 
-// Auth endpoints
+// Auth endpoints (unchanged but kept for completeness)
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -467,7 +551,6 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // Sign in with Supabase
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim().toLowerCase(),
       password: password
@@ -480,7 +563,6 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    // Check if user has access to any email accounts
     const allowedAccounts = emailConfigManager.getAllowedAccounts(email);
     if (allowedAccounts.length === 0) {
       return res.status(403).json({
@@ -570,7 +652,195 @@ app.get("/api/email-configs", authenticateUser, (req, res) => {
   }
 });
 
-// Email fetching with authentication and authorization
+// Enhanced Email fetching with comprehensive error handling
+app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
+  console.log("🚀 /api/emails endpoint called");
+  
+  try {
+    const {
+      search = "",
+      sort = "date_desc",
+      page = 1,
+      limit = 20,
+      accountId = "all"
+    } = req.query;
+
+    const userEmail = req.user.email;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    console.log(`📧 Fetching emails for user: ${userEmail}`, {
+      accountId,
+      search,
+      sort,
+      page: pageNum,
+      limit: limitNum,
+      skip
+    });
+
+    // Cache key
+    const cacheKey = `emails:${userEmail}:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
+    const cached = getFromCache(cacheKey);
+
+    if (cached) {
+      console.log("📦 Serving from cache");
+      return res.json(cached);
+    }
+
+    // Enhanced Supabase availability check
+    if (!supabaseEnabled || !supabase) {
+      console.error("❌ Supabase not available - enabled:", supabaseEnabled, "client:", !!supabase);
+      return res.status(500).json({
+        success: false,
+        error: "Database service is currently unavailable. Please try again later."
+      });
+    }
+
+    console.log("🔍 Building Supabase query...");
+
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' });
+
+    // Apply account filtering based on user access
+    if (accountId !== "all") {
+      console.log(`🔍 Filtering by account ID: ${accountId}`);
+      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+        console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
+        return res.status(403).json({
+          success: false,
+          error: "Access denied to this email account"
+        });
+      }
+      query = query.eq('account_id', parseInt(accountId));
+    } else {
+      // Show only emails from accounts user has access to
+      const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
+      console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
+
+      if (allowedAccountIds.length > 0) {
+        query = query.in('account_id', allowedAccountIds);
+      } else {
+        console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
+        const emptyResponse = {
+          success: true,
+          emails: [],
+          total: 0,
+          hasMore: false,
+          page: pageNum,
+          limit: limitNum
+        };
+        setToCache(cacheKey, emptyResponse);
+        return res.json(emptyResponse);
+      }
+    }
+
+    // Add search if provided
+    if (search && search.trim().length > 0) {
+      const trimmedSearch = search.trim();
+      console.log(`🔍 Applying search filter: "${trimmedSearch}"`);
+      query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
+    }
+
+    // Add sorting
+    console.log(`🔍 Applying sort: ${sort}`);
+    if (sort === "date_asc") {
+      query = query.order('date', { ascending: true });
+    } else if (sort === "subject_asc") {
+      query = query.order('subject', { ascending: true });
+    } else if (sort === "subject_desc") {
+      query = query.order('subject', { ascending: false });
+    } else {
+      query = query.order('date', { ascending: false }); // default date_desc
+    }
+
+    // Add pagination
+    query = query.range(skip, skip + limitNum - 1);
+
+    console.log("🚀 Executing Supabase query...");
+    const { data: emails, error, count } = await query;
+
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      console.error("Error details:", {
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        message: error.message
+      });
+      
+      // Handle specific Supabase errors
+      if (error.code === 'PGRST301') {
+        return res.status(500).json({
+          success: false,
+          error: "Database schema error. Please contact administrator.",
+          code: error.code
+        });
+      } else if (error.code === '42P01') {
+        return res.status(500).json({
+          success: false,
+          error: "Emails table not found. Please contact administrator.",
+          code: error.code
+        });
+      } else if (error.code === '42501') {
+        return res.status(500).json({
+          success: false,
+          error: "Database permission denied. Please contact administrator.",
+          code: error.code
+        });
+      }
+      
+      throw error;
+    }
+
+    console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
+
+    const hasMore = skip + (emails?.length || 0) < (count || 0);
+    
+    const response = {
+      success: true,
+      emails: emails || [],
+      total: count || 0,
+      hasMore,
+      page: pageNum,
+      limit: limitNum
+    };
+
+    setToCache(cacheKey, response);
+    res.json(response);
+
+  } catch (error) {
+    console.error("❌ Emails fetch error:", error);
+    console.error("Error stack:", error.stack);
+
+    // Handle timeout specifically
+    if (error.message === 'Query timeout') {
+      return res.status(504).json({
+        success: false,
+        error: "Query timeout - please try again or use smaller search terms",
+        details: "The database query took too long to complete"
+      });
+    }
+
+    // Handle access denied
+    if (error.message === 'Access denied to this email account') {
+      return res.status(403).json({
+        success: false,
+        error: error.message
+      });
+    }
+
+    // Generic error response
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch emails from database",
+      details: process.env.NODE_ENV === 'production' ? undefined : error.message
+    });
+  }
+});
+
+// Email fetching endpoint (unchanged)
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
     const { 
@@ -780,154 +1050,6 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
-// Get emails with authentication and authorization - OPTIMIZED VERSION
-app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
-  try {
-    const {
-      search = "",
-      sort = "date_desc",
-      page = 1,
-      limit = 20,
-      accountId = "all"
-    } = req.query;
-
-    const userEmail = req.user.email;
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
-    const skip = (pageNum - 1) * limitNum;
-
-    console.log(`📧 Fetching emails for user: ${userEmail}, account: ${accountId}, limit: ${limitNum}`);
-
-    const cacheKey = `emails:${userEmail}:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
-    const cached = getFromCache(cacheKey);
-
-    if (cached) {
-      console.log("📦 Serving from cache");
-      return res.json(cached);
-    }
-
-    if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available");
-      return res.status(500).json({
-        success: false,
-        error: "Supabase is not available"
-      });
-    }
-
-    // OPTIMIZATION: Use a timeout to prevent long-running queries
-    const queryPromise = (async () => {
-      let query = supabase
-        .from('emails')
-        .select('*', { count: 'exact' });
-
-      // Apply account filtering based on user access
-      if (accountId !== "all") {
-        if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
-          console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
-          throw new Error("Access denied to this email account");
-        }
-        query = query.eq('account_id', parseInt(accountId));
-      } else {
-        // Show only emails from accounts user has access to
-        const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
-        console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
-
-        if (allowedAccountIds.length > 0) {
-          query = query.in('account_id', allowedAccountIds);
-        } else {
-          console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
-          return {
-            success: true,
-            emails: [],
-            total: 0,
-            hasMore: false,
-            page: pageNum,
-            limit: limitNum
-          };
-        }
-      }
-
-      // Add search if provided - OPTIMIZED search
-      if (search && search.trim().length > 0) {
-        const trimmedSearch = search.trim();
-        // Use more specific search to avoid full table scans
-        query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%`);
-      }
-
-      // Add sorting
-      if (sort === "date_asc") {
-        query = query.order('date', { ascending: true });
-      } else if (sort === "subject_asc") {
-        query = query.order('subject', { ascending: true });
-      } else if (sort === "subject_desc") {
-        query = query.order('subject', { ascending: false });
-      } else {
-        query = query.order('date', { ascending: false });
-      }
-
-      // Add pagination with smaller range for performance
-      query = query.range(skip, skip + limitNum - 1);
-
-      console.log(`🔍 Executing Supabase query...`);
-      const { data: emails, error, count } = await query;
-
-      if (error) {
-        console.error("❌ Supabase query error:", error);
-        throw error;
-      }
-
-      console.log(`✅ Found ${emails?.length || 0} emails out of ${count} total`);
-
-      const hasMore = skip + (emails?.length || 0) < (count || 0);
-
-      return {
-        success: true,
-        emails: emails || [],
-        total: count || 0,
-        hasMore,
-        page: pageNum,
-        limit: limitNum
-      };
-    })();
-
-    // Set a timeout for the query
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Query timeout')), 15000); // 15 second timeout
-    });
-
-    const response = await Promise.race([queryPromise, timeoutPromise]);
-
-    setToCache(cacheKey, response);
-    res.json(response);
-
-  } catch (error) {
-    console.error("❌ Emails fetch error:", error);
-
-    // Handle timeout specifically
-    if (error.message === 'Query timeout') {
-      return res.status(504).json({
-        success: false,
-        error: "Query timeout - please try again or use smaller search terms",
-        details: "The database query took too long to complete"
-      });
-    }
-
-    // Handle access denied
-    if (error.message === 'Access denied to this email account') {
-      return res.status(403).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch emails",
-      details: error.message
-    });
-  }
-});
-
 // Delete email with authorization
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
@@ -992,34 +1114,65 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
-// Health check
+// Enhanced Health check
 app.get("/api/health", async (req, res) => {
   try {
     let supabaseStatus = "not_configured";
+    let supabaseDetails = {};
     
     if (supabaseEnabled && supabase) {
       try {
-        const { error } = await supabase
+        const startTime = Date.now();
+        const { data, error } = await supabase
           .from('emails')
           .select('message_id')
           .limit(1);
-        supabaseStatus = error ? "disconnected" : "connected";
-      } catch {
+        const responseTime = Date.now() - startTime;
+
+        if (error) {
+          supabaseStatus = "disconnected";
+          supabaseDetails = {
+            error: error.message,
+            code: error.code
+          };
+        } else {
+          supabaseStatus = "connected";
+          supabaseDetails = {
+            responseTime: `${responseTime}ms`,
+            canQuery: true
+          };
+        }
+      } catch (error) {
         supabaseStatus = "error";
+        supabaseDetails = {
+          error: error.message
+        };
       }
     }
 
+    const healthStatus = supabaseStatus === "connected" ? "healthy" : "degraded";
+
     res.json({
-      status: "ok",
+      status: healthStatus,
+      timestamp: new Date().toISOString(),
       services: {
-        supabase: supabaseStatus
+        supabase: {
+          status: supabaseStatus,
+          enabled: supabaseEnabled,
+          ...supabaseDetails
+        },
+        email_configs: {
+          count: emailConfigManager.getAllConfigs().length,
+          loaded: emailConfigManager.getAllConfigs().length > 0
+        }
       },
-      timestamp: new Date().toISOString()
+      environment: process.env.NODE_ENV || 'development'
     });
   } catch (error) {
     res.status(500).json({
-      status: "error",
-      error: error.message
+      status: "unhealthy",
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -1041,8 +1194,21 @@ app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
   } else {
-    res.status(404).json({ error: 'API endpoint not found' });
+    res.status(404).json({ 
+      success: false,
+      error: 'API endpoint not found' 
+    });
   }
+});
+
+// Global error handler
+app.use((error, req, res, next) => {
+  console.error("🚨 Global error handler:", error);
+  res.status(500).json({
+    success: false,
+    error: "Internal server error",
+    ...(process.env.NODE_ENV !== 'production' && { details: error.message })
+  });
 });
 
 // Graceful shutdown
@@ -1063,7 +1229,8 @@ if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
-    console.log(`🔐 Authentication enabled`);
+    console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   });
 }
 
