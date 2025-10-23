@@ -97,19 +97,54 @@ function App() {
     }
   };
 
-  // ✅ ENHANCED: Load ALL emails from Supabase with better pagination
+  // ✅ NEW: Load ALL emails at once from Supabase (no pagination)
+  const loadAllEmails = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    try {
+      console.log(`📧 Loading ALL emails from Supabase at once...`);
+      
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}/api/all-emails?limit=10000&t=${Date.now()}`, {
+        headers: headers
+      });
+
+      const data = await handleApiError(response, 'Failed to load all emails');
+      console.log('📧 Backend response - Total emails:', data.total);
+
+      const processedEmails = data.emails.map(processEmailData);
+
+      // Set ALL emails at once
+      setEmails(processedEmails);
+      setAllEmailsLoaded(true);
+      setHasMoreEmails(false);
+      setCurrentPage(1);
+      setTotalEmails(data.total || processedEmails.length);
+      
+      console.log(`✅ Loaded ALL ${processedEmails.length} emails from Supabase`);
+
+    } catch (err) {
+      console.error('Load all error:', err);
+      setError(`Failed to load emails: ${err.message}`);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  // ✅ ENHANCED: Load emails with pagination (fallback)
   const loadEmails = async (page = 1, showLoading = true, append = false) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      console.log(`📧 Loading ALL emails from Supabase - Page ${page}`);
+      console.log(`📧 Loading emails from Supabase - Page ${page}`);
       
       const queries = [
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=${page}`,
-        `limit=100`,
+        `limit=1000`, // Increased limit for better performance
         `t=${Date.now()}`
       ].join('&');
 
@@ -224,7 +259,7 @@ function App() {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({
-          count: 50
+          count: 100 // Increased to fetch more emails at once
         })
       });
 
@@ -235,7 +270,7 @@ function App() {
         setLastFetchTime(new Date());
         
         // Reload ALL emails to include newly fetched ones
-        await loadEmails(1, false);
+        await loadAllEmails(false); // Use loadAllEmails instead of loadEmails
         await loadEmailStats(); // Refresh stats
         
         console.log(`✅ Fetched ${result.data.processed} new emails`);
@@ -444,10 +479,10 @@ function App() {
     </div>
   );
 
-  // ✅ ENHANCED: Load ALL emails on component mount
+  // ✅ ENHANCED: Load ALL emails on component mount using new endpoint
   useEffect(() => {
-    console.log('🎯 Component mounted, loading ALL emails...');
-    loadEmails(1, true);
+    console.log('🎯 Component mounted, loading ALL emails at once...');
+    loadAllEmails(true);
   }, []);
 
   // ✅ ENHANCED: Search handler - search ALL emails
@@ -457,7 +492,7 @@ function App() {
         searchAllEmails(search);
       } else {
         // When search is cleared, load ALL emails again
-        loadEmails(1, true);
+        loadAllEmails(true);
       }
     }, 500);
     
@@ -536,8 +571,27 @@ function App() {
                       <span className="stat-value">✅ All emails loaded</span>
                     </div>
                   )}
-            </div>
+                </div>
               )}
+
+              {/* Quick Actions */}
+              <div className="quick-actions-sidebar">
+                <h4>🚀 Quick Actions</h4>
+                <button 
+                  onClick={loadAllEmails}
+                  disabled={loading}
+                  className="sidebar-button"
+                >
+                  🔄 Refresh All
+                </button>
+                <button 
+                  onClick={fetchNewEmails}
+                  disabled={fetching}
+                  className="sidebar-button"
+                >
+                  📥 Fetch New
+                </button>
+              </div>
             </>
           )}
         </div>
@@ -569,7 +623,7 @@ function App() {
             </button>
 
             <button 
-              onClick={() => loadEmails(1, true)} 
+              onClick={loadAllEmails} 
               disabled={loading}
               className="refresh-button"
             >
@@ -614,6 +668,7 @@ function App() {
             <div className="loading-state">
               <div className="spinner"></div>
               <p>Loading ALL emails from database...</p>
+              <p className="loading-subtext">This may take a moment if you have many emails</p>
             </div>
           )}
           
@@ -636,26 +691,21 @@ function App() {
 
           {!loading && !searching && emails.length > 0 && (
             <div className="email-list">
+              <div className="email-list-header">
+                <h3>📨 All Emails ({emails.length.toLocaleString()})</h3>
+                {allEmailsLoaded && (
+                  <span className="all-loaded-badge">✅ All emails loaded</span>
+                )}
+              </div>
+              
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
               ))}
               
-              {/* Load More Button */}
-              {hasMoreEmails && !allEmailsLoaded && (
-                <div className="load-more-section">
-                  <button 
-                    onClick={loadMoreEmails} 
-                    disabled={loading}
-                    className="load-more-button"
-                  >
-                    {loading ? '🔄 Loading...' : `📥 Load More (${totalEmails - emails.length} remaining)`}
-                  </button>
-                </div>
-              )}
-
+              {/* Show message when all emails are loaded */}
               {allEmailsLoaded && emails.length > 0 && (
                 <div className="all-loaded-message">
-                  ✅ All {emails.length} emails loaded from database
+                  ✅ Successfully loaded all {emails.length.toLocaleString()} emails from database
                 </div>
               )}
             </div>

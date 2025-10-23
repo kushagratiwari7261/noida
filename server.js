@@ -444,15 +444,15 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
 // ========== ENHANCED API ENDPOINTS ==========
 
-// ✅ FIXED: Get ALL emails from Supabase with proper pagination
+// ✅ FIXED: Get ALL emails from Supabase with NO pagination limits
 app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
-    const { search = "", sort = "date_desc", page = 1, limit = 100 } = req.query;
+    const { search = "", sort = "date_desc", page = 1, limit = 5000 } = req.query;
     const userId = req.user.id;
     const userEmail = req.user.email;
     
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(500, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(10000, Math.max(1, parseInt(limit))); // Increased to 10,000 max
     const offset = (pageNum - 1) * limitNum;
 
     console.log(`📧 Fetching ALL emails from Supabase for ${userEmail}: page=${pageNum}, limit=${limitNum}, search="${search}", sort=${sort}`);
@@ -472,7 +472,10 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       });
     }
 
-    let query = supabase.from('emails').select('*', { count: 'exact' })
+    // Build query - NO DATE LIMITS, get ALL emails for this user
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
       .eq('user_id', userId); // Only get this user's emails
     
     // Add search if provided
@@ -486,11 +489,13 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       query = query.order('date', { ascending: true }); // Oldest first
     } else if (sort === "subject_asc") {
       query = query.order('subject', { ascending: true }); // A-Z
+    } else if (sort === "subject_desc") {
+      query = query.order('subject', { ascending: false }); // Z-A
     } else {
       query = query.order('date', { ascending: false }); // Newest first (default)
     }
     
-    // Add pagination - NO OTHER FILTERS
+    // Add pagination
     query = query.range(offset, offset + limitNum - 1);
     
     const { data: emails, error, count } = await query;
@@ -524,8 +529,11 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       hasAttachments: email.has_attachments,
       attachmentsCount: email.attachments_count,
       read: email.read || false,
+      starred: email.starred || false,
       user_id: email.user_id,
-      user_email: email.user_email
+      user_email: email.user_email,
+      created_at: email.created_at,
+      updated_at: email.updated_at
     }));
 
     const totalPages = Math.ceil((count || 0) / limitNum);
@@ -539,7 +547,8 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
       limit: limitNum,
       totalPages,
       userEmail: userEmail,
-      source: 'supabase'
+      source: 'supabase',
+      message: `Loaded ${enhancedEmails.length} emails (${count} total in database)`
     };
 
     setToCache(cacheKey, response);
@@ -551,6 +560,85 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
     console.error("❌ Emails fetch error:", error);
     res.status(500).json({ 
       error: "Failed to fetch emails",
+      details: error.message 
+    });
+  }
+});
+
+// ✅ NEW: Get ALL emails without pagination (for initial load)
+app.get("/api/all-emails", authenticateUser, async (req, res) => {
+  try {
+    const { limit = 10000 } = req.query;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`📧 Fetching ALL emails (no pagination) for ${userEmail}, limit: ${limit}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        error: "Supabase is not available" 
+      });
+    }
+
+    // Get ALL emails for this user, newest first
+    const { data: emails, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('user_id', userId)
+      .order('date', { ascending: false })
+      .limit(Math.min(10000, parseInt(limit)));
+
+    if (error) {
+      console.error("❌ Supabase query error:", error);
+      return res.status(500).json({ 
+        error: "Failed to fetch emails from Supabase",
+        details: error.message 
+      });
+    }
+
+    console.log(`📧 Supabase returned ${emails?.length || 0} emails for ${userEmail}`);
+
+    // Enhanced email data for frontend
+    const enhancedEmails = (emails || []).map(email => ({
+      id: email.message_id,
+      _id: email.message_id,
+      messageId: email.message_id,
+      subject: email.subject,
+      from: email.from_text,
+      from_text: email.from_text,
+      to: email.to_text,
+      to_text: email.to_text,
+      date: email.date,
+      text: email.text_content,
+      text_content: email.text_content,
+      html: email.html_content,
+      html_content: email.html_content,
+      attachments: email.attachments || [],
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
+      read: email.read || false,
+      starred: email.starred || false,
+      user_id: email.user_id,
+      user_email: email.user_email,
+      created_at: email.created_at,
+      updated_at: email.updated_at
+    }));
+
+    const response = {
+      emails: enhancedEmails,
+      total: count || 0,
+      userEmail: userEmail,
+      source: 'supabase_all',
+      message: `Loaded ALL ${enhancedEmails.length} emails from database`
+    };
+
+    console.log(`✅ Sending ALL ${enhancedEmails.length} emails from Supabase for ${userEmail}`);
+    res.json(response);
+
+  } catch (error) {
+    console.error("❌ All emails fetch error:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch all emails",
       details: error.message 
     });
   }
@@ -623,6 +711,7 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
       hasAttachments: email.has_attachments,
       attachmentsCount: email.attachments_count,
       read: email.read || false,
+      starred: email.starred || false,
       user_id: email.user_id,
       user_email: email.user_email
     }));
@@ -659,12 +748,12 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ SIMPLIFIED: Fetch new emails from IMAP and save to Supabase
+// ✅ ENHANCED: Fetch new emails from IMAP and save to Supabase
 app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   console.log(`🔍 DEBUG: /api/fetch-emails called for user: ${req.user.email}`);
   
   try {
-    const { count = 50 } = req.body;
+    const { count = 100 } = req.body; // Increased default to 100
     const userId = req.user.id;
     const userEmail = req.user.email;
     const password = emailConfigs[userEmail];
@@ -684,7 +773,7 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
         return res.status(500).json({ error: "Failed to open inbox: " + err.message });
       }
       
-      console.log(`📥 ${userEmail} - Total Messages: ${box.messages.total}`);
+      console.log(`📥 ${userEmail} - Total Messages in INBOX: ${box.messages.total}`);
       
       // Fetch latest emails (from the end)
       const totalMessages = box.messages.total;
@@ -1034,6 +1123,7 @@ app.get("/", (req, res) => {
       "GET /api/health": "Check service status",
       "GET /api/email-stats": "Get email statistics (authenticated)",
       "GET /api/emails": "Get ALL emails with pagination (authenticated)",
+      "GET /api/all-emails": "Get ALL emails without pagination (authenticated)",
       "POST /api/fetch-emails": "Fetch new emails from IMAP (authenticated)",
       "POST /api/search-emails": "Search ALL emails in Supabase (authenticated)",
       "DELETE /api/emails/:messageId": "Delete email and attachments (authenticated)",
