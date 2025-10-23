@@ -12,9 +12,32 @@ function App() {
   const [fetchStatus, setFetchStatus] = useState('idle');
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [error, setError] = useState(null);
-  const [deletingEmails, setDeletingEmails] = useState({}); // Track deleting state per email
+  const [deletingEmails, setDeletingEmails] = useState({});
+  const [emailAccounts, setEmailAccounts] = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState('all');
 
   const API_BASE = '';
+
+  // Load email accounts on component mount
+  useEffect(() => {
+    loadEmailAccounts();
+  }, []);
+
+  // Load available email accounts
+  const loadEmailAccounts = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/email-configs`);
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success && result.data) {
+          setEmailAccounts(result.data);
+          console.log('📧 Loaded email accounts:', result.data);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Failed to load email accounts:', err);
+    }
+  };
 
   // Enhanced attachment URL processor with better CSV handling
   const processAttachmentUrl = (attachment) => {
@@ -49,6 +72,7 @@ function App() {
       id: email._id || email.id || email.messageId || email.message_id,
       _id: email._id || email.id || email.messageId || email.message_id,
       messageId: email.messageId || email.message_id,
+      accountId: email.accountId || email.account_id,
       subject: email.subject || '(No Subject)',
       from: email.from || email.from_text,
       from_text: email.from_text || email.from,
@@ -125,13 +149,16 @@ function App() {
     return processedEmail;
   };
 
-  // NEW: Delete email function
+  // FIXED: Delete email function - using the correct endpoint
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
       setError('Cannot delete email: Missing identifier');
       return;
     }
+
+    // Use messageId for deletion as that's what the server expects
+    const deleteId = messageId || emailId;
 
     // Confirm deletion
     const confirmed = window.confirm(
@@ -146,21 +173,18 @@ function App() {
     setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
 
     try {
-      console.log('🗑️ Deleting email:', { emailId, messageId });
+      console.log('🗑️ Deleting email:', { emailId, messageId, deleteId });
 
-      const response = await fetch(`${API_BASE}/api/delete-email`, {
+      const response = await fetch(`${API_BASE}/api/emails/${deleteId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          emailId: emailId,
-          messageId: messageId
-        })
+        }
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       const result = await response.json();
@@ -186,13 +210,13 @@ function App() {
     }
   };
 
-  // Enhanced load emails function with proper sorting
+  // Enhanced load emails function with account filtering
   const loadEmails = async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '', 'Account:', selectedAccount);
 
       // Clear cache first if force refresh
       if (forceRefresh) {
@@ -208,8 +232,9 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=100`, // Increased limit to ensure we get latest emails
+        `limit=100`,
         `includeAttachments=true`,
+        `accountId=${selectedAccount}`,
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
 
@@ -275,7 +300,7 @@ function App() {
     }
   };
 
-  // Enhanced fetch function using the new unified endpoint with proper email ordering
+  // Enhanced fetch function with account support
   const fetchEmails = async (mode = 'latest') => {
     if (fetching) return;
 
@@ -284,7 +309,7 @@ function App() {
     setError(null);
 
     try {
-      console.log(`🔄 Starting ${mode} fetch...`);
+      console.log(`🔄 Starting ${mode} fetch...`, 'Account:', selectedAccount);
       
       const response = await fetch(`${API_BASE}/api/fetch-emails`, {
         method: 'POST',
@@ -293,7 +318,8 @@ function App() {
         },
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30 // Increased count for better sampling
+          count: mode === 'force' ? 20 : 30,
+          accountId: selectedAccount
         })
       });
 
@@ -402,7 +428,8 @@ function App() {
         },
         body: JSON.stringify({
           mode: 'fast',
-          count: 100 // Fetch more emails quickly
+          count: 100,
+          accountId: selectedAccount
         })
       });
 
@@ -826,64 +853,74 @@ function App() {
   };
 
   // Enhanced EmailCard component with delete button and better attachment layout
-  const EmailCard = ({ email, index }) => (
-    <div className="email-card">
-      {/* Delete Button - Top Right */}
-      <div className="email-actions-top">
-        <button 
-          className="delete-email-btn"
-          onClick={() => deleteEmail(email.id, email.messageId)}
-          disabled={deletingEmails[email.id]}
-          title="Permanently delete this email and all attachments"
-        >
-          {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
-        </button>
-      </div>
-
-      <div className="email-header">
-        <div className="email-subject">
-          <h3>{email.subject || '(No Subject)'}</h3>
-          {email.hasAttachments && (
-            <span className="attachment-badge">
-              📎 {email.attachmentsCount}
-            </span>
-          )}
+  const EmailCard = ({ email, index }) => {
+    // Get account info for display
+    const accountInfo = emailAccounts.find(acc => acc.id === email.accountId);
+    
+    return (
+      <div className="email-card">
+        {/* Delete Button - Top Right */}
+        <div className="email-actions-top">
+          <button 
+            className="delete-email-btn"
+            onClick={() => deleteEmail(email.id, email.messageId)}
+            disabled={deletingEmails[email.id]}
+            title="Permanently delete this email and all attachments"
+          >
+            {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
+          </button>
         </div>
-        <span className="email-date">
-          {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
-        </span>
-      </div>
 
-      <div className="email-from">
-        <strong>From:</strong> 
-        <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
-      </div>
-
-      <div
-        className="email-body"
-        dangerouslySetInnerHTML={{
-          __html:
-            email.html_content || email.html ||
-            email.text_content?.replace(/\n/g, '<br/>') ||
-            email.text?.replace(/\n/g, '<br/>') ||
-            '<p className="no-content">(No Content)</p>',
-        }}
-      />
-
-      {email.hasAttachments && (
-        <div className="attachments-section">
-          <div className="attachments-header">
-            <h4>📎 Attachments ({email.attachmentsCount})</h4>
-          </div>
-          <div className="attachments-grid">
-            {email.attachments.map((attachment, attachmentIndex) =>
-              renderAttachment(attachment, attachmentIndex, index)
+        <div className="email-header">
+          <div className="email-subject">
+            <h3>{email.subject || '(No Subject)'}</h3>
+            {email.hasAttachments && (
+              <span className="attachment-badge">
+                📎 {email.attachmentsCount}
+              </span>
+            )}
+            {accountInfo && (
+              <span className="account-badge" title={`From: ${accountInfo.email}`}>
+                👤 {accountInfo.name}
+              </span>
             )}
           </div>
+          <span className="email-date">
+            {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
+          </span>
         </div>
-      )}
-    </div>
-  );
+
+        <div className="email-from">
+          <strong>From:</strong> 
+          <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
+        </div>
+
+        <div
+          className="email-body"
+          dangerouslySetInnerHTML={{
+            __html:
+              email.html_content || email.html ||
+              email.text_content?.replace(/\n/g, '<br/>') ||
+              email.text?.replace(/\n/g, '<br/>') ||
+              '<p className="no-content">(No Content)</p>',
+          }}
+        />
+
+        {email.hasAttachments && (
+          <div className="attachments-section">
+            <div className="attachments-header">
+              <h4>📎 Attachments ({email.attachmentsCount})</h4>
+            </div>
+            <div className="attachments-grid">
+              {email.attachments.map((attachment, attachmentIndex) =>
+                renderAttachment(attachment, attachmentIndex, index)
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Load emails when component mounts
   useEffect(() => {
@@ -891,14 +928,14 @@ function App() {
     loadEmails(true, true);
   }, []);
 
-  // Load emails when search or sort changes
+  // Load emails when search, sort, or account changes
   useEffect(() => {
     const timer = setTimeout(() => {
       loadEmails(true, false);
     }, 500);
     
     return () => clearTimeout(timer);
-  }, [search, sort]);
+  }, [search, sort, selectedAccount]);
 
   // Reset fetch status after 5 seconds
   useEffect(() => {
@@ -942,7 +979,22 @@ function App() {
         <div className="sidebar-content">
           {!sidebarCollapsed && (
             <>
-              {/* Sidebar content can be added here if needed */}
+              {/* Account Selection */}
+              <div className="account-selector">
+                <label>Email Account:</label>
+                <select 
+                  value={selectedAccount} 
+                  onChange={e => setSelectedAccount(e.target.value)}
+                  className="account-select"
+                >
+                  <option value="all">All Accounts</option>
+                  {emailAccounts.map(account => (
+                    <option key={account.id} value={account.id}>
+                      {account.name} ({account.email})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </>
           )}
         </div>
@@ -956,6 +1008,11 @@ function App() {
             <h1>📧 Email Inbox</h1>
             <div className="header-stats">
               <span className="email-count-badge">📊 {emails.length} emails</span>
+              {selectedAccount !== 'all' && (
+                <span className="account-filter-badge">
+                  👤 {emailAccounts.find(acc => acc.id.toString() === selectedAccount)?.name || 'Account'}
+                </span>
+              )}
               {lastFetchTime && (
                 <span className="last-fetch">Last: {lastFetchTime.toLocaleTimeString()}</span>
               )}
@@ -1085,6 +1142,8 @@ function App() {
             <div className="debug-content">
               <p>Backend: {API_BASE}</p>
               <p>Current emails: {emails.length}</p>
+              <p>Selected Account: {selectedAccount}</p>
+              <p>Available Accounts: {emailAccounts.length}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>

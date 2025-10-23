@@ -838,7 +838,7 @@ app.post("/api/fetch-emails", async (req, res) => {
   }
 });
 
-// UPDATED: Get emails from Supabase with account filtering
+// ✅ FIXED: Get emails from Supabase - Handle includeAttachments parameter
 app.get("/api/emails", async (req, res) => {
   try {
     const { 
@@ -846,15 +846,21 @@ app.get("/api/emails", async (req, res) => {
       sort = "date_desc", 
       page = 1, 
       limit = 50,
-      accountId = "all" // "all" or specific account ID
+      accountId = "all", // "all" or specific account ID
+      includeAttachments = "true" // Handle the new parameter
     } = req.query;
+    
+    console.log(`📧 GET /api/emails called with params:`, {
+      search, sort, page, limit, accountId, includeAttachments
+    });
     
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
+    const includeAttachmentsBool = includeAttachments === "true";
 
     // Create cache key with account filter
-    const cacheKey = `emails:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
+    const cacheKey = `emails:${accountId}:${search}:${sort}:${pageNum}:${limitNum}:${includeAttachments}`;
     const cached = getFromCache(cacheKey);
     
     if (cached) {
@@ -863,6 +869,7 @@ app.get("/api/emails", async (req, res) => {
     }
 
     if (!supabaseEnabled || !supabase) {
+      console.error("❌ Supabase is not available");
       return res.status(500).json({ 
         error: "Supabase is not available" 
       });
@@ -872,7 +879,13 @@ app.get("/api/emails", async (req, res) => {
     
     // Add account filter if not "all"
     if (accountId !== "all") {
-      query = query.eq('account_id', parseInt(accountId));
+      const accountNum = parseInt(accountId);
+      if (isNaN(accountNum)) {
+        return res.status(400).json({
+          error: "Invalid accountId parameter"
+        });
+      }
+      query = query.eq('account_id', accountNum);
     }
     
     // Add search if provided
@@ -898,7 +911,7 @@ app.get("/api/emails", async (req, res) => {
     // Add pagination
     query = query.range(skip, skip + limitNum - 1);
     
-    const { data: emails, error, count } = await query;
+    const { data: emails, error, count: totalCount } = await query;
     
     if (error) {
       console.error("❌ Supabase query error:", error);
@@ -909,37 +922,65 @@ app.get("/api/emails", async (req, res) => {
     }
 
     // Enhanced email data for frontend
-    const enhancedEmails = emails.map(email => ({
-      id: email.message_id,
-      _id: email.message_id,
-      messageId: email.message_id,
-      accountId: email.account_id,
-      subject: email.subject,
-      from: email.from_text,
-      from_text: email.from_text,
-      to: email.to_text,
-      to_text: email.to_text,
-      date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
-      attachments: email.attachments || [],
-      hasAttachments: email.has_attachments,
-      attachmentsCount: email.attachments_count,
-      read: email.read || false
-    }));
+    const enhancedEmails = emails.map(email => {
+      // Ensure attachments is always an array
+      let attachments = [];
+      try {
+        if (email.attachments && Array.isArray(email.attachments)) {
+          attachments = email.attachments;
+        } else if (email.attachments && typeof email.attachments === 'string') {
+          // Try to parse if it's a string
+          attachments = JSON.parse(email.attachments);
+        }
+      } catch (parseError) {
+        console.warn(`⚠️ Could not parse attachments for email ${email.message_id}:`, parseError);
+        attachments = [];
+      }
 
-    const hasMore = skip + enhancedEmails.length < count;
+      const emailData = {
+        id: email.message_id,
+        _id: email.message_id,
+        messageId: email.message_id,
+        accountId: email.account_id,
+        subject: email.subject || '(No Subject)',
+        from: email.from_text || '',
+        from_text: email.from_text || '',
+        to: email.to_text || '',
+        to_text: email.to_text || '',
+        date: email.date || email.created_at,
+        text: email.text_content || '',
+        text_content: email.text_content || '',
+        html: email.html_content || '',
+        html_content: email.html_content || '',
+        hasAttachments: email.has_attachments || false,
+        attachmentsCount: email.attachments_count || 0,
+        read: email.read || false,
+        created_at: email.created_at,
+        updated_at: email.updated_at
+      };
+
+      // Only include attachments data if requested
+      if (includeAttachmentsBool) {
+        emailData.attachments = attachments;
+      } else {
+        emailData.attachments = [];
+      }
+
+      return emailData;
+    });
+
+    const hasMore = skip + enhancedEmails.length < totalCount;
 
     const response = {
+      success: true,
       emails: enhancedEmails,
-      total: count,
+      total: totalCount,
       hasMore,
       page: pageNum,
       limit: limitNum,
       source: 'supabase',
-      accountFilter: accountId
+      accountFilter: accountId,
+      includeAttachments: includeAttachmentsBool
     };
 
     setToCache(cacheKey, response);
@@ -950,6 +991,7 @@ app.get("/api/emails", async (req, res) => {
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
     res.status(500).json({ 
+      success: false,
       error: "Failed to fetch emails",
       details: error.message 
     });
