@@ -12,8 +12,6 @@ if (process.env.NODE_ENV !== 'production') {
   dotenv.config();
 }
 
-console.log("🔍 DEBUG: Environment check - EMAIL_USER:", !!process.env.EMAIL_USER, "EMAIL_PASS:", !!process.env.EMAIL_PASS, "SUPABASE_URL:", !!process.env.SUPABASE_URL, "SUPABASE_SERVICE_KEY:", !!process.env.SUPABASE_SERVICE_KEY);
-
 // ES module equivalents for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,9 +67,100 @@ const initializeSupabase = () => {
 // Initialize Supabase immediately
 initializeSupabase();
 
-// Enhanced IMAP Connection Manager
-class IMAPConnection {
+// Email Configuration Manager
+class EmailConfigManager {
   constructor() {
+    this.configs = new Map();
+    this.loadConfigs();
+  }
+
+  loadConfigs() {
+    try {
+      // Parse email configurations from environment
+      let configIndex = 1;
+      while (true) {
+        const configKey = `EMAIL_CONFIG_${configIndex}`;
+        const configValue = process.env[configKey];
+        
+        if (!configValue) break;
+
+        const [email, password] = configValue.split(':');
+        if (email && password) {
+          this.configs.set(configIndex, {
+            id: configIndex,
+            email: email.trim(),
+            password: password.trim(),
+            name: `Account ${configIndex}`
+          });
+          console.log(`✅ Loaded email config ${configIndex}: ${email}`);
+        }
+        configIndex++;
+      }
+
+      console.log(`📧 Loaded ${this.configs.size} email configurations`);
+    } catch (error) {
+      console.error("❌ Error loading email configs:", error);
+    }
+  }
+
+  getConfig(configId) {
+    return this.configs.get(parseInt(configId));
+  }
+
+  getAllConfigs() {
+    return Array.from(this.configs.values());
+  }
+
+  getConfigByEmail(email) {
+    for (const config of this.configs.values()) {
+      if (config.email === email) {
+        return config;
+      }
+    }
+    return null;
+  }
+}
+
+const emailConfigManager = new EmailConfigManager();
+
+// Enhanced IMAP Connection Manager with multi-account support
+class IMAPConnectionManager {
+  constructor() {
+    this.connections = new Map();
+  }
+
+  async getConnection(configId) {
+    if (this.connections.has(configId)) {
+      const connection = this.connections.get(configId);
+      if (await connection.checkConnection()) {
+        return connection;
+      }
+      // Remove stale connection
+      this.connections.delete(configId);
+    }
+
+    const config = emailConfigManager.getConfig(configId);
+    if (!config) {
+      throw new Error(`Email configuration ${configId} not found`);
+    }
+
+    const connection = new IMAPConnection(config);
+    await connection.connect();
+    this.connections.set(configId, connection);
+    return connection;
+  }
+
+  async disconnectAll() {
+    for (const [configId, connection] of this.connections) {
+      await connection.disconnect();
+    }
+    this.connections.clear();
+  }
+}
+
+class IMAPConnection {
+  constructor(config) {
+    this.config = config;
     this.connection = null;
     this.isConnected = false;
     this.isConnecting = false;
@@ -101,8 +190,8 @@ class IMAPConnection {
     
     return new Promise((resolve, reject) => {
       this.connection = new Imap({
-        user: process.env.EMAIL_USER,
-        password: process.env.EMAIL_PASS,
+        user: this.config.email,
+        password: this.config.password,
         host: "imap.gmail.com",
         port: 993,
         tls: true,
@@ -116,18 +205,18 @@ class IMAPConnection {
         this.isConnected = true;
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-        console.log("✅ IMAP connection ready");
+        console.log(`✅ IMAP connection ready for ${this.config.email}`);
         resolve(this.connection);
       });
 
       this.connection.once('error', (err) => {
         this.isConnecting = false;
         this.isConnected = false;
-        console.error("❌ IMAP connection error:", err.message);
+        console.error(`❌ IMAP connection error for ${this.config.email}:`, err.message);
         
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
-          console.log(`🔄 Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+          console.log(`🔄 Attempting reconnect ${this.reconnectAttempts}/${this.maxReconnectAttempts} for ${this.config.email}`);
           setTimeout(() => {
             this.connect().then(resolve).catch(reject);
           }, this.reconnectDelay);
@@ -138,12 +227,12 @@ class IMAPConnection {
 
       this.connection.once('end', () => {
         this.isConnected = false;
-        console.log("📤 IMAP connection closed");
+        console.log(`📤 IMAP connection closed for ${this.config.email}`);
       });
 
       this.connection.on('close', (hadError) => {
         this.isConnected = false;
-        console.log(`🔒 IMAP connection closed ${hadError ? 'with error' : 'normally'}`);
+        console.log(`🔒 IMAP connection closed ${hadError ? 'with error' : 'normally'} for ${this.config.email}`);
       });
 
       this.connection.connect();
@@ -172,22 +261,23 @@ class IMAPConnection {
       }
     });
   }
+
+  openInbox(cb) {
+    this.connection.openBox("INBOX", true, cb);
+  }
 }
 
-const imapManager = new IMAPConnection();
+const imapManager = new IMAPConnectionManager();
 
-function openInbox(cb) {
-  imapManager.connection.openBox("INBOX", true, cb);
-}
-
-// ✅ UPDATED: Check duplicate using Supabase only
-async function checkDuplicate(messageId) {
+// ✅ UPDATED: Check duplicate using Supabase with account info
+async function checkDuplicate(messageId, accountId) {
   try {
     if (supabaseEnabled && supabase) {
       const { data, error } = await supabase
         .from('emails')
         .select('message_id')
         .eq('message_id', messageId)
+        .eq('account_id', accountId)
         .single();
 
       if (!error && data) return true;
@@ -291,13 +381,13 @@ function isProblematicFile(filename, contentType) {
 }
 
 // FIXED: Enhanced attachment processing
-async function processAttachments(attachments) {
+async function processAttachments(attachments, accountId) {
   if (!attachments || attachments.length === 0) {
     console.log("📎 No attachments found");
     return [];
   }
 
-  console.log(`📎 Processing ${attachments.length} attachments`);
+  console.log(`📎 Processing ${attachments.length} attachments for account ${accountId}`);
   
   if (!supabaseEnabled || !supabase) {
     console.log("⚠️ Supabase not available, skipping attachments");
@@ -327,10 +417,10 @@ async function processAttachments(attachments) {
         .replace(/[^a-zA-Z0-9.\-_]/g, '_')
         .substring(0, 100);
 
-      // Create unique path with timestamp
+      // Create unique path with account ID and timestamp
       const timestamp = Date.now();
       const randomId = Math.random().toString(36).substring(2, 15);
-      const uniquePath = `emails/${timestamp}_${randomId}_${safeFilename}`;
+      const uniquePath = `emails/account_${accountId}/${timestamp}_${randomId}_${safeFilename}`;
 
       console.log(`   📤 Uploading: ${safeFilename} -> ${uniquePath}`);
 
@@ -372,7 +462,7 @@ async function processAttachments(attachments) {
         .getPublicUrl(data.path);
 
       const attachmentResult = {
-        id: `att_${timestamp}_${index}_${randomId}`,
+        id: `att_${accountId}_${timestamp}_${index}_${randomId}`,
         filename: safeFilename,
         originalFilename: originalFilename,
         name: originalFilename,
@@ -409,13 +499,13 @@ async function processAttachments(attachments) {
     .filter(result => result.status === 'fulfilled' && result.value !== null)
     .map(result => result.value);
 
-  console.log(`📎 Completed: ${successfulAttachments.length}/${attachments.length} successful`);
+  console.log(`📎 Completed: ${successfulAttachments.length}/${attachments.length} successful for account ${accountId}`);
   
   return successfulAttachments;
 }
 
-// FIXED: Enhanced email data structure
-function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
+// FIXED: Enhanced email data structure with account info
+function createEmailData(parsed, messageId, attachmentLinks, accountId, options = {}) {
   const attachments = attachmentLinks.map(att => ({
     id: att.id,
     filename: att.filename,
@@ -442,6 +532,7 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
   const emailData = {
     messageId: messageId,
+    accountId: accountId,
     subject: parsed.subject || '(No Subject)',
     from: parsed.from?.text || "",
     to: parsed.to?.text || "",
@@ -463,252 +554,279 @@ function createEmailData(parsed, messageId, attachmentLinks, options = {}) {
 
 // ========== API ENDPOINTS ==========
 
-// Test endpoint to verify attachment URLs
-app.get("/api/test-attachment-urls", async (req, res) => {
+// NEW: Get all email configurations
+app.get("/api/email-configs", (req, res) => {
   try {
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        message: "Supabase is not available"
-      });
-    }
-
-    // Test file content
-    const testContent = "This is a test file for URL verification";
-    const testFilename = `test-verification-${Date.now()}.txt`;
-    const testPath = `test-emails/${testFilename}`;
-
-    // Upload test file
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from("attachments")
-      .upload(testPath, testContent, {
-        contentType: 'text/plain'
-      });
-
-    if (uploadError) {
-      return res.status(500).json({ 
-        error: "Upload failed", 
-        details: uploadError.message
-      });
-    }
-
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from("attachments")
-      .getPublicUrl(uploadData.path);
-
-    // Clean up test file
-    await supabase.storage.from("attachments").remove([testPath]);
-
+    const configs = emailConfigManager.getAllConfigs().map(config => ({
+      id: config.id,
+      email: config.email,
+      name: config.name
+    }));
+    
     res.json({
       success: true,
-      test: {
-        filename: testFilename,
-        path: uploadData.path,
-        publicUrl: urlData.publicUrl,
-        bucket: 'attachments'
-      }
+      data: configs
     });
-
   } catch (error) {
-    console.error("❌ Attachment URL test failed:", error);
+    console.error("❌ Get email configs error:", error);
     res.status(500).json({ 
-      error: error.message
+      success: false,
+      error: error.message 
     });
   }
 });
 
-// Debug environment
-app.get("/api/debug-env", (req, res) => {
-  res.json({
-    environment: {
-      NODE_ENV: process.env.NODE_ENV,
-      SUPABASE_URL: process.env.SUPABASE_URL ? "Set" : "Not set",
-      SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? `Set (length: ${process.env.SUPABASE_SERVICE_KEY.length})` : "Not set",
-      EMAIL_USER: process.env.EMAIL_USER ? "Set" : "Not set"
-    },
-    supabase: {
-      enabled: supabaseEnabled,
-      initialized: !!supabase
-    }
-  });
-});
-
-// FIXED: Fetch emails - Save to Supabase only
+// UPDATED: Fetch emails from specific account or all accounts
 app.post("/api/fetch-emails", async (req, res) => {
   console.log("🔍 DEBUG: /api/fetch-emails called");
   try {
-    const { mode = "latest", count = 20 } = req.body;
+    const { 
+      mode = "latest", 
+      count = 20, 
+      accountId = "all" // "all" or specific account ID
+    } = req.body;
     
-    await imapManager.connect();
+    let accountsToProcess = [];
     
-    if (imapManager.connection.state !== 'authenticated') {
-      return res.status(400).json({ error: "IMAP not connected" });
+    if (accountId === "all") {
+      // Process all accounts
+      accountsToProcess = emailConfigManager.getAllConfigs();
+      console.log(`🔄 Processing ALL accounts: ${accountsToProcess.length} accounts`);
+    } else {
+      // Process specific account
+      const config = emailConfigManager.getConfig(accountId);
+      if (!config) {
+        return res.status(400).json({ 
+          success: false,
+          error: `Account ${accountId} not found` 
+        });
+      }
+      accountsToProcess = [config];
+      console.log(`🔄 Processing specific account: ${config.email}`);
     }
 
-    console.log(`🔄 Fetching emails in ${mode} mode, count: ${count}`);
+    const allResults = [];
     
-    openInbox(async function (err, box) {
-      if (err) {
-        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
-      }
+    for (const account of accountsToProcess) {
+      console.log(`📧 Processing account ${account.id}: ${account.email}`);
       
-      console.log(`📥 Total Messages: ${box.messages.total}`);
-      
-      // Calculate fetch range
-      const totalMessages = box.messages.total;
-      const fetchCount = Math.min(count, totalMessages);
-      const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-      const fetchEnd = totalMessages;
-      const fetchRange = `${fetchStart}:${fetchEnd}`;
-
-      console.log(`📨 Fetching range: ${fetchRange}`);
-
-      const f = imapManager.connection.seq.fetch(fetchRange, { 
-        bodies: "",
-        struct: true 
-      });
-
-      let processedCount = 0;
-      let duplicateCount = 0;
-      let newEmails = [];
-      let processingDetails = [];
-
-      f.on("message", function (msg, seqno) {
-        console.log(`📨 Processing message #${seqno}`);
-        let buffer = "";
-
-        msg.on("body", function (stream) {
-          stream.on("data", function (chunk) {
-            buffer += chunk.toString("utf8");
-          });
-        });
-
-        msg.once("end", async function () {
-          try {
-            const parsed = await simpleParser(buffer);
-
-            // Generate messageId if missing
-            const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
-
-            // Check for duplicates (skip for force mode)
-            if (mode !== "force") {
-              const isDuplicate = await checkDuplicate(messageId);
-              if (isDuplicate) {
-                console.log(`   ⚠️ Duplicate skipped: ${parsed.subject}`);
-                duplicateCount++;
-                processingDetails.push({
-                  messageId: messageId.substring(0, 50) + '...',
-                  subject: parsed.subject || '(No Subject)',
-                  status: 'duplicate'
-                });
-                return;
-              }
-            }
-
-            // Process attachments
-            console.log(`   📎 Processing attachments for: ${parsed.subject}`);
-            const attachmentLinks = await processAttachments(parsed.attachments || []);
-
-            // Create email data with enhanced structure
-            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
-              fetchMode: mode,
-              sequenceNumber: seqno
-            });
-
-            newEmails.push(emailData);
-            processedCount++;
-            console.log(`   ✅ New email: ${parsed.subject} (${attachmentLinks.length} attachments)`);
-            
-            processingDetails.push({
-              messageId: messageId.substring(0, 50) + '...',
-              subject: parsed.subject || '(No Subject)',
-              status: 'new',
-              attachments: attachmentLinks.length
-            });
-
-          } catch (parseErr) {
-            console.error("   ❌ Parse error:", parseErr.message);
-          }
-        });
-      });
-
-      f.once("error", function (err) {
-        console.error("❌ Fetch error:", err);
-        res.status(500).json({ 
-          success: false,
-          error: "Fetch error: " + err.message 
-        });
-      });
-
-      f.once("end", async function () {
-        console.log(`🔄 Processing ${newEmails.length} new emails...`);
+      try {
+        const connection = await imapManager.getConnection(account.id);
         
-        try {
-          // Save to Supabase ONLY
-          if (newEmails.length > 0) {
-            console.log(`💾 Saving ${newEmails.length} emails to Supabase...`);
-            
-            const saveOps = newEmails.map(async (email) => {
-              try {
-                if (supabaseEnabled && supabase) {
-                  const supabaseData = {
-                    message_id: email.messageId,
-                    subject: email.subject,
-                    from_text: email.from,
-                    to_text: email.to,
-                    date: email.date,
-                    text_content: email.text,
-                    html_content: email.html,
-                    attachments: email.attachments,
-                    has_attachments: email.hasAttachments,
-                    attachments_count: email.attachmentsCount,
-                    created_at: new Date(),
-                    updated_at: new Date()
-                  };
+        if (connection.connection.state !== 'authenticated') {
+          console.error(`❌ IMAP not connected for account ${account.id}`);
+          continue;
+        }
 
-                  const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
-                  if (supabaseError) {
-                    console.error("   ❌ Supabase save error:", supabaseError);
-                  } else {
-                    console.log(`   ✅ Saved to Supabase: ${email.subject}`);
-                  }
-                }
-                
-                return true;
-              } catch (saveErr) {
-                console.error(`   ❌ Error saving email:`, saveErr);
-                return false;
-              }
+        const accountResult = await new Promise((resolve) => {
+          connection.openInbox(async function (err, box) {
+            if (err) {
+              console.error(`❌ Failed to open inbox for ${account.email}:`, err.message);
+              resolve({
+                accountId: account.id,
+                accountEmail: account.email,
+                success: false,
+                error: "Failed to open inbox: " + err.message
+              });
+              return;
+            }
+            
+            console.log(`📥 Total Messages for ${account.email}: ${box.messages.total}`);
+            
+            // Calculate fetch range
+            const totalMessages = box.messages.total;
+            const fetchCount = Math.min(count, totalMessages);
+            const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
+            const fetchEnd = totalMessages;
+            const fetchRange = `${fetchStart}:${fetchEnd}`;
+
+            console.log(`📨 Fetching range for ${account.email}: ${fetchRange}`);
+
+            const f = connection.connection.seq.fetch(fetchRange, { 
+              bodies: "",
+              struct: true 
             });
 
-            await Promise.allSettled(saveOps);
-            clearCache();
-            console.log(`🗑️ Cleared cache`);
-          }
+            let processedCount = 0;
+            let duplicateCount = 0;
+            let newEmails = [];
+            let processingDetails = [];
 
-          console.log(`✅ Fetch completed: ${processedCount} new, ${duplicateCount} duplicates`);
-          
-          res.json({
-            success: true,
-            message: `Processed ${processedCount} new emails`,
-            data: {
-              processed: processedCount,
-              duplicates: duplicateCount,
-              total: processedCount + duplicateCount,
-              emails: newEmails,
-              details: processingDetails
-            }
-          });
+            f.on("message", function (msg, seqno) {
+              console.log(`📨 Processing message #${seqno} for ${account.email}`);
+              let buffer = "";
 
-        } catch (batchError) {
-          console.error("❌ Batch processing error:", batchError);
-          res.status(500).json({ 
-            success: false,
-            error: "Batch processing failed: " + batchError.message 
+              msg.on("body", function (stream) {
+                stream.on("data", function (chunk) {
+                  buffer += chunk.toString("utf8");
+                });
+              });
+
+              msg.once("end", async function () {
+                try {
+                  const parsed = await simpleParser(buffer);
+
+                  // Generate messageId if missing
+                  const messageId = parsed.messageId || `email-${account.id}-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
+
+                  // Check for duplicates (skip for force mode)
+                  if (mode !== "force") {
+                    const isDuplicate = await checkDuplicate(messageId, account.id);
+                    if (isDuplicate) {
+                      console.log(`   ⚠️ Duplicate skipped: ${parsed.subject}`);
+                      duplicateCount++;
+                      processingDetails.push({
+                        messageId: messageId.substring(0, 50) + '...',
+                        subject: parsed.subject || '(No Subject)',
+                        status: 'duplicate'
+                      });
+                      return;
+                    }
+                  }
+
+                  // Process attachments
+                  console.log(`   📎 Processing attachments for: ${parsed.subject}`);
+                  const attachmentLinks = await processAttachments(parsed.attachments || [], account.id);
+
+                  // Create email data with enhanced structure
+                  const emailData = createEmailData(parsed, messageId, attachmentLinks, account.id, {
+                    fetchMode: mode,
+                    sequenceNumber: seqno
+                  });
+
+                  newEmails.push(emailData);
+                  processedCount++;
+                  console.log(`   ✅ New email: ${parsed.subject} (${attachmentLinks.length} attachments)`);
+                  
+                  processingDetails.push({
+                    messageId: messageId.substring(0, 50) + '...',
+                    subject: parsed.subject || '(No Subject)',
+                    status: 'new',
+                    attachments: attachmentLinks.length
+                  });
+
+                } catch (parseErr) {
+                  console.error("   ❌ Parse error:", parseErr.message);
+                }
+              });
+            });
+
+            f.once("error", function (err) {
+              console.error(`❌ Fetch error for ${account.email}:`, err);
+              resolve({
+                accountId: account.id,
+                accountEmail: account.email,
+                success: false,
+                error: "Fetch error: " + err.message
+              });
+            });
+
+            f.once("end", async function () {
+              console.log(`🔄 Processing ${newEmails.length} new emails for ${account.email}...`);
+              
+              try {
+                // Save to Supabase ONLY
+                if (newEmails.length > 0) {
+                  console.log(`💾 Saving ${newEmails.length} emails to Supabase for ${account.email}...`);
+                  
+                  const saveOps = newEmails.map(async (email) => {
+                    try {
+                      if (supabaseEnabled && supabase) {
+                        const supabaseData = {
+                          message_id: email.messageId,
+                          account_id: email.accountId,
+                          subject: email.subject,
+                          from_text: email.from,
+                          to_text: email.to,
+                          date: email.date,
+                          text_content: email.text,
+                          html_content: email.html,
+                          attachments: email.attachments,
+                          has_attachments: email.hasAttachments,
+                          attachments_count: email.attachmentsCount,
+                          created_at: new Date(),
+                          updated_at: new Date()
+                        };
+
+                        const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
+                        if (supabaseError) {
+                          console.error("   ❌ Supabase save error:", supabaseError);
+                        } else {
+                          console.log(`   ✅ Saved to Supabase: ${email.subject}`);
+                        }
+                      }
+                      
+                      return true;
+                    } catch (saveErr) {
+                      console.error(`   ❌ Error saving email:`, saveErr);
+                      return false;
+                    }
+                  });
+
+                  await Promise.allSettled(saveOps);
+                  clearCache();
+                  console.log(`🗑️ Cleared cache for ${account.email}`);
+                }
+
+                console.log(`✅ Fetch completed for ${account.email}: ${processedCount} new, ${duplicateCount} duplicates`);
+                
+                resolve({
+                  accountId: account.id,
+                  accountEmail: account.email,
+                  success: true,
+                  message: `Processed ${processedCount} new emails`,
+                  data: {
+                    processed: processedCount,
+                    duplicates: duplicateCount,
+                    total: processedCount + duplicateCount,
+                    emails: newEmails,
+                    details: processingDetails
+                  }
+                });
+
+              } catch (batchError) {
+                console.error(`❌ Batch processing error for ${account.email}:`, batchError);
+                resolve({
+                  accountId: account.id,
+                  accountEmail: account.email,
+                  success: false,
+                  error: "Batch processing failed: " + batchError.message
+                });
+              }
+            });
           });
-        }
-      });
+        });
+
+        allResults.push(accountResult);
+
+      } catch (accountError) {
+        console.error(`❌ Account processing error for ${account.email}:`, accountError);
+        allResults.push({
+          accountId: account.id,
+          accountEmail: account.email,
+          success: false,
+          error: accountError.message
+        });
+      }
+    }
+
+    // Summarize results
+    const successfulAccounts = allResults.filter(r => r.success);
+    const failedAccounts = allResults.filter(r => !r.success);
+    const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.processed || 0), 0);
+    const totalDuplicates = successfulAccounts.reduce((sum, r) => sum + (r.data?.duplicates || 0), 0);
+
+    res.json({
+      success: true,
+      message: `Processed ${accountsToProcess.length} accounts`,
+      summary: {
+        totalAccounts: accountsToProcess.length,
+        successfulAccounts: successfulAccounts.length,
+        failedAccounts: failedAccounts.length,
+        totalProcessed,
+        totalDuplicates
+      },
+      accounts: allResults
     });
 
   } catch (error) {
@@ -720,168 +838,23 @@ app.post("/api/fetch-emails", async (req, res) => {
   }
 });
 
-// Sync deletions between IMAP and Supabase
-app.post("/api/sync-deletions", async (req, res) => {
-  try {
-    await imapManager.connect();
-    
-    openInbox(async function (err, box) {
-      if (err) {
-        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
-      }
-
-      // Get all message IDs from IMAP
-      const f = imapManager.connection.seq.fetch('1:*', { 
-        bodies: ['HEADER.FIELDS (MESSAGE-ID)'],
-        struct: true 
-      });
-
-      const imapMessageIds = new Set();
-      
-      f.on("message", function (msg) {
-        msg.on("body", function (stream) {
-          let buffer = "";
-          stream.on("data", function (chunk) {
-            buffer += chunk.toString("utf8");
-          });
-          stream.on("end", function () {
-            // Extract Message-ID from headers
-            const messageIdMatch = buffer.match(/Message-ID:\s*<([^>]+)>/i);
-            if (messageIdMatch) {
-              imapMessageIds.add(messageIdMatch[1]);
-            }
-          });
-        });
-      });
-
-      f.once("end", async function () {
-        try {
-          // Get all message IDs from Supabase
-          const { data: dbEmails, error } = await supabase
-            .from('emails')
-            .select('message_id');
-          
-          if (error) throw error;
-
-          const dbMessageIds = new Set(dbEmails.map(email => email.message_id));
-          
-          // Find emails in DB but not in IMAP (deleted)
-          const deletedMessageIds = [...dbMessageIds].filter(id => !imapMessageIds.has(id));
-          
-          // Delete from Supabase
-          if (deletedMessageIds.length > 0) {
-            const { error: deleteError } = await supabase
-              .from('emails')
-              .delete()
-              .in('message_id', deletedMessageIds);
-              
-            if (deleteError) throw deleteError;
-            
-            console.log(`🗑️ Deleted ${deletedMessageIds.length} emails from database`);
-            clearCache();
-          }
-          
-          res.json({
-            success: true,
-            deleted: deletedMessageIds.length,
-            deletedIds: deletedMessageIds
-          });
-          
-        } catch (syncError) {
-          console.error("❌ Sync error:", syncError);
-          res.status(500).json({ error: syncError.message });
-        }
-      });
-    });
-  } catch (error) {
-    console.error("❌ Sync deletions error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// NEW: Fast fetch from Supabase only (no IMAP)
-app.post("/api/fast-fetch", async (req, res) => {
-  try {
-    const { mode = "latest", count = 50 } = req.body;
-    
-    console.log(`🚀 Fast fetching ${count} emails from Supabase in ${mode} mode`);
-    
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({ 
-        success: false,
-        error: "Supabase is not available" 
-      });
-    }
-
-    let query = supabase
-      .from('emails')
-      .select('*')
-      .order('date', { ascending: false })
-      .limit(count);
-
-    const { data: emails, error } = await query;
-
-    if (error) {
-      console.error("❌ Supabase query error:", error);
-      return res.status(500).json({ 
-        success: false,
-        error: "Failed to fetch emails from Supabase",
-        details: error.message 
-      });
-    }
-
-    // Enhanced email data for frontend
-    const enhancedEmails = emails.map(email => ({
-      id: email.message_id,
-      _id: email.message_id,
-      messageId: email.message_id,
-      subject: email.subject,
-      from: email.from_text,
-      from_text: email.from_text,
-      to: email.to_text,
-      to_text: email.to_text,
-      date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
-      attachments: email.attachments || [],
-      hasAttachments: email.has_attachments,
-      attachmentsCount: email.attachments_count,
-      read: email.read || false
-    }));
-
-    console.log(`✅ Fast fetch completed: ${enhancedEmails.length} emails from Supabase`);
-
-    res.json({
-      success: true,
-      message: `Fetched ${enhancedEmails.length} emails from database`,
-      data: {
-        emails: enhancedEmails,
-        total: enhancedEmails.length,
-        source: 'supabase_fast'
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Fast fetch error:", error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
-  }
-});
-
-// ✅ UPDATED: Get emails from Supabase ONLY
+// UPDATED: Get emails from Supabase with account filtering
 app.get("/api/emails", async (req, res) => {
   try {
-    const { search = "", sort = "date_desc", page = 1, limit = 50 } = req.query;
+    const { 
+      search = "", 
+      sort = "date_desc", 
+      page = 1, 
+      limit = 50,
+      accountId = "all" // "all" or specific account ID
+    } = req.query;
+    
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    // Create cache key
-    const cacheKey = `emails:${search}:${sort}:${pageNum}:${limitNum}`;
+    // Create cache key with account filter
+    const cacheKey = `emails:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
     const cached = getFromCache(cacheKey);
     
     if (cached) {
@@ -896,6 +869,11 @@ app.get("/api/emails", async (req, res) => {
     }
 
     let query = supabase.from('emails').select('*', { count: 'exact' });
+    
+    // Add account filter if not "all"
+    if (accountId !== "all") {
+      query = query.eq('account_id', parseInt(accountId));
+    }
     
     // Add search if provided
     if (search && search.trim().length > 0) {
@@ -935,6 +913,7 @@ app.get("/api/emails", async (req, res) => {
       id: email.message_id,
       _id: email.message_id,
       messageId: email.message_id,
+      accountId: email.account_id,
       subject: email.subject,
       from: email.from_text,
       from_text: email.from_text,
@@ -959,12 +938,13 @@ app.get("/api/emails", async (req, res) => {
       hasMore,
       page: pageNum,
       limit: limitNum,
-      source: 'supabase'
+      source: 'supabase',
+      accountFilter: accountId
     };
 
     setToCache(cacheKey, response);
 
-    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase`);
+    console.log(`✅ Sending ${enhancedEmails.length} emails from Supabase (account: ${accountId})`);
     res.json(response);
 
   } catch (error) {
@@ -972,6 +952,62 @@ app.get("/api/emails", async (req, res) => {
     res.status(500).json({ 
       error: "Failed to fetch emails",
       details: error.message 
+    });
+  }
+});
+
+// NEW: Get emails grouped by account
+app.get("/api/emails-by-account", async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({ 
+        error: "Supabase is not available" 
+      });
+    }
+
+    // Get latest emails from each account
+    const accounts = emailConfigManager.getAllConfigs();
+    const accountEmails = {};
+
+    for (const account of accounts) {
+      const { data: emails, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('account_id', account.id)
+        .order('date', { ascending: false })
+        .limit(parseInt(limit));
+
+      if (!error && emails) {
+        accountEmails[account.id] = {
+          account: {
+            id: account.id,
+            email: account.email,
+            name: account.name
+          },
+          emails: emails.map(email => ({
+            id: email.message_id,
+            subject: email.subject,
+            from: email.from_text,
+            date: email.date,
+            hasAttachments: email.has_attachments,
+            attachmentsCount: email.attachments_count
+          }))
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      data: accountEmails
+    });
+
+  } catch (error) {
+    console.error("❌ Emails by account error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
     });
   }
 });
@@ -996,12 +1032,17 @@ app.get("/api/health", async (req, res) => {
       }
     }
 
-    let imapStatus = "disconnected";
-    try {
-      const imapAlive = await imapManager.checkConnection();
-      imapStatus = imapAlive ? "connected" : "disconnected";
-    } catch (imapErr) {
-      imapStatus = "error";
+    const accounts = emailConfigManager.getAllConfigs();
+    const accountStatus = {};
+
+    for (const account of accounts) {
+      try {
+        const connection = await imapManager.getConnection(account.id);
+        const isConnected = await connection.checkConnection();
+        accountStatus[account.id] = isConnected ? "connected" : "disconnected";
+      } catch (error) {
+        accountStatus[account.id] = "error";
+      }
     }
 
     res.json({
@@ -1009,8 +1050,9 @@ app.get("/api/health", async (req, res) => {
       services: {
         supabase: supabaseStatus,
         storage: storageStatus,
-        imap: imapStatus
+        accounts: accountStatus
       },
+      accounts: accounts.length,
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development'
     });
@@ -1032,135 +1074,22 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// ✅ FIXED: Delete email with attachments - Vercel compatible
-app.delete("/api/emails/:messageId", async (req, res) => {
-  try {
-    const { messageId } = req.params;
-    console.log(`🗑️ DELETE endpoint called for messageId: ${messageId}`);
-
-    if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available");
-      return res.status(500).json({
-        success: false,
-        error: "Supabase is not available"
-      });
-    }
-
-    // Step 1: Get the email first to find attachment paths
-    console.log(`🔍 Looking up email in database...`);
-    const { data: email, error: fetchError } = await supabase
-      .from('emails')
-      .select('*')
-      .eq('message_id', messageId)
-      .single();
-
-    if (fetchError || !email) {
-      console.error("❌ Email not found in database:", fetchError?.message || "No email data");
-      return res.status(404).json({
-        success: false,
-        error: "Email not found",
-        details: fetchError?.message
-      });
-    }
-
-    console.log(`✅ Email found: ${email.subject}`);
-
-    // Step 2: Delete attachments from storage if they exist
-    let attachmentDeleteResult = { success: true, deleted: 0, errors: [] };
-    
-    if (email.attachments && Array.isArray(email.attachments) && email.attachments.length > 0) {
-      console.log(`📎 Found ${email.attachments.length} attachments to delete...`);
-      
-      // Extract valid paths safely
-      const attachmentPaths = email.attachments
-        .filter(att => att && typeof att === 'object' && att.path && typeof att.path === 'string')
-        .map(att => att.path);
-
-      console.log(`📎 Valid attachment paths to delete: ${attachmentPaths.length}`);
-
-      if (attachmentPaths.length > 0) {
-        try {
-          console.log(`🗑️ Deleting attachments from storage...`);
-          const { data: deleteData, error: storageError } = await supabase.storage
-            .from("attachments")
-            .remove(attachmentPaths);
-
-          if (storageError) {
-            console.error("❌ Attachment deletion error:", storageError);
-            attachmentDeleteResult.success = false;
-            attachmentDeleteResult.errors.push(`Storage error: ${storageError.message}`);
-          } else {
-            attachmentDeleteResult.deleted = deleteData?.length || 0;
-            console.log(`✅ Deleted ${attachmentDeleteResult.deleted} attachments from storage`);
-          }
-        } catch (storageErr) {
-          console.error("❌ Storage deletion exception:", storageErr);
-          attachmentDeleteResult.success = false;
-          attachmentDeleteResult.errors.push(`Exception: ${storageErr.message}`);
-        }
-      } else {
-        console.log("📎 No valid attachment paths found to delete");
-      }
-    } else {
-      console.log("📎 No attachments found for this email");
-    }
-
-    // Step 3: Delete the email record from database
-    console.log(`🗑️ Deleting email record from database...`);
-    const { error: deleteError } = await supabase
-      .from('emails')
-      .delete()
-      .eq('message_id', messageId);
-
-    if (deleteError) {
-      console.error("❌ Database deletion error:", deleteError);
-      return res.status(500).json({
-        success: false,
-        error: "Failed to delete email from database",
-        details: deleteError.message,
-        attachments: attachmentDeleteResult
-      });
-    }
-
-    console.log(`✅ Email record deleted from database`);
-
-    // Step 4: Clear cache
-    clearCache();
-    console.log("🗑️ Cleared cache after deletion");
-
-    // Return success even if some attachments failed to delete
-    res.json({
-      success: true,
-      message: "Email deleted successfully",
-      data: {
-        messageId: messageId,
-        subject: email.subject,
-        attachments: attachmentDeleteResult,
-        deletedAt: new Date().toISOString()
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Delete email error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
 // Root endpoint
 app.get("/", (req, res) => {
+  const accounts = emailConfigManager.getAllConfigs();
+  
   res.json({
-    message: "Email IMAP Backend Server - Supabase Only",
-    version: "3.0.0",
+    message: "Email IMAP Backend Server - Multi-Account Support",
+    version: "4.0.0",
     environment: process.env.NODE_ENV || 'development',
     supabase: supabaseEnabled ? "enabled" : "disabled",
+    accounts: accounts.length,
     endpoints: {
       "GET /api/health": "Check service status",
-      "GET /api/emails": "Get emails with attachments",
-      "POST /api/fetch-emails": "Fetch new emails",
+      "GET /api/email-configs": "Get all email configurations",
+      "GET /api/emails": "Get emails with account filtering",
+      "GET /api/emails-by-account": "Get emails grouped by account",
+      "POST /api/fetch-emails": "Fetch new emails from specific or all accounts",
       "DELETE /api/emails/:messageId": "Delete email and attachments",
       "GET /api/test-attachment-urls": "Test attachment URL generation",
       "GET /api/debug-env": "Debug environment variables",
@@ -1194,6 +1123,7 @@ async function initializeApp() {
   
   console.log("✅ Application initialized");
   console.log(`📋 Supabase: ${supabaseEnabled ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`📧 Email Accounts: ${emailConfigManager.getAllConfigs().length}`);
 }
 
 // Call initialization
