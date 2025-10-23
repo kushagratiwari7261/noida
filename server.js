@@ -5,6 +5,7 @@ import { simpleParser } from "mailparser";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
+import handler from "./api/fetch-latest";
 
 // Load environment variables
 if (process.env.NODE_ENV !== 'production') {
@@ -1017,4 +1018,4 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-export default app;
+export default handler;
