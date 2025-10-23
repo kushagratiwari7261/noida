@@ -46,17 +46,25 @@ function App() {
   };
 
   // ✅ FIXED: Enhanced API error handler with better status handling
-  const handleApiError = async (response, defaultMessage = 'API request failed') => {
-    console.log(`🔍 API Response Status: ${response.status} ${response.statusText}`);
+  const handleApiError = async (response, endpoint, defaultMessage = 'API request failed') => {
+    console.log(`🔍 API Response Status for ${endpoint}: ${response.status} ${response.statusText}`);
     
     if (response.status === 401) {
-      setError('Authentication expired. Please log in again.');
-      throw new Error('Authentication expired');
+      const errorMsg = 'Authentication expired. Please log in again.';
+      setError(errorMsg);
+      throw new Error(errorMsg);
     }
     
     if (response.status === 404) {
-      setError('API endpoint not found. Please check the server.');
-      throw new Error('API endpoint not found');
+      const errorMsg = `API endpoint ${endpoint} not found. Please check the server.`;
+      setError(errorMsg);
+      throw new Error(errorMsg);
+    }
+    
+    if (response.status === 500) {
+      const errorMsg = `Server error for ${endpoint}. Please try again later.`;
+      setError(errorMsg);
+      throw new Error(errorMsg);
     }
     
     if (!response.ok) {
@@ -67,7 +75,7 @@ function App() {
         const errorData = await response.json().catch(() => null);
         
         if (errorData) {
-          errorText = errorData.error || errorData.message || defaultMessage;
+          errorText = errorData.error || errorData.message || errorData.details || defaultMessage;
         } else {
           // If JSON parsing fails, try text
           const text = await response.text().catch(() => defaultMessage);
@@ -85,17 +93,28 @@ function App() {
     return response.json();
   };
 
-  // ✅ FIXED: Safe API call wrapper
+  // ✅ FIXED: Safe API call wrapper with better error handling
   const makeApiCall = async (endpoint, options = {}) => {
     try {
       const headers = await getAuthHeaders();
+      console.log(`🔍 Making API call to: ${endpoint}`);
+      
       const response = await fetch(`${API_BASE}${endpoint}`, {
         headers,
         ...options
       });
-      return await handleApiError(response, `Failed to call ${endpoint}`);
+      
+      return await handleApiError(response, endpoint, `Failed to call ${endpoint}`);
     } catch (error) {
       console.error(`❌ API call failed for ${endpoint}:`, error);
+      
+      // Don't set error for 404s on debug endpoints (they're optional)
+      if (endpoint.includes('/api/debug-state') || endpoint.includes('/api/email-stats')) {
+        console.warn(`⚠️ Optional endpoint ${endpoint} failed:`, error.message);
+        throw error; // Re-throw but don't show error to user
+      }
+      
+      setError(error.message);
       throw error;
     }
   };
@@ -108,8 +127,14 @@ function App() {
         if (error) throw error;
         setUser(user);
         console.log('✅ User loaded:', user?.email);
-        await loadEmailStats();
-        await loadDebugState();
+        
+        // Load initial data
+        await Promise.allSettled([
+          loadEmailStats(),
+          loadDebugState(),
+          loadAllEmails(true)
+        ]);
+        
       } catch (error) {
         console.error('❌ Failed to load user:', error);
         setError('Failed to load user information');
@@ -118,7 +143,7 @@ function App() {
     getUser();
   }, []);
 
-  // ✅ FIXED: Load debug state with fallback
+  // ✅ FIXED: Load debug state with better fallback
   const loadDebugState = async () => {
     try {
       const result = await makeApiCall('/api/debug-state');
@@ -129,17 +154,18 @@ function App() {
       }
     } catch (err) {
       console.warn('⚠️ Failed to load debug state, using fallback:', err.message);
-      // Set minimal debug info
+      // Set minimal debug info without throwing error
       setDebugInfo({
-        user: { email: user?.email },
-        database: { totalEmails: emails.length },
+        user: { email: user?.email, id: user?.id },
+        database: { totalEmails: emails.length, latestEmail: emails[0] || null },
         config: { emailConfigured: true, supabaseEnabled: true },
-        cache: { size: 0 }
+        cache: { size: 0 },
+        timestamp: new Date().toISOString()
       });
     }
   };
 
-  // ✅ FIXED: Load email statistics with fallback
+  // ✅ FIXED: Load email statistics with better fallback
   const loadEmailStats = async () => {
     try {
       const result = await makeApiCall('/api/email-stats');
@@ -151,18 +177,22 @@ function App() {
       }
     } catch (err) {
       console.warn('⚠️ Failed to load email stats, using fallback:', err.message);
-      // Set fallback stats
+      // Set fallback stats without throwing error
       const fallbackStats = {
         totalEmails: emails.length,
         emailsWithAttachments: emails.filter(e => e.hasAttachments).length,
-        dateRange: { oldest: null, latest: null }
+        dateRange: { 
+          oldest: emails.length > 0 ? emails[emails.length - 1]?.date : null, 
+          latest: emails.length > 0 ? emails[0]?.date : null 
+        },
+        userEmail: user?.email
       };
       setEmailStats(fallbackStats);
       setTotalEmails(emails.length);
     }
   };
 
-  // ✅ FIXED: Enhanced load ALL emails with multiple fallbacks
+  // ✅ FIXED: Enhanced load ALL emails with better error handling
   const loadAllEmails = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -175,7 +205,7 @@ function App() {
         const result = await makeApiCall(`/api/all-emails?limit=10000&t=${Date.now()}`);
         console.log('📧 All-emails response - Total:', result.total, 'Emails loaded:', result.emails?.length);
 
-        const processedEmails = result.emails.map(processEmailData);
+        const processedEmails = (result.emails || []).map(processEmailData);
 
         // Set ALL emails at once
         setEmails(processedEmails);
@@ -186,9 +216,8 @@ function App() {
         
         console.log(`✅ Loaded ALL ${processedEmails.length} emails from Supabase`);
 
-        // Refresh stats and debug
-        await loadEmailStats();
-        await loadDebugState();
+        // Refresh stats and debug (don't wait for these)
+        Promise.allSettled([loadEmailStats(), loadDebugState()]);
         return;
 
       } catch (allEmailsError) {
@@ -196,26 +225,20 @@ function App() {
         
         // Fallback to paginated endpoint
         await loadEmailsPaginated(1, false);
-        
-        // If we have emails but pagination says there are more, try to load more
-        if (hasMoreEmails && emails.length > 0) {
-          console.log('🔄 Loading additional pages...');
-          // Load up to 5 more pages or until no more
-          for (let page = 2; page <= 6 && hasMoreEmails; page++) {
-            await loadEmailsPaginated(page, false, true);
-          }
-        }
       }
 
     } catch (err) {
       console.error('❌ Load all error:', err);
-      setError(`Failed to load emails: ${err.message}`);
+      // Only set error if it's not already set by makeApiCall
+      if (!error) {
+        setError(`Failed to load emails: ${err.message}`);
+      }
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // ✅ FIXED: Load emails with pagination
+  // ✅ FIXED: Load emails with pagination - improved error handling
   const loadEmailsPaginated = async (page = 1, showLoading = true, append = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -234,7 +257,7 @@ function App() {
       const result = await makeApiCall(`/api/emails?${queries}`);
       console.log('📧 Paginated response - Total:', result.total, 'HasMore:', result.hasMore);
 
-      const processedEmails = result.emails.map(processEmailData);
+      const processedEmails = (result.emails || []).map(processEmailData);
 
       if (page === 1 || !append) {
         setEmails(processedEmails);
@@ -247,9 +270,9 @@ function App() {
         });
       }
       
-      setHasMoreEmails(result.hasMore);
+      setHasMoreEmails(result.hasMore || false);
       setCurrentPage(page);
-      setTotalEmails(result.total || 0);
+      setTotalEmails(result.total || processedEmails.length);
       
       if (!result.hasMore) {
         setAllEmailsLoaded(true);
@@ -260,7 +283,10 @@ function App() {
 
     } catch (err) {
       console.error('❌ Pagination load error:', err);
-      setError(`Failed to load emails: ${err.message}`);
+      // Only set error if it's not already set by makeApiCall
+      if (!error) {
+        setError(`Failed to load emails: ${err.message}`);
+      }
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -274,7 +300,7 @@ function App() {
     await loadEmailsPaginated(nextPage, false, true);
   };
 
-  // ✅ FIXED: Search emails with fallback
+  // ✅ FIXED: Search emails with better fallback
   const searchAllEmails = async (searchTerm) => {
     if (searching) return;
     
@@ -296,12 +322,12 @@ function App() {
         });
         
         if (result.success) {
-          const processedEmails = result.data.emails.map(processEmailData);
+          const processedEmails = (result.data.emails || []).map(processEmailData);
           
           setEmails(processedEmails);
           setHasMoreEmails(false);
           setCurrentPage(1);
-          setTotalEmails(result.data.total);
+          setTotalEmails(result.data.total || processedEmails.length);
           setAllEmailsLoaded(true);
           
           console.log(`✅ Search completed: Found ${processedEmails.length} emails for "${searchTerm}"`);
@@ -316,7 +342,8 @@ function App() {
       const filteredEmails = emails.filter(email => 
         email.subject?.toLowerCase().includes(searchLower) ||
         email.from_text?.toLowerCase().includes(searchLower) ||
-        email.text_content?.toLowerCase().includes(searchLower)
+        email.text_content?.toLowerCase().includes(searchLower) ||
+        email.to_text?.toLowerCase().includes(searchLower)
       );
       
       setEmails(filteredEmails);
@@ -332,7 +359,7 @@ function App() {
     }
   };
 
-  // ✅ FIXED: Fetch new emails from IMAP
+  // ✅ FIXED: Fetch new emails from IMAP with better error handling
   const fetchNewEmails = async (force = false) => {
     if (fetching) return;
 
@@ -358,8 +385,6 @@ function App() {
         
         // Reload ALL emails to include newly fetched ones
         await loadAllEmails(false);
-        await loadEmailStats();
-        await loadDebugState();
         
         console.log(`✅ ${force ? 'Force ' : ''}Fetched ${result.data?.processed || 0} new emails`);
       } else {
@@ -367,8 +392,8 @@ function App() {
       }
     } catch (err) {
       setFetchStatus('error');
-      setError(err.message);
       console.error('❌ Fetch failed:', err);
+      // Error is already set by makeApiCall, so don't set it again
     } finally {
       setFetching(false);
     }
@@ -379,7 +404,7 @@ function App() {
     await fetchNewEmails(true);
   };
 
-  // ✅ FIXED: Clear cache function
+  // ✅ FIXED: Clear cache function with better error handling
   const clearCache = async () => {
     try {
       const result = await makeApiCall('/api/clear-cache', {
@@ -393,11 +418,11 @@ function App() {
       }
     } catch (err) {
       console.error('❌ Failed to clear cache:', err);
-      setError(`Failed to clear cache: ${err.message}`);
+      // Error is already set by makeApiCall
     }
   };
 
-  // ✅ FIXED: Delete email function
+  // ✅ FIXED: Delete email function with better error handling
   const deleteEmail = async (emailId, messageId) => {
     if (!emailId && !messageId) {
       setError('Cannot delete email: Missing identifier');
@@ -413,7 +438,8 @@ function App() {
     setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
 
     try {
-      const result = await makeApiCall(`/api/emails/${messageId}`, {
+      const identifier = messageId || emailId;
+      const result = await makeApiCall(`/api/emails/${identifier}`, {
         method: 'DELETE'
       });
 
@@ -430,35 +456,38 @@ function App() {
           setTotalEmails(prev => Math.max(0, prev - 1));
         }
         
-        // Refresh debug state
-        await loadDebugState();
+        // Refresh debug state (don't wait for it)
+        loadDebugState();
         
       } else {
         throw new Error(result.error || 'Failed to delete email');
       }
     } catch (err) {
-      setError(`Failed to delete email: ${err.message}`);
+      console.error('❌ Delete email error:', err);
+      // Error is already set by makeApiCall
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
   };
 
-  // Process email data (keep your existing function)
+  // ✅ FIXED: Process email data with better fallbacks
   const processEmailData = (email) => {
+    if (!email) return null;
+
     const processedEmail = {
-      id: email._id || email.id || email.messageId || email.message_id,
+      id: email._id || email.id || email.messageId || email.message_id || `email-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       _id: email._id || email.id || email.messageId || email.message_id,
-      messageId: email.messageId || email.message_id,
+      messageId: email.messageId || email.message_id || email.id,
       subject: email.subject || '(No Subject)',
-      from: email.from || email.from_text,
-      from_text: email.from_text || email.from,
-      to: email.to || email.to_text,
-      to_text: email.to_text || email.to,
-      date: email.date || email.created_at,
-      text: email.text || email.text_content,
-      text_content: email.text_content || email.text,
-      html: email.html || email.html_content,
-      html_content: email.html_content || email.html,
+      from: email.from || email.from_text || 'Unknown Sender',
+      from_text: email.from_text || email.from || 'Unknown Sender',
+      to: email.to || email.to_text || 'Unknown Recipient',
+      to_text: email.to_text || email.to || 'Unknown Recipient',
+      date: email.date || email.created_at || new Date(),
+      text: email.text || email.text_content || '',
+      text_content: email.text_content || email.text || '',
+      html: email.html || email.html_content || '',
+      html_content: email.html_content || email.html || '',
       attachments: [],
       hasAttachments: email.has_attachments || email.hasAttachments || false,
       attachmentsCount: email.attachments_count || email.attachmentsCount || 0,
@@ -572,8 +601,7 @@ function App() {
         dangerouslySetInnerHTML={{
           __html:
             email.html_content || email.html ||
-            email.text_content?.replace(/\n/g, '<br/>') ||
-            email.text?.replace(/\n/g, '<br/>') ||
+            (email.text_content || email.text || '(No Content)').replace(/\n/g, '<br/>') ||
             '<p className="no-content">(No Content)</p>',
         }}
       />

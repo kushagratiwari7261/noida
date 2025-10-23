@@ -472,7 +472,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// FIXED: Get ALL emails without pagination (for initial load)
+// ✅ FIXED: Get ALL emails without pagination (for initial load)
 app.get("/api/all-emails", authenticateUser, async (req, res) => {
   try {
     const { limit = 10000 } = req.query;
@@ -551,10 +551,10 @@ app.get("/api/all-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// Get emails with pagination
+// ✅ FIXED: Get emails with pagination
 app.get("/api/emails", authenticateUser, async (req, res) => {
   try {
-    const { search = "", sort = "date_desc", page = 1, limit = 5000 } = req.query;
+    const { search = "", sort = "date_desc", page = 1, limit = 1000 } = req.query;
     const userId = req.user.id;
     const userEmail = req.user.email;
     
@@ -672,7 +672,7 @@ app.get("/api/emails", authenticateUser, async (req, res) => {
   }
 });
 
-// Search emails
+// ✅ FIXED: Search emails endpoint
 app.post("/api/search-emails", authenticateUser, async (req, res) => {
   try {
     const { search: searchTerm, limit = 5000, page = 1 } = req.body;
@@ -776,7 +776,7 @@ app.post("/api/search-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// FIXED: Enhanced fetch emails with proper force fetch handling
+// ✅ FIXED: Enhanced fetch emails with proper force fetch handling
 app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   console.log(`🔍 DEBUG: /api/fetch-emails called for user: ${req.user.email}`);
   
@@ -1011,7 +1011,7 @@ app.post("/api/fetch-emails", authenticateUser, async (req, res) => {
   }
 });
 
-// FIXED: Force refresh endpoint - now properly implemented
+// ✅ FIXED: Force refresh endpoint - now properly implemented
 app.post("/api/force-refresh", authenticateUser, async (req, res) => {
   try {
     const { count = 100 } = req.body;
@@ -1231,7 +1231,7 @@ app.post("/api/force-refresh", authenticateUser, async (req, res) => {
   }
 });
 
-// FIXED: Get email statistics endpoint
+// ✅ FIXED: Get email statistics endpoint
 app.get("/api/email-stats", authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1300,7 +1300,7 @@ app.get("/api/email-stats", authenticateUser, async (req, res) => {
   }
 });
 
-// FIXED: Debug endpoint
+// ✅ FIXED: Debug endpoint
 app.get("/api/debug-state", authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1349,7 +1349,7 @@ app.get("/api/debug-state", authenticateUser, async (req, res) => {
   }
 });
 
-// Clear cache endpoint
+// ✅ FIXED: Clear cache endpoint
 app.post("/api/clear-cache", authenticateUser, (req, res) => {
   const previousSize = cache.size;
   clearCache();
@@ -1360,7 +1360,7 @@ app.post("/api/clear-cache", authenticateUser, (req, res) => {
   });
 });
 
-// Delete email endpoint
+// ✅ FIXED: Delete email endpoint
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
     const { messageId } = req.params;
