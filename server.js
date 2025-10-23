@@ -780,27 +780,27 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
-// Get emails with authentication and authorization - FIXED VERSION
+// Get emails with authentication and authorization - OPTIMIZED VERSION
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
-    const { 
-      search = "", 
-      sort = "date_desc", 
-      page = 1, 
+    const {
+      search = "",
+      sort = "date_desc",
+      page = 1,
       limit = 20,
       accountId = "all"
     } = req.query;
-    
+
     const userEmail = req.user.email;
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    console.log(`📧 Fetching emails for user: ${userEmail}, account: ${accountId}`);
+    console.log(`📧 Fetching emails for user: ${userEmail}, account: ${accountId}, limit: ${limitNum}`);
 
     const cacheKey = `emails:${userEmail}:${accountId}:${search}:${sort}:${pageNum}:${limitNum}`;
     const cached = getFromCache(cacheKey);
-    
+
     if (cached) {
       console.log("📦 Serving from cache");
       return res.json(cached);
@@ -808,96 +808,119 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available");
-      return res.status(500).json({ 
+      return res.status(500).json({
         success: false,
-        error: "Supabase is not available" 
+        error: "Supabase is not available"
       });
     }
 
-    let query = supabase
-      .from('emails')
-      .select('*', { count: 'exact' });
+    // OPTIMIZATION: Use a timeout to prevent long-running queries
+    const queryPromise = (async () => {
+      let query = supabase
+        .from('emails')
+        .select('*', { count: 'exact' });
 
-    // Apply account filtering based on user access
-    if (accountId !== "all") {
-      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
-        console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
-        return res.status(403).json({
-          success: false,
-          error: "Access denied to this email account"
-        });
-      }
-      query = query.eq('account_id', parseInt(accountId));
-    } else {
-      // Show only emails from accounts user has access to
-      const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
-      console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
-      
-      if (allowedAccountIds.length > 0) {
-        query = query.in('account_id', allowedAccountIds);
+      // Apply account filtering based on user access
+      if (accountId !== "all") {
+        if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+          console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
+          throw new Error("Access denied to this email account");
+        }
+        query = query.eq('account_id', parseInt(accountId));
       } else {
-        console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
-        return res.json({
-          success: true,
-          emails: [],
-          total: 0,
-          hasMore: false,
-          page: pageNum,
-          limit: limitNum
-        });
+        // Show only emails from accounts user has access to
+        const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
+        console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
+
+        if (allowedAccountIds.length > 0) {
+          query = query.in('account_id', allowedAccountIds);
+        } else {
+          console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
+          return {
+            success: true,
+            emails: [],
+            total: 0,
+            hasMore: false,
+            page: pageNum,
+            limit: limitNum
+          };
+        }
       }
-    }
-    
-    // Add search if provided
-    if (search && search.trim().length > 0) {
-      query = query.or(`subject.ilike.%${search}%,from_text.ilike.%${search}%,text_content.ilike.%${search}%`);
-    }
-    
-    // Add sorting
-    if (sort === "date_asc") {
-      query = query.order('date', { ascending: true });
-    } else if (sort === "subject_asc") {
-      query = query.order('subject', { ascending: true });
-    } else if (sort === "subject_desc") {
-      query = query.order('subject', { ascending: false });
-    } else {
-      query = query.order('date', { ascending: false });
-    }
-    
-    // Add pagination
-    query = query.range(skip, skip + limitNum - 1);
-    
-    console.log(`🔍 Executing Supabase query...`);
-    const { data: emails, error, count } = await query;
-    
-    if (error) {
-      console.error("❌ Supabase query error:", error);
-      return res.status(500).json({ 
-        success: false,
-        error: "Failed to fetch emails from Supabase",
-        details: error.message
-      });
-    }
 
-    console.log(`✅ Found ${emails?.length || 0} emails`);
+      // Add search if provided - OPTIMIZED search
+      if (search && search.trim().length > 0) {
+        const trimmedSearch = search.trim();
+        // Use more specific search to avoid full table scans
+        query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%`);
+      }
 
-    const hasMore = skip + (emails?.length || 0) < (count || 0);
+      // Add sorting
+      if (sort === "date_asc") {
+        query = query.order('date', { ascending: true });
+      } else if (sort === "subject_asc") {
+        query = query.order('subject', { ascending: true });
+      } else if (sort === "subject_desc") {
+        query = query.order('subject', { ascending: false });
+      } else {
+        query = query.order('date', { ascending: false });
+      }
 
-    const response = {
-      success: true,
-      emails: emails || [],
-      total: count || 0,
-      hasMore,
-      page: pageNum,
-      limit: limitNum
-    };
+      // Add pagination with smaller range for performance
+      query = query.range(skip, skip + limitNum - 1);
+
+      console.log(`🔍 Executing Supabase query...`);
+      const { data: emails, error, count } = await query;
+
+      if (error) {
+        console.error("❌ Supabase query error:", error);
+        throw error;
+      }
+
+      console.log(`✅ Found ${emails?.length || 0} emails out of ${count} total`);
+
+      const hasMore = skip + (emails?.length || 0) < (count || 0);
+
+      return {
+        success: true,
+        emails: emails || [],
+        total: count || 0,
+        hasMore,
+        page: pageNum,
+        limit: limitNum
+      };
+    })();
+
+    // Set a timeout for the query
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Query timeout')), 15000); // 15 second timeout
+    });
+
+    const response = await Promise.race([queryPromise, timeoutPromise]);
 
     setToCache(cacheKey, response);
     res.json(response);
 
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
-    res.status(500).json({ 
+
+    // Handle timeout specifically
+    if (error.message === 'Query timeout') {
+      return res.status(504).json({
+        success: false,
+        error: "Query timeout - please try again or use smaller search terms",
+        details: "The database query took too long to complete"
+      });
+    }
+
+    // Handle access denied
+    if (error.message === 'Access denied to this email account') {
+      return res.status(403).json({
+        success: false,
+        error: error.message
+      });
+    }
+
+    res.status(500).json({
       success: false,
       error: "Failed to fetch emails",
       details: error.message
