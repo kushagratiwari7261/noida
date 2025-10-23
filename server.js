@@ -6,11 +6,22 @@ import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
 
-// Load environment variables
-if (process.env.NODE_ENV !== 'production') {
-  const dotenv = await import('dotenv');
-  dotenv.config();
-}
+// Load environment variables - VERCEL COMPATIBLE
+const loadEnv = async () => {
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const dotenv = await import('dotenv');
+      dotenv.config();
+      console.log('✅ Loaded environment variables from .env file');
+    } catch (error) {
+      console.log('⚠️ dotenv not available, using Vercel environment variables');
+    }
+  } else {
+    console.log('✅ Using Vercel environment variables');
+  }
+};
+
+await loadEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +98,7 @@ let supabaseEnabled = false;
 
 const initializeSupabase = () => {
   try {
+    // VERCEL COMPATIBLE: Use both naming conventions
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
@@ -175,6 +187,7 @@ class EmailConfigManager {
       let loadedCount = 0;
       
       while (true) {
+        // VERCEL COMPATIBLE: Try multiple naming conventions
         const configKey = `EMAIL_CONFIG_${configIndex}`;
         const configValue = process.env[configKey];
         
@@ -284,8 +297,8 @@ const authenticateUser = async (req, res, next) => {
     
     console.log("🔐 Token received, length:", token.length);
 
-    // DEVELOPMENT BYPASS
-    if (process.env.NODE_ENV === 'development') {
+    // DEVELOPMENT BYPASS - VERCEL COMPATIBLE
+    if (process.env.NODE_ENV !== 'production') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
       req.user = { 
         email: "anshuman.singh@seal.co.in",
@@ -593,7 +606,7 @@ async function saveEmailToSupabase(email) {
 
 // ========== API ENDPOINTS ==========
 
-// Health check
+// Health check - NO AUTH REQUIRED
 app.get("/api/health", async (req, res) => {
   try {
     let supabaseStatus = "not_configured";
@@ -656,7 +669,26 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Test Supabase connection
+// Debug endpoints - NO AUTH REQUIRED
+app.get("/api/debug-env", (req, res) => {
+  res.json({
+    success: true,
+    environment: {
+      supabase: {
+        url: process.env.SUPABASE_URL ? "✅ Set" : "❌ Missing",
+        serviceKey: process.env.SUPABASE_SERVICE_KEY ? "✅ Set" : "❌ Missing",
+        serviceKeyLength: process.env.SUPABASE_SERVICE_KEY ? process.env.SUPABASE_SERVICE_KEY.length : 0
+      },
+      emailConfigs: {
+        config1: process.env.EMAIL_CONFIG_1 ? "✅ Set" : "❌ Missing",
+        config2: process.env.EMAIL_CONFIG_2 ? "✅ Set" : "❌ Missing"
+      },
+      nodeEnv: process.env.NODE_ENV || 'not set',
+      port: process.env.PORT || 3001
+    }
+  });
+});
+
 app.get("/api/test-supabase", async (req, res) => {
   try {
     if (!supabaseEnabled || !supabase) {
@@ -700,7 +732,6 @@ app.get("/api/test-supabase", async (req, res) => {
   }
 });
 
-// NEW: Test emails table structure
 app.get("/api/test-emails-table", async (req, res) => {
   try {
     if (!supabaseEnabled || !supabase) {
@@ -710,7 +741,6 @@ app.get("/api/test-emails-table", async (req, res) => {
       });
     }
 
-    // Test basic query
     const { data, error } = await supabase
       .from('emails')
       .select('*')
@@ -742,101 +772,7 @@ app.get("/api/test-emails-table", async (req, res) => {
   }
 });
 
-// NEW: Create emails table if it doesn't exist
-app.post("/api/create-emails-table", async (req, res) => {
-  try {
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        success: false,
-        error: "Supabase not available"
-      });
-    }
-
-    // First check if table exists
-    const { data, error } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(1);
-
-    if (error && error.code === '42P01') {
-      // Table doesn't exist - we would need to create it
-      // Note: This requires admin privileges. In practice, you'd create the table manually in Supabase dashboard
-      return res.json({
-        success: false,
-        message: "Emails table doesn't exist. Please create it manually in Supabase dashboard.",
-        sql: `
-          CREATE TABLE emails (
-            id BIGSERIAL PRIMARY KEY,
-            message_id TEXT NOT NULL,
-            account_id INTEGER NOT NULL,
-            subject TEXT,
-            from_text TEXT,
-            to_text TEXT,
-            date TIMESTAMPTZ,
-            text_content TEXT,
-            html_content TEXT,
-            attachments JSONB DEFAULT '[]',
-            has_attachments BOOLEAN DEFAULT false,
-            attachments_count INTEGER DEFAULT 0,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(message_id, account_id)
-          );
-        `
-      });
-    }
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: "Error checking emails table",
-        details: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Emails table exists and is accessible",
-      tableExists: true
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: "Failed to check emails table",
-      details: error.message
-    });
-  }
-});
-
-// Debug endpoint to check user info and access
-app.get("/api/debug-user", authenticateUser, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    
-    res.json({
-      success: true,
-      debug: {
-        authenticatedUser: req.user,
-        userEmail: userEmail,
-        allowedAccounts: allowedAccounts,
-        canAccessAccount1: emailConfigManager.canUserAccessAccount(userEmail, 1),
-        canAccessAccount2: emailConfigManager.canUserAccessAccount(userEmail, 2),
-        allMappings: USER_EMAIL_MAPPING,
-        allConfigs: emailConfigManager.getAllConfigs()
-      }
-    });
-  } catch (error) {
-    console.error("❌ Debug error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Test authentication
+// Authentication test endpoint
 app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -864,52 +800,7 @@ app.get("/api/test-auth", authenticateUser, async (req, res) => {
   }
 });
 
-// User profile
-app.get("/api/auth/profile", authenticateUser, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-
-    res.json({
-      success: true,
-      data: {
-        user: req.user,
-        allowedAccounts: allowedAccounts,
-        accessInfo: {
-          canAccessEmailArchive: allowedAccounts.length > 0,
-          accessibleAccountCount: allowedAccounts.length
-        }
-      }
-    });
-  } catch (error) {
-    console.error("❌ Profile fetch error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to fetch profile"
-    });
-  }
-});
-
-// Email configuration endpoints
-app.get("/api/email-configs", authenticateUser, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    
-    res.json({
-      success: true,
-      data: allowedAccounts
-    });
-  } catch (error) {
-    console.error("❌ Get email configs error:", error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
-  }
-});
-
-// Enhanced Email fetching with comprehensive error handling
+// Main email endpoints - AUTH REQUIRED
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -1001,7 +892,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       return res.status(500).json({
         success: false,
         error: "Database query failed",
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        details: process.env.NODE_ENV === 'production' ? undefined : error.message,
         code: error.code
       });
     }
@@ -1333,8 +1224,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     });
   }
 });
-
-// Clear cache
 app.post("/api/clear-cache", (req, res) => {
   clearCache();
   res.json({ 
@@ -1343,20 +1232,22 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// Serve static files
-const distPath = path.join(__dirname, 'dist');
-app.use(express.static(distPath));
+// VERCEL COMPATIBLE: Serve static files for production
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(__dirname, 'dist');
+  app.use(express.static(distPath));
 
-app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api')) {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-  } else {
-    res.status(404).json({ 
-      success: false,
-      error: 'API endpoint not found' 
-    });
-  }
-});
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    } else {
+      res.status(404).json({ 
+        success: false,
+        error: 'API endpoint not found' 
+      });
+    }
+  });
+}
 
 // Global error handler
 app.use((error, req, res, next) => {
@@ -1368,26 +1259,15 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('🔄 Shutting down gracefully...');
-  await imapManager.disconnectAll();
-  process.exit(0);
-});
+// Start server - VERCEL COMPATIBLE
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
+    console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}
 
-process.on('SIGINT', async () => {
-  console.log('🔄 Shutting down gracefully...');
-  await imapManager.disconnectAll();
-  process.exit(0);
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
-  console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`👤 User-Email Mapping:`, USER_EMAIL_MAPPING);
-});
-
+// VERCEL COMPATIBLE: Export for serverless
 export default app;
