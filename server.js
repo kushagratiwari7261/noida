@@ -1355,6 +1355,238 @@ app.post("/api/clear-cache", authenticateUser, (req, res) => {
   });
 });
 
+// ✅ NEW: Force refresh endpoint (same as fetch-emails but with force mode)
+app.post("/api/force-refresh", authenticateUser, async (req, res) => {
+  console.log(`🔍 DEBUG: /api/force-refresh called for user: ${req.user.email}`);
+
+  try {
+    const { count = 100 } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    const password = emailConfigs[userEmail];
+
+    if (!password) {
+      return res.status(400).json({ error: "Email configuration not found" });
+    }
+
+    console.log(`🔄 Force fetching ${count} latest emails for ${userEmail}`);
+
+    // Create IMAP connection
+    const connection = await createIMAPConnection(userEmail, password);
+
+    connection.openBox("INBOX", true, async (err, box) => {
+      if (err) {
+        connection.end();
+        return res.status(500).json({ error: "Failed to open inbox: " + err.message });
+      }
+
+      console.log(`📥 ${userEmail} - Total Messages in INBOX: ${box.messages.total}`);
+
+      // Force fetch latest emails (from the end)
+      const totalMessages = box.messages.total;
+      const fetchCount = Math.min(count, totalMessages);
+      const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
+      const fetchEnd = totalMessages;
+
+      const fetchRange = `${fetchStart}:${fetchEnd}`;
+      console.log(`📨 ${userEmail} - Force fetching LATEST emails: ${fetchRange}`);
+
+      const f = connection.seq.fetch(fetchRange, {
+        bodies: "",
+        struct: true
+      });
+
+      let processedCount = 0;
+      let duplicateCount = 0;
+      let newEmails = [];
+
+      f.on("message", function (msg, seqno) {
+        console.log(`📨 ${userEmail} - Processing message #${seqno}`);
+        let buffer = "";
+
+        msg.on("body", function (stream) {
+          stream.on("data", function (chunk) {
+            buffer += chunk.toString("utf8");
+          });
+        });
+
+        msg.once("end", async function () {
+          try {
+            const parsed = await simpleParser(buffer);
+
+            // Generate messageId if missing
+            const messageId = parsed.messageId || `email-${Date.now()}-${seqno}-${Math.random().toString(36).substring(2, 10)}`;
+
+            // Check for duplicates for this user
+            const isDuplicate = await checkDuplicate(userId, messageId);
+            if (isDuplicate) {
+              console.log(`   ⚠️ Duplicate skipped: ${parsed.subject}`);
+              duplicateCount++;
+              return;
+            }
+
+            // Process attachments
+            console.log(`   📎 Processing attachments for: ${parsed.subject}`);
+            const attachmentLinks = await processAttachments(parsed.attachments || []);
+
+            // Create email data with user info
+            const emailData = createEmailData(parsed, messageId, attachmentLinks, {
+              userId: userId,
+              userEmail: userEmail
+            });
+
+            newEmails.push(emailData);
+            processedCount++;
+            console.log(`   ✅ New email: ${parsed.subject} (${attachmentLinks.length} attachments)`);
+
+          } catch (parseErr) {
+            console.error("   ❌ Parse error:", parseErr.message);
+          }
+        });
+      });
+
+      f.once("error", function (err) {
+        console.error(`❌ Force fetch error for ${userEmail}:`, err);
+        connection.end();
+        res.status(500).json({
+          success: false,
+          error: "Force fetch error: " + err.message
+        });
+      });
+
+      f.once("end", async function () {
+        console.log(`🔄 Processing ${newEmails.length} new emails for ${userEmail}...`);
+
+        try {
+          // Save to Supabase with user_id
+          if (newEmails.length > 0) {
+            console.log(`💾 Saving ${newEmails.length} emails to Supabase for ${userEmail}...`);
+
+            const saveOps = newEmails.map(async (email) => {
+              try {
+                if (supabaseEnabled && supabase) {
+                  const supabaseData = {
+                    message_id: email.messageId,
+                    subject: email.subject,
+                    from_text: email.from,
+                    to_text: email.to,
+                    date: email.date,
+                    text_content: email.text,
+                    html_content: email.html,
+                    attachments: email.attachments,
+                    has_attachments: email.hasAttachments,
+                    attachments_count: email.attachmentsCount,
+                    user_id: userId,
+                    user_email: userEmail,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                  };
+
+                  const { error: supabaseError } = await supabase.from('emails').upsert(supabaseData);
+                  if (supabaseError) {
+                    console.error("   ❌ Supabase save error:", supabaseError);
+                  } else {
+                    console.log(`   ✅ Saved to Supabase for ${userEmail}: ${email.subject}`);
+                  }
+                }
+
+                return true;
+              } catch (saveErr) {
+                console.error(`   ❌ Error saving email:`, saveErr);
+                return false;
+              }
+            });
+
+            await Promise.allSettled(saveOps);
+            clearCache();
+            console.log(`🗑️ Cleared cache for ${userEmail}`);
+          }
+
+          connection.end();
+
+          console.log(`✅ Force fetch completed for ${userEmail}: ${processedCount} new, ${duplicateCount} duplicates`);
+
+          res.json({
+            success: true,
+            message: `Force fetched ${processedCount} new emails for ${userEmail}`,
+            data: {
+              processed: processedCount,
+              duplicates: duplicateCount,
+              total: processedCount + duplicateCount,
+              userEmail: userEmail
+            }
+          });
+
+        } catch (batchError) {
+          console.error("❌ Batch processing error:", batchError);
+          connection.end();
+          res.status(500).json({
+            success: false,
+            error: "Batch processing failed: " + batchError.message
+          });
+        }
+      });
+    });
+
+  } catch (error) {
+    console.error("❌ Force refresh API error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ NEW: Debug state endpoint
+app.get("/api/debug-state", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+
+    console.log(`🐛 Getting debug state for ${userEmail}`);
+
+    // Get latest email from database
+    const { data: latestEmail, error: latestError } = await supabase
+      .from('emails')
+      .select('date, subject')
+      .eq('user_id', userId)
+      .order('date', { ascending: false })
+      .limit(1);
+
+    // Get total count
+    const { count: totalCount, error: countError } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    res.json({
+      success: true,
+      data: {
+        database: {
+          totalEmails: totalCount || 0,
+          latestEmail: latestEmail?.[0] || null
+        },
+        cache: {
+          size: cache.size,
+          ttl: CACHE_TTL
+        },
+        config: {
+          emailConfigured: !!emailConfigs[userEmail],
+          userEmail: userEmail
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Debug state error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Delete email endpoint
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
