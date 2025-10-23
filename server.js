@@ -1189,7 +1189,58 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     });
   }
 });
+// Add this to your server.js for debugging
+app.get("/api/debug-db", authenticateUser, async (req, res) => {
+  try {
+    console.log("🧪 Testing database connection...");
+    
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        error: "Supabase client not available",
+        enabled: supabaseEnabled,
+        client: !!supabase
+      });
+    }
 
+    // Test 1: Basic connection
+    const { data: testData, error: testError } = await supabase
+      .from('emails')
+      .select('count')
+      .limit(1);
+
+    // Test 2: Check if table exists
+    const { data: tableCheck, error: tableError } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(1);
+
+    // Test 3: Check schema
+    const { data: schemaCheck, error: schemaError } = await supabase
+      .from('emails')
+      .select('message_id, subject, date')
+      .limit(1);
+
+    res.json({
+      success: true,
+      tests: {
+        basic_connection: testError ? `❌ ${testError.message}` : "✅ Connected",
+        table_exists: tableError ? `❌ ${tableError.message}` : "✅ Table exists",
+        schema_check: schemaError ? `❌ ${schemaError.message}` : "✅ Schema valid"
+      },
+      sample_data: tableCheck || "No data",
+      user: req.user.email
+    });
+
+  } catch (error) {
+    console.error("❌ Debug DB error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
 // Enhanced Health check
 app.get("/api/health", async (req, res) => {
   try {
