@@ -2,11 +2,27 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import './App1.css';
 
-// Initialize Supabase client for frontend
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL,
-  process.env.VITE_SUPABASE_ANON_KEY
-);
+// Initialize Supabase client for frontend with proper error handling
+const getSupabaseClient = () => {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error('❌ Supabase environment variables are missing');
+    console.log('VITE_SUPABASE_URL:', supabaseUrl);
+    console.log('VITE_SUPABASE_ANON_KEY:', supabaseAnonKey ? 'Set' : 'Not set');
+    return null;
+  }
+
+  try {
+    return createClient(supabaseUrl, supabaseAnonKey);
+  } catch (error) {
+    console.error('❌ Failed to create Supabase client:', error);
+    return null;
+  }
+};
+
+const supabase = getSupabaseClient();
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -29,7 +45,7 @@ function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
 
-  const API_BASE = '';
+  const API_BASE = import.meta.env.VITE_API_BASE || '';
 
   // Check for existing session on component mount
   useEffect(() => {
@@ -38,11 +54,17 @@ function App() {
 
   // Check authentication status
   const checkAuth = async () => {
+    if (!supabase) {
+      setError('Supabase client not initialized. Please check environment variables.');
+      return;
+    }
+
     try {
       const { data: { session: currentSession }, error } = await supabase.auth.getSession();
       
       if (error) {
         console.error('❌ Session check error:', error);
+        setError('Authentication error: ' + error.message);
         return;
       }
 
@@ -53,11 +75,14 @@ function App() {
       }
     } catch (err) {
       console.error('❌ Auth check error:', err);
+      setError('Failed to check authentication status');
     }
   };
 
   // Load user profile and allowed accounts
   const loadUserProfile = async () => {
+    if (!session) return;
+
     try {
       const response = await fetch(`${API_BASE}/api/auth/profile`, {
         headers: {
@@ -71,9 +96,14 @@ function App() {
           setEmailAccounts(result.data.allowedAccounts);
           console.log('📧 Loaded allowed accounts:', result.data.allowedAccounts);
         }
+      } else if (response.status === 401) {
+        // Token expired
+        handleLogout();
+        setError('Session expired. Please log in again.');
       }
     } catch (err) {
       console.error('❌ Profile load error:', err);
+      setError('Failed to load user profile');
     }
   };
 
@@ -81,6 +111,11 @@ function App() {
   const handleLogin = async (e) => {
     e.preventDefault();
     if (loginLoading) return;
+
+    if (!supabase) {
+      setError('Supabase client not initialized. Please check environment variables.');
+      return;
+    }
 
     setLoginLoading(true);
     setError(null);
@@ -117,12 +152,14 @@ function App() {
   // Logout function
   const handleLogout = async () => {
     try {
-      await fetch(`${API_BASE}/api/auth/logout`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`
-        }
-      });
+      if (session) {
+        await fetch(`${API_BASE}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`
+          }
+        });
+      }
     } catch (err) {
       console.error('Logout error:', err);
     } finally {
@@ -602,6 +639,22 @@ function App() {
 
   const statusMessage = getStatusMessage();
 
+  // Show initialization error
+  if (!supabase) {
+    return (
+      <div className="error-container">
+        <h1>❌ Configuration Error</h1>
+        <p>Supabase client could not be initialized.</p>
+        <p>Please check your environment variables:</p>
+        <ul>
+          <li>VITE_SUPABASE_URL: {import.meta.env.VITE_SUPABASE_URL ? 'Set' : 'Missing'}</li>
+          <li>VITE_SUPABASE_ANON_KEY: {import.meta.env.VITE_SUPABASE_ANON_KEY ? 'Set' : 'Missing'}</li>
+        </ul>
+        <p>Make sure these variables are set in your .env file.</p>
+      </div>
+    );
+  }
+
   // Login Form
   if (!session) {
     return (
@@ -626,6 +679,7 @@ function App() {
                 onChange={e => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
                 required
                 disabled={loginLoading}
+                placeholder="Enter your email"
               />
             </div>
             
@@ -637,6 +691,7 @@ function App() {
                 onChange={e => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
                 required
                 disabled={loginLoading}
+                placeholder="Enter your password"
               />
             </div>
 
@@ -656,6 +711,7 @@ function App() {
               <li><strong>pankaj.singh@seal.co.in</strong> - Access to Account 2 only</li>
               <li><strong>admin@seal.co.in</strong> - Access to all accounts</li>
             </ul>
+            <p><em>Note: You need to create these users in your Supabase Auth first.</em></p>
           </div>
         </div>
       </div>
