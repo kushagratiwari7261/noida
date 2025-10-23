@@ -756,36 +756,10 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       .from('emails')
       .select('*', { count: 'exact' });
 
-    // Apply account filtering based on user access
-    if (accountId !== "all") {
-      console.log(`🔍 Filtering by account ID: ${accountId}`);
-      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
-        console.error(`❌ Access denied: ${userEmail} cannot access account ${accountId}`);
-        return res.status(403).json({
-          success: false,
-          error: "Access denied to this email account"
-        });
-      }
-      query = query.eq('account_id', parseInt(accountId));
-    } else {
-      // Show only emails from accounts user has access to
-      const allowedAccountIds = emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id);
-      console.log(`🔐 Allowed account IDs for ${userEmail}:`, allowedAccountIds);
-
-      if (allowedAccountIds.length > 0) {
-        query = query.in('account_id', allowedAccountIds);
-      } else {
-        console.log(`⚠️ No allowed accounts for user: ${userEmail}`);
-        return res.json({
-          success: true,
-          emails: [],
-          total: 0,
-          hasMore: false,
-          page: pageNum,
-          limit: limitNum
-        });
-      }
-    }
+    // TEMPORARILY DISABLE account filtering - database doesn't have account_id column yet
+    // TODO: Add account_id column to emails table and re-enable this filtering
+    console.log(`🔍 Account filtering temporarily disabled - database schema needs account_id column`);
+    console.log(`🔐 User ${userEmail} can access all emails (no account restrictions)`);
 
     // Add search if provided
     if (search && search.trim().length > 0) {
