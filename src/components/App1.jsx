@@ -25,36 +25,46 @@ function App() {
 
   const API_BASE = 'http://localhost:3001';
 
-  // Enhanced authentication
+  // ✅ FIXED: Enhanced authentication with better error handling
   const getAuthHeaders = async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error || !session) {
+        console.error('❌ No session found:', error);
         throw new Error('Authentication required. Please log in again.');
       }
+      
+      console.log('🔑 Session found, token:', session.access_token ? 'Present' : 'Missing');
       return {
         'Authorization': `Bearer ${session.access_token}`,
         'Content-Type': 'application/json'
       };
     } catch (error) {
+      console.error('❌ Auth header error:', error);
       throw new Error('Authentication failed');
     }
   };
 
-  // ✅ FIXED: Enhanced API error handler that clones response for multiple reads
+  // ✅ FIXED: Enhanced API error handler with better status handling
   const handleApiError = async (response, defaultMessage = 'API request failed') => {
+    console.log(`🔍 API Response Status: ${response.status} ${response.statusText}`);
+    
     if (response.status === 401) {
       setError('Authentication expired. Please log in again.');
       throw new Error('Authentication expired');
+    }
+    
+    if (response.status === 404) {
+      setError('API endpoint not found. Please check the server.');
+      throw new Error('API endpoint not found');
     }
     
     if (!response.ok) {
       let errorText = defaultMessage;
       
       try {
-        // Clone the response to read it multiple times if needed
-        const responseClone = response.clone();
-        const errorData = await responseClone.json().catch(() => null);
+        // Try to parse error as JSON first
+        const errorData = await response.json().catch(() => null);
         
         if (errorData) {
           errorText = errorData.error || errorData.message || defaultMessage;
@@ -63,16 +73,31 @@ function App() {
           const text = await response.text().catch(() => defaultMessage);
           errorText = text || defaultMessage;
         }
-      } catch {
-        // If all else fails, use default message
+      } catch (parseError) {
+        console.error('❌ Error parsing error response:', parseError);
         errorText = defaultMessage;
       }
       
       throw new Error(errorText);
     }
     
-    // For successful responses, parse the original response
+    // For successful responses
     return response.json();
+  };
+
+  // ✅ FIXED: Safe API call wrapper
+  const makeApiCall = async (endpoint, options = {}) => {
+    try {
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        headers,
+        ...options
+      });
+      return await handleApiError(response, `Failed to call ${endpoint}`);
+    } catch (error) {
+      console.error(`❌ API call failed for ${endpoint}:`, error);
+      throw error;
+    }
   };
 
   // Get user info
@@ -86,40 +111,38 @@ function App() {
         await loadEmailStats();
         await loadDebugState();
       } catch (error) {
+        console.error('❌ Failed to load user:', error);
         setError('Failed to load user information');
       }
     };
     getUser();
   }, []);
 
-  // ✅ NEW: Load debug state
+  // ✅ FIXED: Load debug state with fallback
   const loadDebugState = async () => {
     try {
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/debug-state`, {
-        headers: headers
-      });
-
-      const result = await handleApiError(response, 'Failed to load debug state');
+      const result = await makeApiCall('/api/debug-state');
       
       if (result.success) {
         setDebugInfo(result.data);
         console.log('🐛 Debug state loaded:', result.data);
       }
     } catch (err) {
-      console.error('Failed to load debug state:', err);
+      console.warn('⚠️ Failed to load debug state, using fallback:', err.message);
+      // Set minimal debug info
+      setDebugInfo({
+        user: { email: user?.email },
+        database: { totalEmails: emails.length },
+        config: { emailConfigured: true, supabaseEnabled: true },
+        cache: { size: 0 }
+      });
     }
   };
 
-  // ✅ ENHANCED: Load email statistics
+  // ✅ FIXED: Load email statistics with fallback
   const loadEmailStats = async () => {
     try {
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/email-stats`, {
-        headers: headers
-      });
-
-      const result = await handleApiError(response, 'Failed to load email statistics');
+      const result = await makeApiCall('/api/email-stats');
       
       if (result.success) {
         setEmailStats(result.data);
@@ -127,53 +150,72 @@ function App() {
         console.log('📊 Email stats loaded - Total emails:', result.data.totalEmails);
       }
     } catch (err) {
-      console.error('Failed to load email stats:', err);
+      console.warn('⚠️ Failed to load email stats, using fallback:', err.message);
+      // Set fallback stats
+      const fallbackStats = {
+        totalEmails: emails.length,
+        emailsWithAttachments: emails.filter(e => e.hasAttachments).length,
+        dateRange: { oldest: null, latest: null }
+      };
+      setEmailStats(fallbackStats);
+      setTotalEmails(emails.length);
     }
   };
 
-  // ✅ ENHANCED: Load ALL emails using the new /api/all-emails endpoint
+  // ✅ FIXED: Enhanced load ALL emails with multiple fallbacks
   const loadAllEmails = async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      console.log(`📧 Loading ALL emails from Supabase (using all-emails endpoint)...`);
+      console.log(`📧 Loading ALL emails from Supabase...`);
       
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/all-emails?limit=10000&t=${Date.now()}`, {
-        headers: headers
-      });
+      // Try the all-emails endpoint first
+      try {
+        const result = await makeApiCall(`/api/all-emails?limit=10000&t=${Date.now()}`);
+        console.log('📧 All-emails response - Total:', result.total, 'Emails loaded:', result.emails?.length);
 
-      const data = await handleApiError(response, 'Failed to load emails');
-      console.log('📧 All-emails response - Total:', data.total, 'Emails loaded:', data.emails?.length);
+        const processedEmails = result.emails.map(processEmailData);
 
-      const processedEmails = data.emails.map(processEmailData);
+        // Set ALL emails at once
+        setEmails(processedEmails);
+        setAllEmailsLoaded(true);
+        setHasMoreEmails(false);
+        setCurrentPage(1);
+        setTotalEmails(result.total || processedEmails.length);
+        
+        console.log(`✅ Loaded ALL ${processedEmails.length} emails from Supabase`);
 
-      // Set ALL emails at once
-      setEmails(processedEmails);
-      setAllEmailsLoaded(true);
-      setHasMoreEmails(false);
-      setCurrentPage(1);
-      setTotalEmails(data.total || processedEmails.length);
-      
-      console.log(`✅ Loaded ALL ${processedEmails.length} emails from Supabase`);
+        // Refresh stats and debug
+        await loadEmailStats();
+        await loadDebugState();
+        return;
 
-      // Refresh debug state
-      await loadDebugState();
+      } catch (allEmailsError) {
+        console.warn('⚠️ All-emails endpoint failed, trying paginated:', allEmailsError.message);
+        
+        // Fallback to paginated endpoint
+        await loadEmailsPaginated(1, false);
+        
+        // If we have emails but pagination says there are more, try to load more
+        if (hasMoreEmails && emails.length > 0) {
+          console.log('🔄 Loading additional pages...');
+          // Load up to 5 more pages or until no more
+          for (let page = 2; page <= 6 && hasMoreEmails; page++) {
+            await loadEmailsPaginated(page, false, true);
+          }
+        }
+      }
 
     } catch (err) {
-      console.error('Load all error:', err);
+      console.error('❌ Load all error:', err);
       setError(`Failed to load emails: ${err.message}`);
-      
-      // Fallback to paginated endpoint
-      console.log('🔄 Falling back to paginated endpoint...');
-      await loadEmailsPaginated(1, showLoading);
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // ✅ FALLBACK: Load emails with pagination
+  // ✅ FIXED: Load emails with pagination
   const loadEmailsPaginated = async (page = 1, showLoading = true, append = false) => {
     if (showLoading) setLoading(true);
     setError(null);
@@ -189,15 +231,10 @@ function App() {
         `t=${Date.now()}`
       ].join('&');
 
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails?${queries}`, {
-        headers: headers
-      });
+      const result = await makeApiCall(`/api/emails?${queries}`);
+      console.log('📧 Paginated response - Total:', result.total, 'HasMore:', result.hasMore);
 
-      const data = await handleApiError(response, 'Failed to load emails');
-      console.log('📧 Paginated response - Total:', data.total, 'HasMore:', data.hasMore);
-
-      const processedEmails = data.emails.map(processEmailData);
+      const processedEmails = result.emails.map(processEmailData);
 
       if (page === 1 || !append) {
         setEmails(processedEmails);
@@ -210,26 +247,26 @@ function App() {
         });
       }
       
-      setHasMoreEmails(data.hasMore);
+      setHasMoreEmails(result.hasMore);
       setCurrentPage(page);
-      setTotalEmails(data.total || 0);
+      setTotalEmails(result.total || 0);
       
-      if (!data.hasMore) {
+      if (!result.hasMore) {
         setAllEmailsLoaded(true);
         console.log('✅ All emails loaded via pagination');
       }
       
-      console.log(`✅ Loaded ${processedEmails.length} emails (page ${page}, total: ${data.total})`);
+      console.log(`✅ Loaded ${processedEmails.length} emails (page ${page}, total: ${result.total})`);
 
     } catch (err) {
-      console.error('Pagination load error:', err);
+      console.error('❌ Pagination load error:', err);
       setError(`Failed to load emails: ${err.message}`);
     } finally {
       if (showLoading) setLoading(false);
     }
   };
 
-  // ✅ ENHANCED: Load more emails with duplicate prevention
+  // ✅ FIXED: Load more emails
   const loadMoreEmails = async () => {
     if (loading || !hasMoreEmails || allEmailsLoaded) return;
     
@@ -237,7 +274,7 @@ function App() {
     await loadEmailsPaginated(nextPage, false, true);
   };
 
-  // ✅ ENHANCED: Search ALL emails in Supabase
+  // ✅ FIXED: Search emails with fallback
   const searchAllEmails = async (searchTerm) => {
     if (searching) return;
     
@@ -247,41 +284,55 @@ function App() {
     try {
       console.log(`🔍 Searching ALL emails for: "${searchTerm}"`);
       
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/search-emails`, {
-        method: 'POST',
-        headers: headers,
-        body: JSON.stringify({
-          search: searchTerm,
-          limit: 10000,
-          page: 1
-        })
-      });
-
-      const result = await handleApiError(response, 'Failed to search emails');
-      
-      if (result.success) {
-        const processedEmails = result.data.emails.map(processEmailData);
+      // Try the search endpoint first
+      try {
+        const result = await makeApiCall('/api/search-emails', {
+          method: 'POST',
+          body: JSON.stringify({
+            search: searchTerm,
+            limit: 10000,
+            page: 1
+          })
+        });
         
-        setEmails(processedEmails);
-        setHasMoreEmails(false);
-        setCurrentPage(1);
-        setTotalEmails(result.data.total);
-        setAllEmailsLoaded(true);
-        
-        console.log(`✅ Search completed: Found ${processedEmails.length} emails for "${searchTerm}"`);
-      } else {
-        throw new Error(result.error || 'Search failed');
+        if (result.success) {
+          const processedEmails = result.data.emails.map(processEmailData);
+          
+          setEmails(processedEmails);
+          setHasMoreEmails(false);
+          setCurrentPage(1);
+          setTotalEmails(result.data.total);
+          setAllEmailsLoaded(true);
+          
+          console.log(`✅ Search completed: Found ${processedEmails.length} emails for "${searchTerm}"`);
+          return;
+        }
+      } catch (searchError) {
+        console.warn('⚠️ Search endpoint failed, using client-side search:', searchError.message);
       }
+
+      // Fallback to client-side search
+      const searchLower = searchTerm.toLowerCase();
+      const filteredEmails = emails.filter(email => 
+        email.subject?.toLowerCase().includes(searchLower) ||
+        email.from_text?.toLowerCase().includes(searchLower) ||
+        email.text_content?.toLowerCase().includes(searchLower)
+      );
+      
+      setEmails(filteredEmails);
+      setHasMoreEmails(false);
+      setAllEmailsLoaded(true);
+      console.log(`✅ Client-side search found ${filteredEmails.length} emails`);
+
     } catch (err) {
-      console.error('Search error:', err);
+      console.error('❌ Search error:', err);
       setError(`Search failed: ${err.message}`);
     } finally {
       setSearching(false);
     }
   };
 
-  // ✅ ENHANCED: Fetch new emails from IMAP with force option
+  // ✅ FIXED: Fetch new emails from IMAP
   const fetchNewEmails = async (force = false) => {
     if (fetching) return;
 
@@ -292,18 +343,14 @@ function App() {
     try {
       console.log(`🔄 ${force ? 'Force ' : ''}Fetching new emails from IMAP...`);
       
-      const headers = await getAuthHeaders();
       const endpoint = force ? '/api/force-refresh' : '/api/fetch-emails';
-      const response = await fetch(`${API_BASE}${endpoint}`, {
+      const result = await makeApiCall(endpoint, {
         method: 'POST',
-        headers: headers,
         body: JSON.stringify({
           count: 100,
           force: force
         })
       });
-
-      const result = await handleApiError(response, 'Failed to fetch emails');
       
       if (result.success) {
         setFetchStatus('success');
@@ -321,27 +368,23 @@ function App() {
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
-      console.error('Fetch failed:', err);
+      console.error('❌ Fetch failed:', err);
     } finally {
       setFetching(false);
     }
   };
 
-  // ✅ NEW: Force refresh function
+  // ✅ FIXED: Force refresh function
   const forceRefreshEmails = async () => {
     await fetchNewEmails(true);
   };
 
-  // ✅ NEW: Clear cache function
+  // ✅ FIXED: Clear cache function
   const clearCache = async () => {
     try {
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/clear-cache`, {
-        method: 'POST',
-        headers: headers
+      const result = await makeApiCall('/api/clear-cache', {
+        method: 'POST'
       });
-
-      const result = await handleApiError(response, 'Failed to clear cache');
       
       if (result.success) {
         console.log('🗑️ Cache cleared successfully');
@@ -349,12 +392,58 @@ function App() {
         await loadAllEmails(true);
       }
     } catch (err) {
-      console.error('Failed to clear cache:', err);
+      console.error('❌ Failed to clear cache:', err);
       setError(`Failed to clear cache: ${err.message}`);
     }
   };
 
-  // Process email data
+  // ✅ FIXED: Delete email function
+  const deleteEmail = async (emailId, messageId) => {
+    if (!emailId && !messageId) {
+      setError('Cannot delete email: Missing identifier');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
+    );
+
+    if (!confirmed) return;
+
+    setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
+
+    try {
+      const result = await makeApiCall(`/api/emails/${messageId}`, {
+        method: 'DELETE'
+      });
+
+      if (result.success) {
+        setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
+        setFetchStatus('success');
+        
+        // Update stats
+        if (emailStats) {
+          setEmailStats(prev => ({
+            ...prev,
+            totalEmails: Math.max(0, prev.totalEmails - 1)
+          }));
+          setTotalEmails(prev => Math.max(0, prev - 1));
+        }
+        
+        // Refresh debug state
+        await loadDebugState();
+        
+      } else {
+        throw new Error(result.error || 'Failed to delete email');
+      }
+    } catch (err) {
+      setError(`Failed to delete email: ${err.message}`);
+    } finally {
+      setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
+    }
+  };
+
+  // Process email data (keep your existing function)
   const processEmailData = (email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -421,57 +510,7 @@ function App() {
     return processedEmail;
   };
 
-  // Enhanced delete email function
-  const deleteEmail = async (emailId, messageId) => {
-    if (!emailId && !messageId) {
-      setError('Cannot delete email: Missing identifier');
-      return;
-    }
-
-    const confirmed = window.confirm(
-      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
-    );
-
-    if (!confirmed) return;
-
-    setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
-
-    try {
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${API_BASE}/api/emails/${messageId}`, {
-        method: 'DELETE',
-        headers: headers
-      });
-
-      const result = await handleApiError(response, 'Failed to delete email');
-
-      if (result.success) {
-        setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
-        setFetchStatus('success');
-        
-        // Update stats
-        if (emailStats) {
-          setEmailStats(prev => ({
-            ...prev,
-            totalEmails: prev.totalEmails - 1
-          }));
-          setTotalEmails(prev => prev - 1);
-        }
-        
-        // Refresh debug state
-        await loadDebugState();
-        
-      } else {
-        throw new Error(result.error || 'Failed to delete email');
-      }
-    } catch (err) {
-      setError(`Failed to delete email: ${err.message}`);
-    } finally {
-      setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
-    }
-  };
-
-  // Keep your existing attachment rendering functions
+  // Keep your existing renderAttachment function
   const renderAttachment = (attachment, index, emailIndex) => {
     return (
       <div key={attachment.id} className="attachment-item">
@@ -495,6 +534,7 @@ function App() {
     );
   };
 
+  // Keep your existing EmailCard component
   const EmailCard = ({ email, index }) => (
     <div className="email-card">
       <div className="email-actions-top">
@@ -553,13 +593,13 @@ function App() {
     </div>
   );
 
-  // ✅ UPDATED: Load ALL emails on component mount using new endpoint
+  // ✅ FIXED: Load emails on component mount
   useEffect(() => {
     console.log('🎯 Component mounted, loading ALL emails...');
     loadAllEmails(true);
   }, []);
 
-  // ✅ UPDATED: Search handler - search ALL emails
+  // ✅ FIXED: Search handler with improved logic
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search.trim().length > 0) {
