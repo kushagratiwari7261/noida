@@ -16,7 +16,7 @@ function App() {
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null); // Add user state
 
-  const API_BASE = 'http://localhost:3002'; // Update with your backend URL
+  const API_BASE = 'http://localhost:3001'; // Update with your backend URL
 
   // Get authentication token
   const getAuthToken = async () => {
