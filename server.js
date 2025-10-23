@@ -87,7 +87,6 @@ let supabaseEnabled = false;
 
 const initializeSupabase = () => {
   try {
-    // Use the same environment variable names as your frontend
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
@@ -155,12 +154,12 @@ const testSupabaseConnection = async () => {
 
 initializeSupabase();
 
-// User-Email Mapping Configuration - UPDATED WITH CORRECT EMAILS
+// User-Email Mapping Configuration
 const USER_EMAIL_MAPPING = {
-  "info@seal.co.in": [1],                    // Can only access IMAP account 1
-  "pankaj.singh@seal.co.in": [2],           // Can only access IMAP account 2  
-  "anshuman.singh@seal.co.in": [1, 2],      // Can access both IMAP accounts
-  "transport@seal.co.in": [1, 2]            // Can access both IMAP accounts
+  "info@seal.co.in": [1],
+  "pankaj.singh@seal.co.in": [2],
+  "anshuman.singh@seal.co.in": [1, 2],
+  "transport@seal.co.in": [1, 2]
 };
 
 // Enhanced Email Configuration Manager
@@ -285,19 +284,17 @@ const authenticateUser = async (req, res, next) => {
     
     console.log("🔐 Token received, length:", token.length);
 
-    // DEVELOPMENT BYPASS - UPDATED WITH CORRECT EMAIL
+    // DEVELOPMENT BYPASS
     if (process.env.NODE_ENV === 'development') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
-      // Set a test user - using anshuman.singh@seal.co.in which has access to both accounts
       req.user = { 
-        email: "anshuman.singh@seal.co.in", // Has access to both accounts
+        email: "anshuman.singh@seal.co.in",
         id: "dev-user" 
       };
       console.log("🔐 Development user set:", req.user.email);
       return next();
     }
 
-    // Check if Supabase is available
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available for authentication");
       return res.status(500).json({
@@ -306,23 +303,11 @@ const authenticateUser = async (req, res, next) => {
       });
     }
 
-    // Verify the JWT token with Supabase
     console.log("🔐 Verifying token with Supabase...");
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error) {
       console.error("❌ Supabase token verification failed:", error.message);
-      console.error("Error details:", error);
-      
-      // More specific error handling
-      if (error.message?.includes('JWT') || error.message?.includes('token')) {
-        return res.status(401).json({
-          success: false,
-          error: "Invalid authentication token. Please log in again.",
-          details: "JWT token is invalid"
-        });
-      }
-      
       return res.status(401).json({
         success: false,
         error: "Authentication failed. Please log in again.",
@@ -330,7 +315,7 @@ const authenticateUser = async (req, res, next) => {
       });
     }
 
-    if (!user) {
+    if (!user || !user.email) {
       console.log("❌ No user found for token");
       return res.status(401).json({
         success: false,
@@ -338,17 +323,8 @@ const authenticateUser = async (req, res, next) => {
       });
     }
 
-    if (!user.email) {
-      console.log("❌ No email found in user object");
-      return res.status(401).json({
-        success: false,
-        error: "User email not found. Please log in again."
-      });
-    }
-
     console.log(`✅ Authenticated user: ${user.email} (${user.id})`);
     
-    // Set user info for authorization
     req.user = {
       email: user.email,
       id: user.id
@@ -374,7 +350,6 @@ const authorizeEmailAccess = (accountId = null) => {
       
       console.log(`🔐 Authorization check for ${userEmail}, account: ${targetAccountId}`);
       
-      // If no specific account requested, check if user has any access
       if (!targetAccountId || targetAccountId === 'all') {
         const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
         if (allowedAccounts.length === 0) {
@@ -388,7 +363,6 @@ const authorizeEmailAccess = (accountId = null) => {
         return next();
       }
       
-      // Check specific account access
       if (!emailConfigManager.canUserAccessAccount(userEmail, targetAccountId)) {
         console.log(`❌ User ${userEmail} not authorized for account ${targetAccountId}`);
         return res.status(403).json({
@@ -694,7 +668,6 @@ app.get("/api/test-supabase", async (req, res) => {
       });
     }
 
-    // Test simple query
     const { data, error, count } = await supabase
       .from('emails')
       .select('*', { count: 'exact' })
@@ -727,7 +700,7 @@ app.get("/api/test-supabase", async (req, res) => {
   }
 });
 
-// Debug endpoint to check user info and access
+// Debug endpoint to check user info and access - FIXED
 app.get("/api/debug-user", authenticateUser, (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -854,27 +827,29 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       skip
     });
 
-    // Enhanced Supabase availability check
     if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available - enabled:", supabaseEnabled, "client:", !!supabase);
+      console.error("❌ Supabase not available");
       return res.status(500).json({
         success: false,
-        error: "Database service is currently unavailable. Please try again later."
+        error: "Database service is currently unavailable."
       });
     }
-
-    console.log("🔍 Building Supabase query...");
 
     let query = supabase
       .from('emails')
       .select('*', { count: 'exact' });
 
-    // Apply account filtering based on user access
     const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
     const allowedAccountIds = allowedAccounts.map(acc => acc.id);
     
+    if (allowedAccountIds.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: "No email accounts accessible for your user"
+      });
+    }
+
     if (accountId !== "all") {
-      // Specific account requested
       if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
         return res.status(403).json({
           success: false,
@@ -883,39 +858,28 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       }
       query = query.eq('account_id', parseInt(accountId));
     } else {
-      // Show all accessible accounts
-      if (allowedAccountIds.length > 0) {
-        query = query.in('account_id', allowedAccountIds);
-      } else {
-        return res.status(403).json({
-          success: false,
-          error: "No email accounts accessible"
-        });
-      }
+      query = query.in('account_id', allowedAccountIds);
     }
 
-    console.log(`🔐 User ${userEmail} can access accounts:`, allowedAccountIds);
-
-    // Add search if provided
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
-      console.log(`🔍 Applying search filter: "${trimmedSearch}"`);
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
-    // Add sorting
-    console.log(`🔍 Applying sort: ${sort}`);
-    if (sort === "date_asc") {
-      query = query.order('date', { ascending: true });
-    } else if (sort === "subject_asc") {
-      query = query.order('subject', { ascending: true });
-    } else if (sort === "subject_desc") {
-      query = query.order('subject', { ascending: false });
-    } else {
-      query = query.order('date', { ascending: false }); // default date_desc
+    switch (sort) {
+      case "date_asc":
+        query = query.order('date', { ascending: true });
+        break;
+      case "subject_asc":
+        query = query.order('subject', { ascending: true });
+        break;
+      case "subject_desc":
+        query = query.order('subject', { ascending: false });
+        break;
+      default:
+        query = query.order('date', { ascending: false });
     }
 
-    // Add pagination
     query = query.range(skip, skip + limitNum - 1);
 
     console.log("🚀 Executing Supabase query...");
@@ -923,40 +887,15 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     if (error) {
       console.error("❌ Supabase query error:", error);
-      console.error("Error details:", {
-        code: error.code,
-        details: error.details,
-        hint: error.hint,
-        message: error.message
+      return res.status(500).json({
+        success: false,
+        error: "Database query failed",
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
-      
-      // Handle specific Supabase errors
-      if (error.code === 'PGRST301') {
-        return res.status(500).json({
-          success: false,
-          error: "Database schema error. Please contact administrator.",
-          code: error.code
-        });
-      } else if (error.code === '42P01') {
-        return res.status(500).json({
-          success: false,
-          error: "Emails table not found. Please contact administrator.",
-          code: error.code
-        });
-      } else if (error.code === '42501') {
-        return res.status(500).json({
-          success: false,
-          error: "Database permission denied. Please contact administrator.",
-          code: error.code
-        });
-      }
-      
-      throw error;
     }
 
-    console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
+    console.log(`✅ Query successful: Found ${emails?.length || 0} emails`);
 
-    // Process emails to ensure consistent structure for frontend
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
       id: email.id || email.message_id,
@@ -993,13 +932,10 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       }
     };
 
-    console.log(`📨 Sending response with ${processedEmails.length} emails`);
     res.json(response);
 
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
-    console.error("Error stack:", error.stack);
-
     res.status(500).json({
       success: false,
       error: "Failed to fetch emails from database",
@@ -1235,7 +1171,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       });
     }
 
-    // First get the email to check account access
     const { data: email, error: fetchError } = await supabase
       .from('emails')
       .select('account_id')
@@ -1249,7 +1184,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       });
     }
 
-    // Check if user has access to this email's account
     if (!emailConfigManager.canUserAccessAccount(userEmail, email.account_id)) {
       return res.status(403).json({
         success: false,
@@ -1257,7 +1191,6 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       });
     }
 
-    // Delete the email
     const { error: deleteError } = await supabase
       .from('emails')
       .delete()
