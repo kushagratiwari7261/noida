@@ -700,7 +700,49 @@ app.get("/api/test-supabase", async (req, res) => {
   }
 });
 
-// Debug endpoint to check user info and access - FIXED
+// NEW: Test emails table structure
+app.get("/api/test-emails-table", async (req, res) => {
+  try {
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        message: "Supabase not available"
+      });
+    }
+
+    // Test basic query
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .limit(5);
+
+    if (error) {
+      return res.json({
+        success: false,
+        message: "Emails table query failed",
+        error: error.message,
+        code: error.code,
+        details: error.details
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Emails table is accessible",
+      data: data,
+      count: data.length
+    });
+
+  } catch (error) {
+    res.json({
+      success: false,
+      message: "Test failed",
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to check user info and access
 app.get("/api/debug-user", authenticateUser, (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -887,14 +929,17 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     if (error) {
       console.error("❌ Supabase query error:", error);
+      console.error("Full error details:", JSON.stringify(error, null, 2));
+      
       return res.status(500).json({
         success: false,
         error: "Database query failed",
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        code: error.code
       });
     }
 
-    console.log(`✅ Query successful: Found ${emails?.length || 0} emails`);
+    console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
@@ -932,10 +977,13 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       }
     };
 
+    console.log(`📨 Sending response with ${processedEmails.length} emails`);
     res.json(response);
 
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
+    console.error("Error stack:", error.stack);
+    
     res.status(500).json({
       success: false,
       error: "Failed to fetch emails from database",
