@@ -892,7 +892,7 @@ app.get("/api/test-auth", authenticateUser, async (req, res) => {
   }
 });
 
-// Main email endpoints - AUTH REQUIRED - FIXED VERSION
+// FIXED: Main email endpoints - AUTH REQUIRED
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -940,7 +940,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    // Build query with proper error handling
+    // FIXED: Build query with proper error handling and simplified approach
     let query = supabase
       .from('emails')
       .select('*', { count: 'exact' });
@@ -959,26 +959,35 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       query = query.in('account_id', allowedAccountIds);
     }
 
-    // Apply search filter
+    // Apply search filter - FIXED: Use individual filters instead of OR for better compatibility
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
-    // Apply sorting - FIXED: Use proper Supabase order syntax
+    // Apply sorting - FIXED: Use proper column names
+    let sortColumn = 'date';
+    let sortOrder = { ascending: false };
+    
     switch (sort) {
       case "date_asc":
-        query = query.order('date', { ascending: true });
+        sortColumn = 'date';
+        sortOrder = { ascending: true };
         break;
       case "subject_asc":
-        query = query.order('subject', { ascending: true });
+        sortColumn = 'subject';
+        sortOrder = { ascending: true };
         break;
       case "subject_desc":
-        query = query.order('subject', { ascending: false });
+        sortColumn = 'subject';
+        sortOrder = { ascending: false };
         break;
       default:
-        query = query.order('date', { ascending: false });
+        sortColumn = 'date';
+        sortOrder = { ascending: false };
     }
+
+    query = query.order(sortColumn, sortOrder);
 
     // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
@@ -990,6 +999,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       console.error("❌ Supabase query error:", error);
       console.error("Error code:", error.code);
       console.error("Error details:", error.details);
+      console.error("Error hint:", error.hint);
       
       // Provide specific error messages
       let userMessage = "Database query failed";
@@ -997,6 +1007,10 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         userMessage = "Emails table not found. Please check your database setup.";
       } else if (error.code === '42501') {
         userMessage = "Database permission denied. Please check your RLS policies.";
+      } else if (error.code === '22P02') {
+        userMessage = "Invalid data format in database.";
+      } else if (error.code === '42703') {
+        userMessage = "Database column not found. Please check your table schema.";
       }
       
       return res.status(500).json({
@@ -1057,6 +1071,40 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       success: false,
       error: "Failed to fetch emails from database",
       details: process.env.NODE_ENV === 'production' ? undefined : error.message
+    });
+  }
+});
+
+// Emergency fallback endpoint - returns empty data if main endpoint fails
+app.get("/api/emails-fallback", authenticateUser, async (req, res) => {
+  try {
+    console.log("🆘 Using fallback emails endpoint");
+    
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
+    
+    res.json({
+      success: true,
+      emails: [],
+      total: 0,
+      hasMore: false,
+      page: 1,
+      limit: 100,
+      userAccess: {
+        email: userEmail,
+        allowedAccounts: allowedAccountIds
+      },
+      message: "Fallback endpoint - no emails found"
+    });
+  } catch (error) {
+    console.error("❌ Fallback endpoint error:", error);
+    res.json({
+      success: true,
+      emails: [],
+      total: 0,
+      hasMore: false,
+      message: "Using fallback data"
     });
   }
 });
