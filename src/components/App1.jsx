@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App1.css';
-import { supabase } from '../lib/supabaseClient'; // Import Supabase client
+import { supabase } from '../lib/supabaseClient';
 
 function App() {
   const [emails, setEmails] = useState([]);
@@ -16,65 +16,109 @@ function App() {
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
 
-  const API_BASE = 'http://localhost:3001';
+  // Use environment variable for API base URL with fallback
+  const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
-  // Get authentication token
-  const getAuthToken = async () => {
+  // Get authentication token with retry logic
+  const getAuthToken = useCallback(async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error('❌ Auth session error:', error);
+        throw new Error('Authentication failed: ' + error.message);
+      }
+      
       if (session?.access_token) {
         return session.access_token;
       }
-      return null;
+      
+      // If no session, try to refresh
+      const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
+      
+      if (refreshError) {
+        console.error('❌ Session refresh failed:', refreshError);
+        throw new Error('Session expired. Please log in again.');
+      }
+      
+      if (refreshedSession?.access_token) {
+        return refreshedSession.access_token;
+      }
+      
+      throw new Error('No active session found. Please log in.');
     } catch (error) {
       console.error('❌ Error getting auth token:', error);
-      return null;
+      throw error;
     }
-  };
+  }, []);
 
   // Enhanced fetch with authentication and better error handling
-  const fetchWithAuth = async (url, options = {}) => {
-    const token = await getAuthToken();
-    
-    if (!token) {
-      throw new Error('No authentication token found. Please log in again.');
-    }
-
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...options.headers,
-    };
-
-    console.log('🔐 Making authenticated request to:', url);
-    
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
-
-    if (response.status === 401) {
-      throw new Error('Authentication failed. Please log in again.');
-    }
-
-    if (!response.ok) {
-      // Try to get error details from response
-      let errorDetails = `HTTP error! status: ${response.status}`;
-      try {
-        const errorData = await response.json();
-        errorDetails = errorData.error || errorData.message || errorDetails;
-      } catch (e) {
-        // If response is not JSON, use status text
-        errorDetails = response.statusText || errorDetails;
+  const fetchWithAuth = useCallback(async (url, options = {}) => {
+    try {
+      const token = await getAuthToken();
+      
+      if (!token) {
+        throw new Error('No authentication token found. Please log in again.');
       }
-      throw new Error(errorDetails);
-    }
 
-    return response;
-  };
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers,
+      };
+
+      console.log('🔐 Making authenticated request to:', url);
+      
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      });
+
+      // Handle authentication errors
+      if (response.status === 401) {
+        // Try to refresh token once
+        try {
+          const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+          if (refreshError || !session?.access_token) {
+            throw new Error('Authentication failed. Please log in again.');
+          }
+          
+          // Retry the request with new token
+          headers.Authorization = `Bearer ${session.access_token}`;
+          const retryResponse = await fetch(url, { ...options, headers });
+          
+          if (!retryResponse.ok) {
+            throw new Error(`HTTP error! status: ${retryResponse.status}`);
+          }
+          return retryResponse;
+        } catch (refreshErr) {
+          throw new Error('Authentication failed. Please log in again.');
+        }
+      }
+
+      if (!response.ok) {
+        let errorDetails = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          errorDetails = errorData.error || errorData.message || errorDetails;
+          if (errorData.details) {
+            errorDetails += ` (${errorData.details})`;
+          }
+        } catch (e) {
+          errorDetails = response.statusText || errorDetails;
+        }
+        throw new Error(errorDetails);
+      }
+
+      return response;
+    } catch (error) {
+      console.error('❌ Fetch with auth failed:', error);
+      throw error;
+    }
+  }, [getAuthToken]);
 
   // Enhanced load emails function with better error handling
-  const loadEmails = async (showLoading = true, forceRefresh = false) => {
+  const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
     if (showLoading) setLoading(true);
     setError(null);
 
@@ -84,8 +128,15 @@ function App() {
       // Test backend connection first
       try {
         const healthResponse = await fetch(`${API_BASE}/api/health`);
+        if (!healthResponse.ok) {
+          throw new Error(`Backend health check failed: ${healthResponse.status}`);
+        }
         const healthData = await healthResponse.json();
         console.log('🏥 Backend health:', healthData.status);
+        
+        if (healthData.status === 'unhealthy') {
+          throw new Error('Backend server is unhealthy. Please check server logs.');
+        }
       } catch (healthErr) {
         console.error('❌ Backend health check failed:', healthErr);
         throw new Error('Backend server is not responding. Please check if the server is running.');
@@ -115,20 +166,18 @@ function App() {
       
       console.log('📧 Backend response:', data);
       
-      // Check if response indicates success
       if (!data.success) {
         throw new Error(data.error || 'Failed to load emails from server');
       }
       
       let emailsToProcess = [];
       
-      // Handle response structure
       if (data.emails && Array.isArray(data.emails)) {
         emailsToProcess = data.emails;
       } else if (Array.isArray(data)) {
         emailsToProcess = data;
       } else {
-        console.log('❌ No emails found in response');
+        console.log('ℹ️ No emails found in response');
         setEmails([]);
         return;
       }
@@ -141,10 +190,9 @@ function App() {
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
-        return dateB - dateA; // Descending (newest first)
+        return dateB - dateA;
       });
       
-      // Log attachment information
       const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
       console.log('📎 Total attachments found:', totalAttachments);
       
@@ -152,12 +200,11 @@ function App() {
       console.log('✅ Emails set in state:', sortedEmails.length);
       
     } catch (err) {
-      console.error('❌ Fetch error:', err);
+      console.error('❌ Load emails error:', err);
       setEmails([]);
       
       let errorMessage = `Failed to load emails: ${err.message}`;
       
-      // More specific error messages
       if (err.message.includes('Authentication failed')) {
         errorMessage = 'Authentication failed. Please log in again.';
         setTimeout(() => {
@@ -174,10 +221,10 @@ function App() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  };
+  }, [API_BASE, fetchWithAuth, search, sort]);
 
   // Enhanced fetch function with better error handling
-  const fetchEmails = async (mode = 'latest') => {
+  const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetching) return;
 
     setFetching(true);
@@ -215,7 +262,6 @@ function App() {
       setError(err.message);
       console.error(`❌ ${mode} fetch failed:`, err);
       
-      // If authentication failed, redirect to login
       if (err.message.includes('Authentication failed')) {
         setTimeout(() => {
           window.location.href = '/login';
@@ -224,14 +270,14 @@ function App() {
     } finally {
       setFetching(false);
     }
-  };
+  }, [API_BASE, fetchWithAuth, fetching, loadEmails]);
 
-  // Individual fetch functions for backward compatibility
-  const fetchNewEmails = () => fetchEmails('latest');
-  const forceFetchEmails = () => fetchEmails('force');
+  // Individual fetch functions
+  const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
+  const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
   // Refresh emails - force reload from database
-  const forceRefreshEmails = async () => {
+  const forceRefreshEmails = useCallback(async () => {
     if (fetching) return;
 
     setFetching(true);
@@ -252,17 +298,20 @@ function App() {
     } finally {
       setFetching(false);
     }
-  };
+  }, [fetching, loadEmails]);
 
   // Test backend connection
-  const testBackendConnection = async () => {
+  const testBackendConnection = useCallback(async () => {
     try {
       setError(null);
       console.log('🧪 Testing backend connection...');
       
       const response = await fetch(`${API_BASE}/api/health`);
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       
+      const data = await response.json();
       console.log('🏥 Backend health:', data);
       
       if (data.status === 'healthy') {
@@ -274,10 +323,10 @@ function App() {
     } catch (err) {
       setError(`❌ Cannot connect to backend: ${err.message}`);
     }
-  };
+  }, [API_BASE]);
 
-  // Rest of your existing functions remain the same...
-  const processAttachmentUrl = (attachment) => {
+  // Process attachment URL
+  const processAttachmentUrl = useCallback((attachment) => {
     const url = attachment.url || attachment.publicUrl || attachment.downloadUrl;
     
     if (!url) {
@@ -298,9 +347,10 @@ function App() {
     });
 
     return processedUrl;
-  };
+  }, []);
 
-  const processEmailData = (email) => {
+  // Process email data
+  const processEmailData = useCallback((email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
       _id: email._id || email.id || email.messageId || email.message_id,
@@ -365,9 +415,10 @@ function App() {
     }
 
     return processedEmail;
-  };
+  }, [processAttachmentUrl]);
 
-  const deleteEmail = async (emailId, messageId) => {
+  // Delete email
+  const deleteEmail = useCallback(async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
       setError('Cannot delete email: Missing identifier');
@@ -405,10 +456,10 @@ function App() {
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
-  };
+  }, [API_BASE, fetchWithAuth]);
 
-  // Rest of your existing functions (downloadFile, getFileIcon, getFileSize, renderAttachment, etc.)
-  const downloadFile = async (attachment, filename) => {
+  // Download file
+  const downloadFile = useCallback(async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', { filename, url: attachment.url, type: attachment.type });
 
@@ -444,9 +495,10 @@ function App() {
         alert(`Download failed: ${error.message}`);
       }
     }
-  };
+  }, []);
 
-  const getFileIcon = (mimeType, filename) => {
+  // File icon helper
+  const getFileIcon = useCallback((mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
     const extension = filename?.split('.').pop()?.toLowerCase();
@@ -466,16 +518,18 @@ function App() {
     if (extension === 'js' || extension === 'html' || extension === 'css') return '💻';
     
     return '📎';
-  };
+  }, []);
 
-  const getFileSize = (bytes) => {
+  // File size helper
+  const getFileSize = useCallback((bytes) => {
     if (!bytes || bytes === 0) return 'Unknown size';
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
-  };
+  }, []);
 
-  const renderAttachment = (attachment, index, emailIndex) => {
+  // Render attachment
+  const renderAttachment = useCallback((attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
     const fileSize = getFileSize(attachment.size);
@@ -486,7 +540,6 @@ function App() {
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
     const safeUrl = attachment.url;
 
-    // For problematic files
     const isProblematicFile = 
       attachment.url?.includes('godaddy') || 
       attachment.url?.includes('tracking') ||
@@ -651,18 +704,18 @@ function App() {
         )}
       </div>
     );
-  };
+  }, [downloadFile, expandedImages, getFileIcon, getFileSize]);
 
-  const toggleImageExpand = (emailIndex, attachmentIndex) => {
+  const toggleImageExpand = useCallback((emailIndex, attachmentIndex) => {
     const key = `${emailIndex}-${attachmentIndex}`;
     setExpandedImages(prev => ({
       ...prev,
       [key]: !prev[key]
     }));
-  };
+  }, []);
 
   // Enhanced EmailCard component
-  const EmailCard = ({ email, index }) => (
+  const EmailCard = React.memo(({ email, index }) => (
     <div className="email-card">
       <div className="email-actions-top">
         <button 
@@ -718,14 +771,18 @@ function App() {
         </div>
       )}
     </div>
-  );
+  ));
 
   // Get current user on component mount
   useEffect(() => {
     const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
-      console.log('👤 Current user:', user?.email);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        setUser(user);
+        console.log('👤 Current user:', user?.email);
+      } catch (error) {
+        console.error('❌ Error getting user:', error);
+      }
     };
     getUser();
   }, []);
@@ -734,7 +791,7 @@ function App() {
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     loadEmails(true, true);
-  }, []);
+  }, [loadEmails]);
 
   // Load emails when search or sort changes
   useEffect(() => {
@@ -743,7 +800,7 @@ function App() {
     }, 500);
     
     return () => clearTimeout(timer);
-  }, [search, sort]);
+  }, [search, sort, loadEmails]);
 
   // Reset fetch status after 5 seconds
   useEffect(() => {
@@ -769,6 +826,19 @@ function App() {
   };
 
   const statusMessage = getStatusMessage();
+
+  // Add error boundary fallback
+  if (error && error.includes('Authentication failed')) {
+    return (
+      <div className="error-container">
+        <h2>Authentication Required</h2>
+        <p>{error}</p>
+        <button onClick={() => window.location.href = '/login'}>
+          Go to Login
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
