@@ -772,6 +772,98 @@ app.get("/api/test-emails-table", async (req, res) => {
   }
 });
 
+// Database health check endpoint
+app.get("/api/db-health", authenticateUser, async (req, res) => {
+  try {
+    if (!supabaseEnabled || !supabase) {
+      return res.json({
+        success: false,
+        message: "Supabase client not initialized",
+        supabaseEnabled,
+        hasClient: !!supabase
+      });
+    }
+
+    // Test basic connection
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    
+    // Test emails table access
+    const { data, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .limit(1);
+
+    res.json({
+      success: true,
+      connection: {
+        authenticated: !authError,
+        authError: authError?.message,
+        canQueryEmails: !error,
+        emailsError: error?.message,
+        emailsErrorCode: error?.code,
+        emailsCount: count || 0,
+        tableExists: !error || error.code !== '42P01'
+      },
+      user: req.user.email
+    });
+
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Simple query test endpoint
+app.get("/api/simple-query", authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
+
+    console.log(`🔍 Simple query for user ${userEmail}, allowed accounts:`, allowedAccountIds);
+
+    if (allowedAccountIds.length === 0) {
+      return res.json({
+        success: false,
+        error: "No allowed accounts"
+      });
+    }
+
+    // Try a very simple query first
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .in('account_id', allowedAccountIds)
+      .limit(5)
+      .order('date', { ascending: false });
+
+    if (error) {
+      console.error("❌ Simple query error:", error);
+      return res.json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        details: error.details
+      });
+    }
+
+    res.json({
+      success: true,
+      count: data.length,
+      emails: data
+    });
+
+  } catch (error) {
+    console.error("❌ Simple query exception:", error);
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Authentication test endpoint
 app.get("/api/test-auth", authenticateUser, async (req, res) => {
   try {
@@ -800,7 +892,7 @@ app.get("/api/test-auth", authenticateUser, async (req, res) => {
   }
 });
 
-// Main email endpoints - AUTH REQUIRED
+// Main email endpoints - AUTH REQUIRED - FIXED VERSION
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -835,12 +927,11 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    let query = supabase
-      .from('emails')
-      .select('*', { count: 'exact' });
-
+    // Get user's allowed accounts
     const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
     const allowedAccountIds = allowedAccounts.map(acc => acc.id);
+    
+    console.log(`🔐 User ${userEmail} allowed accounts:`, allowedAccountIds);
     
     if (allowedAccountIds.length === 0) {
       return res.status(403).json({
@@ -849,23 +940,32 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
+    // Build query with proper error handling
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' });
+
+    // Apply account filter
     if (accountId !== "all") {
-      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+      const accountIdNum = parseInt(accountId);
+      if (!allowedAccountIds.includes(accountIdNum)) {
         return res.status(403).json({
           success: false,
           error: "Access denied to this email account"
         });
       }
-      query = query.eq('account_id', parseInt(accountId));
+      query = query.eq('account_id', accountIdNum);
     } else {
       query = query.in('account_id', allowedAccountIds);
     }
 
+    // Apply search filter
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
+    // Apply sorting - FIXED: Use proper Supabase order syntax
     switch (sort) {
       case "date_asc":
         query = query.order('date', { ascending: true });
@@ -880,6 +980,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         query = query.order('date', { ascending: false });
     }
 
+    // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
 
     console.log("🚀 Executing Supabase query...");
@@ -887,11 +988,20 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     if (error) {
       console.error("❌ Supabase query error:", error);
-      console.error("Full error details:", JSON.stringify(error, null, 2));
+      console.error("Error code:", error.code);
+      console.error("Error details:", error.details);
+      
+      // Provide specific error messages
+      let userMessage = "Database query failed";
+      if (error.code === '42P01') {
+        userMessage = "Emails table not found. Please check your database setup.";
+      } else if (error.code === '42501') {
+        userMessage = "Database permission denied. Please check your RLS policies.";
+      }
       
       return res.status(500).json({
         success: false,
-        error: "Database query failed",
+        error: userMessage,
         details: process.env.NODE_ENV === 'production' ? undefined : error.message,
         code: error.code
       });
@@ -899,6 +1009,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
+    // Process emails for response
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
       id: email.id || email.message_id,
@@ -1224,6 +1335,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     });
   }
 });
+
 app.post("/api/clear-cache", (req, res) => {
   clearCache();
   res.json({ 
