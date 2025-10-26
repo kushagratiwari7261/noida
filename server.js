@@ -6,7 +6,7 @@ import path from "path";
 import { createClient } from "@supabase/supabase-js";
 import { fileURLToPath } from 'url';
 
-// Load environment variables - VERCEL COMPATIBLE
+// Load environment variables
 const loadEnv = async () => {
   if (process.env.NODE_ENV !== 'production') {
     try {
@@ -14,10 +14,10 @@ const loadEnv = async () => {
       dotenv.config();
       console.log('✅ Loaded environment variables from .env file');
     } catch (error) {
-      console.log('⚠️ dotenv not available, using Vercel environment variables');
+      console.log('⚠️ dotenv not available, using platform environment variables');
     }
   } else {
-    console.log('✅ Using Vercel environment variables');
+    console.log('✅ Using production environment variables');
   }
 };
 
@@ -29,20 +29,46 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Enhanced Middleware with better error handling
+// ✅ FIXED: Enhanced CORS for production - allow all origins for mobile devices
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "*",
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow all origins in production for mobile devices and different hosts
+    if (process.env.NODE_ENV === 'production') {
+      callback(null, true);
+    } else {
+      // In development, allow specific origins
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001',
+        process.env.FRONTEND_URL
+      ].filter(Boolean);
+      
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// ✅ FIXED: Handle preflight requests
+app.options('*', cors());
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.path}`, {
-    query: req.query,
-    body: req.method !== 'GET' ? req.body : undefined,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    origin: req.get('origin'),
+    userAgent: req.get('User-Agent')
   });
   next();
 });
@@ -50,7 +76,6 @@ app.use((req, res, next) => {
 // Cache configuration
 const cache = new Map();
 const CACHE_TTL = 300000;
-const MAX_CACHE_SIZE = 100;
 
 function getFromCache(key) {
   try {
@@ -68,15 +93,9 @@ function getFromCache(key) {
 
 function setToCache(key, data) {
   try {
-    if (cache.size >= MAX_CACHE_SIZE) {
-      const firstKey = cache.keys().next().value;
-      cache.delete(firstKey);
-    }
-    
     cache.set(key, {
       data,
-      timestamp: Date.now(),
-      size: JSON.stringify(data).length
+      timestamp: Date.now()
     });
   } catch (error) {
     console.error("❌ Cache set error:", error);
@@ -84,23 +103,18 @@ function setToCache(key, data) {
 }
 
 function clearCache() {
-  try {
-    cache.clear();
-    console.log("✅ Cache cleared successfully");
-  } catch (error) {
-    console.error("❌ Cache clear error:", error);
-  }
+  cache.clear();
+  console.log("✅ Cache cleared");
 }
 
-// Enhanced Supabase client with better error handling
+// Enhanced Supabase client
 let supabase = null;
 let supabaseEnabled = false;
 
 const initializeSupabase = () => {
   try {
-    // VERCEL COMPATIBLE: Use both naming conventions
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
       console.error("❌ Supabase environment variables not set");
@@ -110,29 +124,22 @@ const initializeSupabase = () => {
       return false;
     }
 
-    console.log("🔗 Initializing Supabase with URL:", supabaseUrl);
+    console.log("🔗 Initializing Supabase...");
     
-    supabase = createClient(
-      supabaseUrl,
-      supabaseKey,
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false
-        },
-        global: {
-          headers: {
-            'X-Client-Info': 'email-backend'
-          }
-        }
+    supabase = createClient(supabaseUrl, supabaseKey, {
+      auth: { 
+        persistSession: false,
+        autoRefreshToken: false 
+      },
+      global: { 
+        headers: { 'X-Client-Info': 'email-backend' } 
       }
-    );
+    });
     
     supabaseEnabled = true;
     console.log("✅ Supabase client created successfully");
     
-    // Test the connection
+    // Test connection
     testSupabaseConnection();
     return true;
   } catch (error) {
@@ -142,19 +149,14 @@ const initializeSupabase = () => {
   }
 };
 
-// Test Supabase connection
 const testSupabaseConnection = async () => {
   try {
     if (supabaseEnabled && supabase) {
       console.log("🧪 Testing Supabase connection...");
-      const { data, error } = await supabase
-        .from('emails')
-        .select('*')
-        .limit(1);
+      const { error } = await supabase.from('emails').select('message_id').limit(1);
       
       if (error) {
         console.error("❌ Supabase connection test failed:", error.message);
-        console.error("Error details:", error);
       } else {
         console.log("✅ Supabase connection test successful");
       }
@@ -187,7 +189,6 @@ class EmailConfigManager {
       let loadedCount = 0;
       
       while (true) {
-        // VERCEL COMPATIBLE: Try multiple naming conventions
         const configKey = `EMAIL_CONFIG_${configIndex}`;
         const configValue = process.env[configKey];
         
@@ -297,7 +298,7 @@ const authenticateUser = async (req, res, next) => {
     
     console.log("🔐 Token received, length:", token.length);
 
-    // DEVELOPMENT BYPASS - VERCEL COMPATIBLE
+    // ✅ FIXED: DEVELOPMENT BYPASS - Only in development
     if (process.env.NODE_ENV !== 'production') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
       req.user = { 
@@ -472,8 +473,8 @@ class IMAPConnection {
         port: 993,
         tls: true,
         tlsOptions: { rejectUnauthorized: false },
-        connTimeout: 15000,
-        authTimeout: 10000,
+        connTimeout: 30000, // ✅ Increased timeout for production
+        authTimeout: 15000,
         keepAlive: false
       });
 
@@ -554,7 +555,7 @@ async function checkDuplicate(messageId, accountId) {
   }
 }
 
-async function processEmailsInBatch(emails, batchSize = 5) {
+async function processEmailsInBatch(emails, batchSize = 3) { // ✅ Reduced batch size for stability
   const batches = [];
   for (let i = 0; i < emails.length; i += batchSize) {
     batches.push(emails.slice(i, i + batchSize));
@@ -566,7 +567,7 @@ async function processEmailsInBatch(emails, batchSize = 5) {
       batch.map(email => saveEmailToSupabase(email))
     );
     results.push(...batchResults);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 500)); // ✅ Added delay between batches
   }
   
   return results;
@@ -658,7 +659,8 @@ app.get("/api/health", async (req, res) => {
           loaded: emailConfigManager.getAllConfigs().length > 0
         }
       },
-      environment: process.env.NODE_ENV || 'development'
+      environment: process.env.NODE_ENV || 'development',
+      platform: "Vercel Serverless"
     });
   } catch (error) {
     res.status(500).json({
@@ -669,230 +671,40 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// ✅ ADDED: Root endpoint for easy testing
+app.get("/", (req, res) => {
+  res.json({
+    message: "Email Backend API is running!",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      health: "/api/health",
+      emails: "/api/emails (requires auth)",
+      fetch_emails: "/api/fetch-emails (requires auth)"
+    }
+  });
+});
+
 // Debug endpoints - NO AUTH REQUIRED
 app.get("/api/debug-env", (req, res) => {
   res.json({
     success: true,
     environment: {
+      nodeEnv: process.env.NODE_ENV || 'not set',
+      port: process.env.PORT || 3001,
       supabase: {
         url: process.env.SUPABASE_URL ? "✅ Set" : "❌ Missing",
-        serviceKey: process.env.SUPABASE_SERVICE_KEY ? "✅ Set" : "❌ Missing",
-        serviceKeyLength: process.env.SUPABASE_SERVICE_KEY ? process.env.SUPABASE_SERVICE_KEY.length : 0
+        serviceKey: process.env.SUPABASE_SERVICE_KEY ? "✅ Set" : "❌ Missing"
       },
       emailConfigs: {
         config1: process.env.EMAIL_CONFIG_1 ? "✅ Set" : "❌ Missing",
         config2: process.env.EMAIL_CONFIG_2 ? "✅ Set" : "❌ Missing"
-      },
-      nodeEnv: process.env.NODE_ENV || 'not set',
-      port: process.env.PORT || 3001
+      }
     }
   });
 });
 
-app.get("/api/test-supabase", async (req, res) => {
-  try {
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        message: "Supabase not initialized",
-        enabled: supabaseEnabled,
-        client: !!supabase
-      });
-    }
-
-    const { data, error, count } = await supabase
-      .from('emails')
-      .select('*', { count: 'exact' })
-      .limit(5);
-
-    if (error) {
-      return res.json({
-        success: false,
-        message: "Supabase query failed",
-        error: error.message,
-        code: error.code,
-        details: error.details
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Supabase connection successful",
-      emailsCount: count || 0,
-      sampleData: data || [],
-      enabled: supabaseEnabled
-    });
-
-  } catch (error) {
-    res.json({
-      success: false,
-      message: "Supabase test failed",
-      error: error.message
-    });
-  }
-});
-
-app.get("/api/test-emails-table", async (req, res) => {
-  try {
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        message: "Supabase not available"
-      });
-    }
-
-    const { data, error } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(5);
-
-    if (error) {
-      return res.json({
-        success: false,
-        message: "Emails table query failed",
-        error: error.message,
-        code: error.code,
-        details: error.details
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Emails table is accessible",
-      data: data,
-      count: data.length
-    });
-
-  } catch (error) {
-    res.json({
-      success: false,
-      message: "Test failed",
-      error: error.message
-    });
-  }
-});
-
-// Database health check endpoint
-app.get("/api/db-health", authenticateUser, async (req, res) => {
-  try {
-    if (!supabaseEnabled || !supabase) {
-      return res.json({
-        success: false,
-        message: "Supabase client not initialized",
-        supabaseEnabled,
-        hasClient: !!supabase
-      });
-    }
-
-    // Test basic connection
-    const { data: authData, error: authError } = await supabase.auth.getUser();
-    
-    // Test emails table access
-    const { data, error, count } = await supabase
-      .from('emails')
-      .select('*', { count: 'exact' })
-      .limit(1);
-
-    res.json({
-      success: true,
-      connection: {
-        authenticated: !authError,
-        authError: authError?.message,
-        canQueryEmails: !error,
-        emailsError: error?.message,
-        emailsErrorCode: error?.code,
-        emailsCount: count || 0,
-        tableExists: !error || error.code !== '42P01'
-      },
-      user: req.user.email
-    });
-
-  } catch (error) {
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Simple query test endpoint
-app.get("/api/simple-query", authenticateUser, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
-
-    console.log(`🔍 Simple query for user ${userEmail}, allowed accounts:`, allowedAccountIds);
-
-    if (allowedAccountIds.length === 0) {
-      return res.json({
-        success: false,
-        error: "No allowed accounts"
-      });
-    }
-
-    // Try a very simple query first
-    const { data, error } = await supabase
-      .from('emails')
-      .select('*')
-      .in('account_id', allowedAccountIds)
-      .limit(5)
-      .order('date', { ascending: false });
-
-    if (error) {
-      console.error("❌ Simple query error:", error);
-      return res.json({
-        success: false,
-        error: error.message,
-        code: error.code,
-        details: error.details
-      });
-    }
-
-    res.json({
-      success: true,
-      count: data.length,
-      emails: data
-    });
-
-  } catch (error) {
-    console.error("❌ Simple query exception:", error);
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Authentication test endpoint
-app.get("/api/test-auth", authenticateUser, async (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    
-    res.json({
-      success: true,
-      message: "Authentication successful",
-      user: {
-        email: userEmail,
-        id: req.user.id
-      },
-      access: {
-        allowedAccounts: allowedAccounts,
-        canAccessAll: allowedAccounts.length > 0
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error("❌ Test auth error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Test failed"
-    });
-  }
-});
-
-// FIXED: Main email endpoints - AUTH REQUIRED
+// Main email endpoints - AUTH REQUIRED
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -927,11 +739,12 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    // Get user's allowed accounts
+    let query = supabase
+      .from('emails')
+      .select('*', { count: 'exact' });
+
     const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
     const allowedAccountIds = allowedAccounts.map(acc => acc.id);
-    
-    console.log(`🔐 User ${userEmail} allowed accounts:`, allowedAccountIds);
     
     if (allowedAccountIds.length === 0) {
       return res.status(403).json({
@@ -940,56 +753,37 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    // FIXED: Build query with proper error handling and simplified approach
-    let query = supabase
-      .from('emails')
-      .select('*', { count: 'exact' });
-
-    // Apply account filter
     if (accountId !== "all") {
-      const accountIdNum = parseInt(accountId);
-      if (!allowedAccountIds.includes(accountIdNum)) {
+      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
         return res.status(403).json({
           success: false,
           error: "Access denied to this email account"
         });
       }
-      query = query.eq('account_id', accountIdNum);
+      query = query.eq('account_id', parseInt(accountId));
     } else {
       query = query.in('account_id', allowedAccountIds);
     }
 
-    // Apply search filter - FIXED: Use individual filters instead of OR for better compatibility
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
-    // Apply sorting - FIXED: Use proper column names
-    let sortColumn = 'date';
-    let sortOrder = { ascending: false };
-    
     switch (sort) {
       case "date_asc":
-        sortColumn = 'date';
-        sortOrder = { ascending: true };
+        query = query.order('date', { ascending: true });
         break;
       case "subject_asc":
-        sortColumn = 'subject';
-        sortOrder = { ascending: true };
+        query = query.order('subject', { ascending: true });
         break;
       case "subject_desc":
-        sortColumn = 'subject';
-        sortOrder = { ascending: false };
+        query = query.order('subject', { ascending: false });
         break;
       default:
-        sortColumn = 'date';
-        sortOrder = { ascending: false };
+        query = query.order('date', { ascending: false });
     }
 
-    query = query.order(sortColumn, sortOrder);
-
-    // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
 
     console.log("🚀 Executing Supabase query...");
@@ -999,18 +793,12 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       console.error("❌ Supabase query error:", error);
       console.error("Error code:", error.code);
       console.error("Error details:", error.details);
-      console.error("Error hint:", error.hint);
       
-      // Provide specific error messages
       let userMessage = "Database query failed";
       if (error.code === '42P01') {
         userMessage = "Emails table not found. Please check your database setup.";
       } else if (error.code === '42501') {
         userMessage = "Database permission denied. Please check your RLS policies.";
-      } else if (error.code === '22P02') {
-        userMessage = "Invalid data format in database.";
-      } else if (error.code === '42703') {
-        userMessage = "Database column not found. Please check your table schema.";
       }
       
       return res.status(500).json({
@@ -1023,7 +811,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
-    // Process emails for response
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
       id: email.id || email.message_id,
@@ -1075,40 +862,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
   }
 });
 
-// Emergency fallback endpoint - returns empty data if main endpoint fails
-app.get("/api/emails-fallback", authenticateUser, async (req, res) => {
-  try {
-    console.log("🆘 Using fallback emails endpoint");
-    
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
-    
-    res.json({
-      success: true,
-      emails: [],
-      total: 0,
-      hasMore: false,
-      page: 1,
-      limit: 100,
-      userAccess: {
-        email: userEmail,
-        allowedAccounts: allowedAccountIds
-      },
-      message: "Fallback endpoint - no emails found"
-    });
-  } catch (error) {
-    console.error("❌ Fallback endpoint error:", error);
-    res.json({
-      success: true,
-      emails: [],
-      total: 0,
-      hasMore: false,
-      message: "Using fallback data"
-    });
-  }
-});
-
 // Email fetching endpoint
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
@@ -1119,7 +872,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     } = req.body;
     
     const userEmail = req.user.email;
-    const validatedCount = Math.min(parseInt(count) || 10, 50);
+    const validatedCount = Math.min(parseInt(count) || 10, 20); // ✅ Reduced for serverless limits
     
     let accountsToProcess = [];
     
@@ -1392,23 +1145,6 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// VERCEL COMPATIBLE: Serve static files for production
-if (process.env.NODE_ENV === 'production') {
-  const distPath = path.join(__dirname, 'dist');
-  app.use(express.static(distPath));
-
-  app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api')) {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-    } else {
-      res.status(404).json({ 
-        success: false,
-        error: 'API endpoint not found' 
-      });
-    }
-  });
-}
-
 // Global error handler
 app.use((error, req, res, next) => {
   console.error("🚨 Global error handler:", error);
@@ -1419,15 +1155,29 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Start server - VERCEL COMPATIBLE
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found',
+    availableEndpoints: [
+      'GET /api/health',
+      'GET /api/emails (auth required)',
+      'POST /api/fetch-emails (auth required)'
+    ]
+  });
+});
+
+// ✅ FIXED: VERCEL COMPATIBLE - Always export the app
+export default app;
+
+// Only start server in development
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
     console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
   });
 }
-
-// VERCEL COMPATIBLE: Export for serverless
-export default app;
