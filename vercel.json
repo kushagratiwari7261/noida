@@ -1,14 +1,46 @@
 {
   "version": 2,
+  "buildCommand": "cd client && npm run build",
+  "outputDirectory": "client/dist",
   "builds": [
-    { "src": "server.js", "use": "@vercel/node" },
-    { "src": "package.json", "use": "@vercel/static-build", "config": { "distDir": "dist" } }
+    {
+      "src": "server/server.js",
+      "use": "@vercel/node"
+    }
   ],
   "routes": [
-    { "src": "/api/(.*)", "dest": "/server.js" },
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
+    {
+      "src": "/api/(.*)",
+      "dest": "/server/server.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    },
+    {
+      "src": "/_next/static/(.*)",
+      "dest": "/client/dist/_next/static/$1"
+    },
+    {
+      "src": "/static/(.*)",
+      "dest": "/client/dist/static/$1"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "/client/dist/assets/$1"
+    },
+    {
+      "src": "/(.*\\.(ico|png|jpg|jpeg|svg|css|js|json|txt|xml))",
+      "dest": "/client/dist/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/client/dist/index.html"
+    }
   ],
+  "functions": {
+    "server/server.js": {
+      "maxDuration": 60,
+      "memory": 3008
+    }
+  },
   "env": {
     "NODE_ENV": "production"
   }
