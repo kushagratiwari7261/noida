@@ -16,8 +16,22 @@ function App() {
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
 
-  // Use environment variable for API base URL with fallback
-  const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+  // ✅ VERCEL-OPTIMIZED: Dynamic API base URL for cross-device compatibility
+  const getApiBaseUrl = () => {
+    // If we're in production (Vercel), use the current domain for backend
+    if (window.location.hostname.includes('.vercel.app')) {
+      // Extract the base domain and replace frontend with backend subdomain
+      const currentHost = window.location.hostname;
+      // If your backend is on a different subdomain, adjust this logic
+      // For same domain deployment, use relative URLs
+      return `https://${currentHost}`;
+    }
+    
+    // Use environment variable with fallback to relative path for production
+    return process.env.REACT_APP_API_URL || '/api';
+  };
+
+  const API_BASE = getApiBaseUrl();
 
   // Get authentication token with retry logic
   const getAuthToken = useCallback(async () => {
@@ -52,7 +66,7 @@ function App() {
     }
   }, []);
 
-  // Enhanced fetch with authentication and better error handling
+  // ✅ ENHANCED: Better error handling for cross-device compatibility
   const fetchWithAuth = useCallback(async (url, options = {}) => {
     try {
       const token = await getAuthToken();
@@ -61,15 +75,21 @@ function App() {
         throw new Error('No authentication token found. Please log in again.');
       }
 
+      // Ensure URL is properly formatted
+      let fullUrl = url;
+      if (!url.startsWith('http') && !url.startsWith('/api')) {
+        fullUrl = `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+      }
+
       const headers = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
         ...options.headers,
       };
 
-      console.log('🔐 Making authenticated request to:', url);
+      console.log('🔐 Making authenticated request to:', fullUrl);
       
-      const response = await fetch(url, {
+      const response = await fetch(fullUrl, {
         ...options,
         headers,
       });
@@ -85,7 +105,7 @@ function App() {
           
           // Retry the request with new token
           headers.Authorization = `Bearer ${session.access_token}`;
-          const retryResponse = await fetch(url, { ...options, headers });
+          const retryResponse = await fetch(fullUrl, { ...options, headers });
           
           if (!retryResponse.ok) {
             throw new Error(`HTTP error! status: ${retryResponse.status}`);
@@ -115,7 +135,51 @@ function App() {
       console.error('❌ Fetch with auth failed:', error);
       throw error;
     }
-  }, [getAuthToken]);
+  }, [getAuthToken, API_BASE]);
+
+  // ✅ ENHANCED: Better connection testing for cross-device
+  const testBackendConnection = useCallback(async () => {
+    try {
+      setError(null);
+      console.log('🧪 Testing backend connection...');
+      
+      const testUrl = `${API_BASE}/api/health`;
+      console.log('Testing URL:', testUrl);
+      
+      const response = await fetch(testUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      console.log('🏥 Backend health:', data);
+      
+      if (data.status === 'healthy') {
+        setError('✅ Backend is healthy and running!');
+        setTimeout(() => setError(null), 3000);
+        return true;
+      } else {
+        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+        return false;
+      }
+    } catch (err) {
+      console.error('❌ Backend connection failed:', err);
+      let errorMessage = `Cannot connect to backend: ${err.message}`;
+      
+      if (err.message.includes('Failed to fetch')) {
+        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
+      }
+      
+      setError(`❌ ${errorMessage}`);
+      return false;
+    }
+  }, [API_BASE]);
 
   // Enhanced load emails function with better error handling
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
@@ -124,6 +188,7 @@ function App() {
 
     try {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
+      console.log('🌐 Using API base:', API_BASE);
 
       // Test backend connection first
       try {
@@ -139,13 +204,13 @@ function App() {
         }
       } catch (healthErr) {
         console.error('❌ Backend health check failed:', healthErr);
-        throw new Error('Backend server is not responding. Please check if the server is running.');
+        throw new Error(`Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`);
       }
 
       // Clear cache first if force refresh
       if (forceRefresh) {
         try {
-          await fetchWithAuth(`${API_BASE}/api/clear-cache`, { method: 'POST' });
+          await fetchWithAuth('/api/clear-cache', { method: 'POST' });
           console.log('🗑️ Cache cleared');
         } catch (cacheErr) {
           console.log('⚠️ Cache clear failed, continuing...');
@@ -161,7 +226,7 @@ function App() {
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
 
-      const response = await fetchWithAuth(`${API_BASE}/api/emails?${queries}`);
+      const response = await fetchWithAuth(`/api/emails?${queries}`);
       const data = await response.json();
       
       console.log('📧 Backend response:', data);
@@ -211,9 +276,11 @@ function App() {
           window.location.href = '/login';
         }, 2000);
       } else if (err.message.includes('Backend server is not responding')) {
-        errorMessage = 'Backend server is not responding. Please check if the server is running on port 3001.';
+        errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`;
       } else if (err.message.includes('Failed to load emails from server')) {
         errorMessage = `Server error: ${err.message}`;
+      } else if (err.message.includes('Network error')) {
+        errorMessage = `Network error: Cannot connect to backend. Please check your internet connection and ensure the backend is running.`;
       }
       
       setError(errorMessage);
@@ -234,7 +301,7 @@ function App() {
     try {
       console.log(`🔄 Starting ${mode} fetch...`);
       
-      const response = await fetchWithAuth(`${API_BASE}/api/fetch-emails`, {
+      const response = await fetchWithAuth('/api/fetch-emails', {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
@@ -270,7 +337,7 @@ function App() {
     } finally {
       setFetching(false);
     }
-  }, [API_BASE, fetchWithAuth, fetching, loadEmails]);
+  }, [fetchWithAuth, fetching, loadEmails]);
 
   // Individual fetch functions
   const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
@@ -299,31 +366,6 @@ function App() {
       setFetching(false);
     }
   }, [fetching, loadEmails]);
-
-  // Test backend connection
-  const testBackendConnection = useCallback(async () => {
-    try {
-      setError(null);
-      console.log('🧪 Testing backend connection...');
-      
-      const response = await fetch(`${API_BASE}/api/health`);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      console.log('🏥 Backend health:', data);
-      
-      if (data.status === 'healthy') {
-        setError('✅ Backend is healthy and running!');
-        setTimeout(() => setError(null), 3000);
-      } else {
-        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
-      }
-    } catch (err) {
-      setError(`❌ Cannot connect to backend: ${err.message}`);
-    }
-  }, [API_BASE]);
 
   // Process attachment URL
   const processAttachmentUrl = useCallback((attachment) => {
@@ -435,7 +477,7 @@ function App() {
 
     try {
       console.log('🗑️ Deleting email:', { emailId, messageId });
-      const response = await fetchWithAuth(`${API_BASE}/api/emails/${messageId}`, {
+      const response = await fetchWithAuth(`/api/emails/${messageId}`, {
         method: 'DELETE',
       });
 
@@ -456,7 +498,7 @@ function App() {
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
-  }, [API_BASE, fetchWithAuth]);
+  }, [fetchWithAuth]);
 
   // Download file
   const downloadFile = useCallback(async (attachment, filename) => {
@@ -997,13 +1039,14 @@ function App() {
           <details>
             <summary>Debug Info</summary>
             <div className="debug-content">
-              <p>Backend: {API_BASE}</p>
+              <p>Backend URL: {API_BASE}</p>
               <p>Current user: {user?.email}</p>
               <p>Current emails: {emails.length}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>
               <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
+              <p>Environment: {window.location.hostname.includes('vercel.app') ? 'Production' : 'Development'}</p>
               {error && <p>Error: {error}</p>}
             </div>
           </details>
