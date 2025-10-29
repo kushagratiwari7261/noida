@@ -29,14 +29,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ✅ FIXED: Enhanced CORS for production - allow all origins for mobile devices
+// ✅ Enhanced CORS configuration
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow all origins in production for mobile devices and different hosts
     if (process.env.NODE_ENV === 'production') {
       callback(null, true);
     } else {
-      // In development, allow specific origins
       const allowedOrigins = [
         'http://localhost:3000',
         'http://localhost:3001',
@@ -57,11 +55,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// ✅ FIXED: Handle preflight requests
 app.options('*', cors());
-
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' })); // ✅ Increased for attachments
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -263,7 +259,128 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// Enhanced Authentication Middleware for Supabase JWT tokens
+// ✅ ADDED: Function to upload attachments to Supabase storage
+async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
+  try {
+    if (!supabaseEnabled || !supabase) {
+      console.error("❌ Supabase not available for attachment upload");
+      return null;
+    }
+
+    // Create a unique filename
+    const fileExtension = attachment.filename ? 
+      path.extname(attachment.filename) : '.bin';
+    const uniqueFilename = `${messageId}_${Date.now()}_${Math.random().toString(36).substring(7)}${fileExtension}`;
+    const filePath = `account_${accountId}/${uniqueFilename}`;
+
+    console.log(`📎 Uploading attachment: ${attachment.filename} -> ${filePath}`);
+
+    // Upload to Supabase storage
+    const { data, error } = await supabase.storage
+      .from('attachments')
+      .upload(filePath, attachment.content, {
+        contentType: attachment.contentType || 'application/octet-stream',
+        upsert: false
+      });
+
+    if (error) {
+      console.error("❌ Attachment upload error:", error);
+      return null;
+    }
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('attachments')
+      .getPublicUrl(filePath);
+
+    console.log(`✅ Attachment uploaded successfully: ${publicUrl}`);
+
+    return {
+      filename: attachment.filename || 'unnamed',
+      path: filePath,
+      url: publicUrl,
+      size: attachment.size || 0,
+      contentType: attachment.contentType || 'application/octet-stream'
+    };
+  } catch (error) {
+    console.error("❌ Error uploading attachment:", error);
+    return null;
+  }
+}
+
+// ✅ ADDED: Function to process email with attachments
+async function processEmailWithAttachments(parsed, messageId, accountId, seqno) {
+  try {
+    const emailData = {
+      messageId: messageId,
+      accountId: accountId,
+      subject: parsed.subject || '(No Subject)',
+      from: parsed.from?.text || "",
+      to: parsed.to?.text || "",
+      date: parsed.date || new Date(),
+      text: parsed.text || "",
+      html: parsed.html || "",
+      attachments: [],
+      hasAttachments: false,
+      attachmentsCount: 0
+    };
+
+    // Process attachments if they exist
+    if (parsed.attachments && parsed.attachments.length > 0) {
+      console.log(`📎 Processing ${parsed.attachments.length} attachments for email ${messageId}`);
+      
+      const attachmentPromises = parsed.attachments.map(async (attachment, index) => {
+        try {
+          // Only process attachments that have content
+          if (attachment.content) {
+            const attachmentInfo = await uploadAttachmentToSupabase(
+              attachment, 
+              messageId, 
+              accountId
+            );
+            
+            if (attachmentInfo) {
+              return {
+                filename: attachment.filename || `attachment_${index + 1}`,
+                url: attachmentInfo.url,
+                size: attachment.size || attachment.content.length || 0,
+                contentType: attachment.contentType || 'application/octet-stream',
+                path: attachmentInfo.path,
+                accountId: accountId,
+                messageId: messageId
+              };
+            }
+          } else {
+            console.log(`⚠️ Attachment ${index} has no content:`, attachment.filename);
+          }
+          return null;
+        } catch (attachmentError) {
+          console.error(`❌ Error processing attachment ${index}:`, attachmentError);
+          return null;
+        }
+      });
+
+      // Wait for all attachments to be processed
+      const attachmentResults = await Promise.all(attachmentPromises);
+      const successfulAttachments = attachmentResults.filter(att => att !== null);
+      
+      emailData.attachments = successfulAttachments;
+      emailData.hasAttachments = successfulAttachments.length > 0;
+      emailData.attachmentsCount = successfulAttachments.length;
+      
+      console.log(`✅ Successfully processed ${successfulAttachments.length}/${parsed.attachments.length} attachments`);
+    } else {
+      console.log(`ℹ️ No attachments found for email ${messageId}`);
+    }
+
+    return emailData;
+  } catch (error) {
+    console.error("❌ Error processing email with attachments:", error);
+    throw error;
+  }
+}
+
+// Enhanced Authentication Middleware
 const authenticateUser = async (req, res, next) => {
   try {
     console.log("🔐 Starting authentication for:", req.method, req.path);
@@ -298,7 +415,7 @@ const authenticateUser = async (req, res, next) => {
     
     console.log("🔐 Token received, length:", token.length);
 
-    // ✅ FIXED: DEVELOPMENT BYPASS - Only in development
+    // DEVELOPMENT BYPASS
     if (process.env.NODE_ENV !== 'production') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
       req.user = { 
@@ -355,7 +472,7 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Enhanced Authorization Middleware for Email Accounts
+// Enhanced Authorization Middleware
 const authorizeEmailAccess = (accountId = null) => {
   return (req, res, next) => {
     try {
@@ -473,7 +590,7 @@ class IMAPConnection {
         port: 993,
         tls: true,
         tlsOptions: { rejectUnauthorized: false },
-        connTimeout: 30000, // ✅ Increased timeout for production
+        connTimeout: 30000,
         authTimeout: 15000,
         keepAlive: false
       });
@@ -555,7 +672,7 @@ async function checkDuplicate(messageId, accountId) {
   }
 }
 
-async function processEmailsInBatch(emails, batchSize = 3) { // ✅ Reduced batch size for stability
+async function processEmailsInBatch(emails, batchSize = 3) {
   const batches = [];
   for (let i = 0; i < emails.length; i += batchSize) {
     batches.push(emails.slice(i, i + batchSize));
@@ -567,7 +684,7 @@ async function processEmailsInBatch(emails, batchSize = 3) { // ✅ Reduced batc
       batch.map(email => saveEmailToSupabase(email))
     );
     results.push(...batchResults);
-    await new Promise(resolve => setTimeout(resolve, 500)); // ✅ Added delay between batches
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
   
   return results;
@@ -671,7 +788,7 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// ✅ ADDED: Root endpoint for easy testing
+// Root endpoint
 app.get("/", (req, res) => {
   res.json({
     message: "Email Backend API is running!",
@@ -685,7 +802,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// Debug endpoints - NO AUTH REQUIRED
+// Debug endpoints
 app.get("/api/debug-env", (req, res) => {
   res.json({
     success: true,
@@ -862,7 +979,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
   }
 });
 
-// Email fetching endpoint
+// ✅ UPDATED: Email fetching endpoint with attachment processing
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
     const { 
@@ -872,7 +989,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     } = req.body;
     
     const userEmail = req.user.email;
-    const validatedCount = Math.min(parseInt(count) || 10, 20); // ✅ Reduced for serverless limits
+    const validatedCount = Math.min(parseInt(count) || 10, 20);
     
     let accountsToProcess = [];
     
@@ -962,19 +1079,13 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                     }
                   }
 
-                  const emailData = {
-                    messageId: messageId,
-                    accountId: account.id,
-                    subject: parsed.subject || '(No Subject)',
-                    from: parsed.from?.text || "",
-                    to: parsed.to?.text || "",
-                    date: parsed.date || new Date(),
-                    text: parsed.text || "",
-                    html: parsed.html || "",
-                    attachments: [],
-                    hasAttachments: false,
-                    attachmentsCount: 0
-                  };
+                  // ✅ UPDATED: Use the new function that processes attachments
+                  const emailData = await processEmailWithAttachments(
+                    parsed, 
+                    messageId, 
+                    account.id, 
+                    seqno
+                  );
 
                   newEmails.push(emailData);
                   processedCount++;
@@ -1091,7 +1202,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
 
     const { data: email, error: fetchError } = await supabase
       .from('emails')
-      .select('account_id')
+      .select('account_id, attachments')
       .eq('message_id', messageId)
       .single();
 
@@ -1107,6 +1218,29 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
         success: false,
         error: "Access denied to delete this email"
       });
+    }
+
+    // ✅ ADDED: Delete attachments from storage before deleting email
+    if (email.attachments && Array.isArray(email.attachments)) {
+      const deletePromises = email.attachments.map(async (attachment) => {
+        if (attachment.path) {
+          try {
+            const { error: deleteError } = await supabase.storage
+              .from('attachments')
+              .remove([attachment.path]);
+            
+            if (deleteError) {
+              console.error(`❌ Failed to delete attachment ${attachment.path}:`, deleteError);
+            } else {
+              console.log(`✅ Deleted attachment: ${attachment.path}`);
+            }
+          } catch (attachmentError) {
+            console.error(`❌ Error deleting attachment ${attachment.path}:`, attachmentError);
+          }
+        }
+      });
+      
+      await Promise.allSettled(deletePromises);
     }
 
     const { error: deleteError } = await supabase
@@ -1125,7 +1259,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Email deleted successfully"
+      message: "Email and attachments deleted successfully"
     });
 
   } catch (error) {
@@ -1168,12 +1302,10 @@ app.use('*', (req, res) => {
   });
 });
 
-// ✅ FIXED: VERCEL COMPATIBLE - Always export the app
 export default app;
 
 // Only start server in development
 if (process.env.NODE_ENV !== 'production') {
-  // ✅ FIXED: Bind to all network interfaces (0.0.0.0) so other devices can access
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
     console.log(`🌐 Accessible from other devices at: http://YOUR_LOCAL_IP:${PORT}`);
