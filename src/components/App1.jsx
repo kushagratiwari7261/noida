@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App1.css';
 import { supabase } from '../lib/supabaseClient';
 
@@ -15,14 +15,20 @@ function App() {
   const [error, setError] = useState(null);
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
+  const [userAccounts, setUserAccounts] = useState([]);
+  const [selectedAccount, setSelectedAccount] = useState('all');
+
+  // ✅ FIXED: Prevent duplicate requests
+  const loadEmailsInProgress = useRef(false);
+  const fetchEmailsInProgress = useRef(false);
 
   // ✅ Dynamic API base URL
   const getApiBaseUrl = () => {
     if (window.location.hostname.includes('.vercel.app')) {
-      const currentHost = window.location.hostname;
-      return `https://${currentHost}`;
+      // Use the backend subdomain on Vercel
+      return 'https://seal-freight.vercel.app';
     }
-    return process.env.REACT_APP_API_URL || '/api';
+   return process.env.REACT_APP_API_URL || '/api';
   };
 
   const API_BASE = getApiBaseUrl();
@@ -69,7 +75,7 @@ function App() {
       }
 
       let fullUrl = url;
-      if (!url.startsWith('http') && !url.startsWith('/api')) {
+      if (!url.startsWith('http')) {
         fullUrl = `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
       }
 
@@ -113,6 +119,10 @@ function App() {
           if (errorData.details) {
             errorDetails += ` (${errorData.details})`;
           }
+          // Log debug info if available
+          if (errorData.debugInfo) {
+            console.error('🐛 Debug info:', errorData.debugInfo);
+          }
         } catch (e) {
           errorDetails = response.statusText || errorDetails;
         }
@@ -125,6 +135,28 @@ function App() {
       throw error;
     }
   }, [getAuthToken, API_BASE]);
+
+  // ✅ NEW: Fetch user accounts
+  const fetchUserAccounts = useCallback(async () => {
+    try {
+      console.log('👤 Fetching user accounts...');
+      const response = await fetchWithAuth('/api/user-accounts');
+      const data = await response.json();
+      
+      if (data.success && data.accounts) {
+        console.log('✅ User accounts:', data.accounts);
+        setUserAccounts(data.accounts);
+        
+        // Set default account if user has only one
+        if (data.accounts.length === 1) {
+          setSelectedAccount(data.accounts[0].id.toString());
+        }
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch user accounts:', error);
+      // Don't show error to user, just log it
+    }
+  }, [fetchWithAuth]);
 
   // Test backend connection
   const testBackendConnection = useCallback(async () => {
@@ -170,7 +202,7 @@ function App() {
     }
   }, [API_BASE]);
 
-  // ✅ ENHANCED: Process attachment URLs for Supabase storage
+  // ✅ Process attachment URLs for Supabase storage
   const processAttachmentUrl = useCallback((attachment) => {
     console.log('🔗 Processing attachment:', {
       attachment,
@@ -212,7 +244,7 @@ function App() {
     return null;
   }, []);
 
-  // ✅ ENHANCED: Process email data with better attachment handling
+  // ✅ Process email data with better attachment handling
   const processEmailData = useCallback((email) => {
     console.log('📧 Processing email data:', {
       id: email.id,
@@ -308,8 +340,16 @@ function App() {
     return processedEmail;
   }, [processAttachmentUrl]);
 
-  // Load emails function
+  // ✅ FIXED: Load emails function with duplicate prevention
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
+    // ✅ Prevent duplicate requests
+    if (loadEmailsInProgress.current) {
+      console.log('⚠️ Load emails already in progress, skipping...');
+      return;
+    }
+
+    loadEmailsInProgress.current = true;
+
     if (showLoading) setLoading(true);
     setError(null);
 
@@ -326,7 +366,7 @@ function App() {
         const healthData = await healthResponse.json();
         console.log('🏥 Backend health:', healthData.status);
         
-        if (healthData.status === 'unhealthy') {
+        if (healthData.status !== 'healthy' && healthData.status !== 'degraded') {
           throw new Error('Backend server is unhealthy. Please check server logs.');
         }
       } catch (healthErr) {
@@ -349,6 +389,7 @@ function App() {
         `sort=${sort}`,
         `page=1`,
         `limit=100`,
+        `accountId=${selectedAccount}`,
         `includeAttachments=true`,
         `t=${Date.now()}` // Cache busting parameter
       ].join('&');
@@ -408,19 +449,26 @@ function App() {
         errorMessage = `Server error: ${err.message}`;
       } else if (err.message.includes('Network error')) {
         errorMessage = `Network error: Cannot connect to backend. Please check your internet connection and ensure the backend is running.`;
+      } else if (err.message.includes('No email accounts accessible')) {
+        errorMessage = `Access denied: Your account (${user?.email}) doesn't have permission to access any email accounts. Please contact your administrator.`;
       }
       
       setError(errorMessage);
       
     } finally {
       if (showLoading) setLoading(false);
+      loadEmailsInProgress.current = false;
     }
-  }, [API_BASE, fetchWithAuth, search, sort, processEmailData]);
+  }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData, user?.email]);
 
-  // Fetch emails function
+  // ✅ FIXED: Fetch emails function with duplicate prevention
   const fetchEmails = useCallback(async (mode = 'latest') => {
-    if (fetching) return;
+    if (fetchEmailsInProgress.current || fetching) {
+      console.log('⚠️ Fetch emails already in progress, skipping...');
+      return;
+    }
 
+    fetchEmailsInProgress.current = true;
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
@@ -432,7 +480,8 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30
+          count: mode === 'force' ? 20 : 30,
+          accountId: selectedAccount
         })
       });
 
@@ -463,8 +512,9 @@ function App() {
       }
     } finally {
       setFetching(false);
+      fetchEmailsInProgress.current = false;
     }
-  }, [fetchWithAuth, fetching, loadEmails]);
+  }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
   // Individual fetch functions
   const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
@@ -472,8 +522,12 @@ function App() {
 
   // Refresh emails
   const forceRefreshEmails = useCallback(async () => {
-    if (fetching) return;
+    if (fetchEmailsInProgress.current || fetching) {
+      console.log('⚠️ Refresh already in progress, skipping...');
+      return;
+    }
 
+    fetchEmailsInProgress.current = true;
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
@@ -491,6 +545,7 @@ function App() {
       console.error('❌ Force refresh failed:', err);
     } finally {
       setFetching(false);
+      fetchEmailsInProgress.current = false;
     }
   }, [fetching, loadEmails]);
 
@@ -563,7 +618,7 @@ function App() {
     }));
   }, []);
 
-  // ✅ ENHANCED: Render attachment with better error handling
+  // ✅ Render attachment with better error handling
   const renderAttachment = useCallback((attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -863,27 +918,42 @@ function App() {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
         console.log('👤 Current user:', user?.email);
+        
+        // Fetch user accounts after getting user
+        if (user) {
+          await fetchUserAccounts();
+        }
       } catch (error) {
         console.error('❌ Error getting user:', error);
       }
     };
     getUser();
-  }, []);
+  }, [fetchUserAccounts]);
 
-  // Load emails when component mounts
+  // ✅ FIXED: Load emails only once when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
-    loadEmails(true, true);
-  }, [loadEmails]);
+    const timer = setTimeout(() => {
+      loadEmails(true, true);
+    }, 100); // Small delay to prevent double-loading
+    
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array - load only once
 
-  // Load emails when search or sort changes
+  // ✅ FIXED: Debounce search and sort changes
   useEffect(() => {
     const timer = setTimeout(() => {
+      if (loadEmailsInProgress.current) {
+        console.log('⚠️ Load already in progress, skipping search/sort update');
+        return;
+      }
       loadEmails(true, false);
     }, 500);
     
     return () => clearTimeout(timer);
-  }, [search, sort, loadEmails]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, sort, selectedAccount]);
 
   // Reset fetch status after 5 seconds
   useEffect(() => {
@@ -942,6 +1012,23 @@ function App() {
             <>
               <div className="user-info">
                 <p>Logged in as: <strong>{user?.email}</strong></p>
+                {userAccounts.length > 0 && (
+                  <div className="account-selector">
+                    <label>Email Account:</label>
+                    <select 
+                      value={selectedAccount} 
+                      onChange={(e) => setSelectedAccount(e.target.value)}
+                      className="account-select"
+                    >
+                      <option value="all">All Accounts</option>
+                      {userAccounts.map(account => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
               <div className="sidebar-actions">
                 <button 
@@ -1051,6 +1138,9 @@ function App() {
           {!loading && emails.length === 0 && (
             <div className="empty-state">
               <p>📭 No emails found</p>
+              {selectedAccount !== 'all' && (
+                <p>Selected account: {userAccounts.find(a => a.id.toString() === selectedAccount)?.name}</p>
+              )}
               <p>Try fetching emails from your inbox</p>
               <div className="empty-actions">
                 <button onClick={fetchNewEmails} className="fetch-button">
@@ -1082,6 +1172,8 @@ function App() {
             <div className="debug-content">
               <p>Backend URL: {API_BASE}</p>
               <p>Current user: {user?.email}</p>
+              <p>User accounts: {userAccounts.map(a => a.name).join(', ') || 'None'}</p>
+              <p>Selected account: {selectedAccount}</p>
               <p>Current emails: {emails.length}</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>

@@ -56,7 +56,7 @@ app.use(cors({
 }));
 
 app.options('*', cors());
-app.use(express.json({ limit: '50mb' })); // ✅ Increased for attachments
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Request logging middleware
@@ -64,7 +64,7 @@ app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.path}`, {
     timestamp: new Date().toISOString(),
     origin: req.get('origin'),
-    userAgent: req.get('User-Agent')
+    userAgent: req.get('User-Agent')?.substring(0, 50)
   });
   next();
 });
@@ -259,7 +259,7 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// ✅ ADDED: Function to upload attachments to Supabase storage
+// ✅ Function to upload attachments to Supabase storage
 async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   try {
     if (!supabaseEnabled || !supabase) {
@@ -267,7 +267,6 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
       return null;
     }
 
-    // Create a unique filename
     const fileExtension = attachment.filename ? 
       path.extname(attachment.filename) : '.bin';
     const uniqueFilename = `${messageId}_${Date.now()}_${Math.random().toString(36).substring(7)}${fileExtension}`;
@@ -275,7 +274,6 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
 
     console.log(`📎 Uploading attachment: ${attachment.filename} -> ${filePath}`);
 
-    // Upload to Supabase storage
     const { data, error } = await supabase.storage
       .from('attachments')
       .upload(filePath, attachment.content, {
@@ -288,7 +286,6 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
       return null;
     }
 
-    // Get public URL
     const { data: { publicUrl } } = supabase.storage
       .from('attachments')
       .getPublicUrl(filePath);
@@ -308,7 +305,7 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   }
 }
 
-// ✅ ADDED: Function to process email with attachments
+// ✅ Function to process email with attachments
 async function processEmailWithAttachments(parsed, messageId, accountId, seqno) {
   try {
     const emailData = {
@@ -325,13 +322,11 @@ async function processEmailWithAttachments(parsed, messageId, accountId, seqno) 
       attachmentsCount: 0
     };
 
-    // Process attachments if they exist
     if (parsed.attachments && parsed.attachments.length > 0) {
       console.log(`📎 Processing ${parsed.attachments.length} attachments for email ${messageId}`);
       
       const attachmentPromises = parsed.attachments.map(async (attachment, index) => {
         try {
-          // Only process attachments that have content
           if (attachment.content) {
             const attachmentInfo = await uploadAttachmentToSupabase(
               attachment, 
@@ -360,7 +355,6 @@ async function processEmailWithAttachments(parsed, messageId, accountId, seqno) 
         }
       });
 
-      // Wait for all attachments to be processed
       const attachmentResults = await Promise.all(attachmentPromises);
       const successfulAttachments = attachmentResults.filter(att => att !== null);
       
@@ -380,7 +374,7 @@ async function processEmailWithAttachments(parsed, messageId, accountId, seqno) 
   }
 }
 
-// Enhanced Authentication Middleware
+// ✅ FIXED: Enhanced Authentication Middleware (NO DEVELOPMENT BYPASS)
 const authenticateUser = async (req, res, next) => {
   try {
     console.log("🔐 Starting authentication for:", req.method, req.path);
@@ -414,17 +408,6 @@ const authenticateUser = async (req, res, next) => {
     }
     
     console.log("🔐 Token received, length:", token.length);
-
-    // DEVELOPMENT BYPASS
-    if (process.env.NODE_ENV !== 'production') {
-      console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
-      req.user = { 
-        email: "pankaj.singh@seal.co.in",
-        id: "dev-user" 
-      };
-      console.log("🔐 Development user set:", req.user.email);
-      return next();
-    }
 
     if (!supabaseEnabled || !supabase) {
       console.error("❌ Supabase not available for authentication");
@@ -821,7 +804,7 @@ app.get("/api/debug-env", (req, res) => {
   });
 });
 
-// Main email endpoints - AUTH REQUIRED
+// ✅ FIXED: Main email endpoints with better error handling
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -856,37 +839,54 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
+    // Get allowed accounts for the authenticated user
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
+    
+    console.log(`🔐 User ${userEmail} has access to accounts:`, allowedAccountIds);
+    
+    if (allowedAccountIds.length === 0) {
+      console.log(`❌ No allowed accounts found for ${userEmail}`);
+      return res.status(403).json({
+        success: false,
+        error: "No email accounts accessible for your user",
+        userEmail: userEmail,
+        allowedAccounts: []
+      });
+    }
+
+    // Build query
     let query = supabase
       .from('emails')
       .select('*', { count: 'exact' });
 
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    const allowedAccountIds = allowedAccounts.map(acc => acc.id);
-    
-    if (allowedAccountIds.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: "No email accounts accessible for your user"
-      });
-    }
-
+    // Apply account filter
     if (accountId !== "all") {
-      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+      const accountIdNum = parseInt(accountId);
+      if (!emailConfigManager.canUserAccessAccount(userEmail, accountIdNum)) {
+        console.log(`❌ Access denied: ${userEmail} cannot access account ${accountIdNum}`);
         return res.status(403).json({
           success: false,
-          error: "Access denied to this email account"
+          error: "Access denied to this email account",
+          requestedAccount: accountIdNum,
+          allowedAccounts: allowedAccountIds
         });
       }
-      query = query.eq('account_id', parseInt(accountId));
+      query = query.eq('account_id', accountIdNum);
+      console.log(`📌 Filtering by account: ${accountIdNum}`);
     } else {
       query = query.in('account_id', allowedAccountIds);
+      console.log(`📌 Filtering by accounts: ${allowedAccountIds.join(', ')}`);
     }
 
+    // Apply search filter
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
+      console.log(`🔍 Applying search filter: "${trimmedSearch}"`);
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
+    // Apply sorting
     switch (sort) {
       case "date_asc":
         query = query.order('date', { ascending: true });
@@ -901,33 +901,54 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         query = query.order('date', { ascending: false });
     }
 
+    // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
 
     console.log("🚀 Executing Supabase query...");
+    console.log("📊 Query parameters:", { skip, limitNum, sort, search: search || 'none' });
+    
     const { data: emails, error, count } = await query;
 
     if (error) {
-      console.error("❌ Supabase query error:", error);
-      console.error("Error code:", error.code);
-      console.error("Error details:", error.details);
+      console.error("❌ Supabase query error:", {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
+      });
       
       let userMessage = "Database query failed";
+      let statusCode = 500;
+      
       if (error.code === '42P01') {
         userMessage = "Emails table not found. Please check your database setup.";
       } else if (error.code === '42501') {
         userMessage = "Database permission denied. Please check your RLS policies.";
+        statusCode = 403;
+      } else if (error.code === 'PGRST116') {
+        userMessage = "No data found or access denied.";
+        statusCode = 404;
       }
       
-      return res.status(500).json({
+      return res.status(statusCode).json({
         success: false,
         error: userMessage,
-        details: process.env.NODE_ENV === 'production' ? undefined : error.message,
-        code: error.code
+        details: process.env.NODE_ENV === 'production' ? undefined : {
+          message: error.message,
+          code: error.code,
+          hint: error.hint
+        },
+        debugInfo: {
+          userEmail,
+          allowedAccounts: allowedAccountIds,
+          requestedAccount: accountId
+        }
       });
     }
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
+    // Process emails
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
       id: email.id || email.message_id,
@@ -974,12 +995,16 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     res.status(500).json({
       success: false,
       error: "Failed to fetch emails from database",
-      details: process.env.NODE_ENV === 'production' ? undefined : error.message
+      details: process.env.NODE_ENV === 'production' ? undefined : error.message,
+      debugInfo: {
+        userEmail: req.user?.email || 'unknown',
+        timestamp: new Date().toISOString()
+      }
     });
   }
 });
 
-// ✅ UPDATED: Email fetching endpoint with attachment processing
+// Email fetching endpoint with attachment processing
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   try {
     const { 
@@ -1079,7 +1104,6 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                     }
                   }
 
-                  // ✅ UPDATED: Use the new function that processes attachments
                   const emailData = await processEmailWithAttachments(
                     parsed, 
                     messageId, 
@@ -1220,7 +1244,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       });
     }
 
-    // ✅ ADDED: Delete attachments from storage before deleting email
+    // Delete attachments from storage before deleting email
     if (email.attachments && Array.isArray(email.attachments)) {
       const deletePromises = email.attachments.map(async (attachment) => {
         if (attachment.path) {
@@ -1271,12 +1295,37 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
+// Clear cache endpoint
 app.post("/api/clear-cache", (req, res) => {
   clearCache();
   res.json({ 
     success: true, 
     message: "Cache cleared" 
   });
+});
+
+// Get user accounts endpoint
+app.get("/api/user-accounts", authenticateUser, (req, res) => {
+  try {
+    const userEmail = req.user.email;
+    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
+    
+    res.json({
+      success: true,
+      userEmail,
+      accounts: allowedAccounts.map(acc => ({
+        id: acc.id,
+        email: acc.email,
+        name: acc.name
+      }))
+    });
+  } catch (error) {
+    console.error("❌ Get user accounts error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // Global error handler
@@ -1297,7 +1346,9 @@ app.use('*', (req, res) => {
     availableEndpoints: [
       'GET /api/health',
       'GET /api/emails (auth required)',
-      'POST /api/fetch-emails (auth required)'
+      'POST /api/fetch-emails (auth required)',
+      'GET /api/user-accounts (auth required)',
+      'DELETE /api/emails/:messageId (auth required)'
     ]
   });
 });
@@ -1313,5 +1364,9 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`\n👥 User mappings:`);
+    Object.entries(USER_EMAIL_MAPPING).forEach(([email, accounts]) => {
+      console.log(`   ${email} -> accounts ${accounts.join(', ')}`);
+    });
   });
 }
