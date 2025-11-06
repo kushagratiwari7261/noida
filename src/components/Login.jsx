@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import './inde.css'
 import sealLogo from './seal.png';
-
+import loadingImage from './20945982.jpg'; // Import the new loading image
 
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
@@ -17,7 +17,7 @@ const Login = ({ onLogin }) => {
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsLoading(false);
-    }, 2500);
+    }, 5000); // 5 seconds loading time
 
     return () => clearTimeout(timer);
   }, []);
@@ -83,19 +83,35 @@ const Login = ({ onLogin }) => {
     return (
       <div id="loading-screen" className="loading-screen">
         <div className="loading-container">
-          <div className="logo-container" style={{textAlign: 'center'}}>
-            <div className="logo-icon">
+          <div className="loading-content">
+            {/* Loading Image - Main Focus */}
+            <div className="loading-image-container">
+              <img 
+                src={loadingImage}
+                alt="Loading Workspace" 
+                className="loading-main-image"
+              />
+            </div>
+
+            {/* Logo Below Image */}
+            <div className="loading-logo-container">
               <img 
                 src={sealLogo}
                 alt="Seal Freight Logo" 
-                style={{width: '300px', height: 'auto', display: 'block', margin: '0 auto'}} 
+                className="loading-logo"
               />
             </div>
+
+            {/* Loading Spinner */}
+            <div className="loading-spinner">
+              <div className="spinner-ring-large"></div>
+            </div>
+            
+            {/* Loading Text */}
+            <p className="loading-text-large">
+              Loading your workspace...
+            </p>
           </div>
-          <div className="loading-spinner">
-            <div className="spinner-ring"></div>
-          </div>
-          <p className="loading-text">Loading your workspace...</p>
         </div>
       </div>
     );

@@ -17,6 +17,11 @@ function App() {
   const [user, setUser] = useState(null);
   const [userAccounts, setUserAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('all');
+  
+  // ✅ NEW: Track which email is expanded and its content
+  const [expandedEmailId, setExpandedEmailId] = useState(null);
+  const [emailContent, setEmailContent] = useState({});
+  const [loadingContent, setLoadingContent] = useState({});
 
   // ✅ FIXED: Prevent duplicate requests
   const loadEmailsInProgress = useRef(false);
@@ -25,7 +30,6 @@ function App() {
   // ✅ Dynamic API base URL
   const getApiBaseUrl = () => {
     if (window.location.hostname.includes('.vercel.app')) {
-      // Use the backend subdomain on Vercel
       return 'https://seal-freight.vercel.app';
     }
    return process.env.REACT_APP_API_URL || '/api';
@@ -119,7 +123,6 @@ function App() {
           if (errorData.details) {
             errorDetails += ` (${errorData.details})`;
           }
-          // Log debug info if available
           if (errorData.debugInfo) {
             console.error('🐛 Debug info:', errorData.debugInfo);
           }
@@ -136,7 +139,68 @@ function App() {
     }
   }, [getAuthToken, API_BASE]);
 
-  // ✅ NEW: Fetch user accounts
+  // ✅ NEW: Load full email content when user clicks on an email
+  const loadEmailContent = useCallback(async (messageId) => {
+    if (emailContent[messageId]) {
+      console.log('✅ Email content already loaded from cache');
+      return emailContent[messageId];
+    }
+
+    setLoadingContent(prev => ({ ...prev, [messageId]: true }));
+
+    try {
+      console.log(`📧 Loading full content for email: ${messageId}`);
+      
+      const response = await fetchWithAuth(`/api/emails/${messageId}`);
+      const data = await response.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load email content');
+      }
+      
+      console.log('✅ Email content loaded successfully');
+      
+      const content = {
+        text: data.email.text || data.email.text_content,
+        html: data.email.html || data.email.html_content
+      };
+      
+      // Cache the content
+      setEmailContent(prev => ({
+        ...prev,
+        [messageId]: content
+      }));
+      
+      return content;
+      
+    } catch (error) {
+      console.error('❌ Error loading email content:', error);
+      setError(`Failed to load email content: ${error.message}`);
+      return null;
+    } finally {
+      setLoadingContent(prev => ({ ...prev, [messageId]: false }));
+    }
+  }, [fetchWithAuth, emailContent]);
+
+  // ✅ NEW: Toggle email expansion and load content
+  const toggleEmailExpansion = useCallback(async (email) => {
+    const emailId = email.id || email.messageId;
+    
+    if (expandedEmailId === emailId) {
+      // Collapse
+      setExpandedEmailId(null);
+    } else {
+      // Expand and load content
+      setExpandedEmailId(emailId);
+      
+      // Load content if not already loaded
+      if (!emailContent[email.messageId]) {
+        await loadEmailContent(email.messageId);
+      }
+    }
+  }, [expandedEmailId, emailContent, loadEmailContent]);
+
+  // ✅ Fetch user accounts
   const fetchUserAccounts = useCallback(async () => {
     try {
       console.log('👤 Fetching user accounts...');
@@ -147,14 +211,12 @@ function App() {
         console.log('✅ User accounts:', data.accounts);
         setUserAccounts(data.accounts);
         
-        // Set default account if user has only one
         if (data.accounts.length === 1) {
           setSelectedAccount(data.accounts[0].id.toString());
         }
       }
     } catch (error) {
       console.error('❌ Failed to fetch user accounts:', error);
-      // Don't show error to user, just log it
     }
   }, [fetchWithAuth]);
 
@@ -204,55 +266,26 @@ function App() {
 
   // ✅ Process attachment URLs for Supabase storage
   const processAttachmentUrl = useCallback((attachment) => {
-    console.log('🔗 Processing attachment:', {
-      attachment,
-      url: attachment.url,
-      path: attachment.path
-    });
-
-    // If we already have a full URL, use it
     if (attachment.url && attachment.url.startsWith('http')) {
       return attachment.url;
     }
 
-    // If we have a path, construct the Supabase storage URL
     if (attachment.path) {
       const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
       if (supabaseUrl) {
-        const url = `${supabaseUrl}/storage/v1/object/public/attachments/${attachment.path}`;
-        console.log('🔗 Constructed Supabase URL:', url);
-        return url;
+        return `${supabaseUrl}/storage/v1/object/public/attachments/${attachment.path}`;
       }
     }
 
-    // If we have a publicUrl, use it
     if (attachment.publicUrl) {
       return attachment.publicUrl;
     }
 
-    // Try to construct from attachment data
-    if (attachment.filename && attachment.messageId) {
-      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
-      if (supabaseUrl) {
-        const url = `${supabaseUrl}/storage/v1/object/public/attachments/account_${attachment.accountId}/${attachment.filename}`;
-        console.log('🔗 Constructed fallback URL:', url);
-        return url;
-      }
-    }
-
-    console.warn('❌ No valid URL found for attachment:', attachment);
     return null;
   }, []);
 
-  // ✅ Process email data with better attachment handling
+  // ✅ Process email data - NOW WITHOUT content
   const processEmailData = useCallback((email) => {
-    console.log('📧 Processing email data:', {
-      id: email.id,
-      subject: email.subject,
-      attachmentsCount: email.attachments?.length,
-      rawAttachments: email.attachments
-    });
-
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
       _id: email._id || email.id || email.messageId || email.message_id,
@@ -263,10 +296,11 @@ function App() {
       to: email.to || email.to_text,
       to_text: email.to_text || email.to,
       date: email.date,
-      text: email.text || email.text_content,
-      text_content: email.text_content || email.text,
-      html: email.html || email.html_content,
-      html_content: email.html_content || email.html,
+      // ✅ Content will be loaded separately
+      text: null,
+      text_content: null,
+      html: null,
+      html_content: null,
       attachments: [],
       hasAttachments: email.hasAttachments || false,
       attachmentsCount: email.attachmentsCount || 0,
@@ -275,74 +309,39 @@ function App() {
 
     // Process attachments
     if (Array.isArray(email.attachments) && email.attachments.length > 0) {
-      console.log(`📎 Processing ${email.attachments.length} attachments for email ${processedEmail.id}`);
-      
       processedEmail.attachments = email.attachments.map((att, index) => {
         const attachmentUrl = processAttachmentUrl(att);
         const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
         const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
         const isImage = att.isImage || mimeType.startsWith('image/');
         const isPDF = att.isPdf || mimeType === 'application/pdf';
-        const isText = att.isText || mimeType.startsWith('text/');
-        const isAudio = att.isAudio || mimeType.startsWith('audio/');
-        const isVideo = att.isVideo || mimeType.startsWith('video/');
-        const isCSV = filename.toLowerCase().endsWith('.csv') || mimeType.includes('csv');
-        const isExcel = filename.toLowerCase().endsWith('.xlsx') || filename.toLowerCase().endsWith('.xls') || mimeType.includes('spreadsheet');
-        const isWord = filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc') || mimeType.includes('word');
 
-        const processedAtt = {
-          id: att.id || `att-${processedEmail.id}-${index}-${Math.random().toString(36).substr(2, 9)}`,
+        return {
+          id: att.id || `att-${processedEmail.id}-${index}`,
           filename: filename,
-          name: att.name || filename,
-          originalFilename: att.originalFilename || filename,
           url: attachmentUrl,
-          publicUrl: att.publicUrl || attachmentUrl,
-          downloadUrl: att.downloadUrl || attachmentUrl,
-          previewUrl: att.previewUrl || (isImage ? attachmentUrl : null),
           type: mimeType,
           contentType: mimeType,
           mimeType: mimeType,
           size: att.size || 0,
-          extension: att.extension || filename.split('.').pop() || 'bin',
           isImage: isImage,
           isPdf: isPDF,
-          isText: isText,
-          isAudio: isAudio,
-          isVideo: isVideo,
-          isCSV: isCSV,
-          isExcel: isExcel,
-          isWord: isWord,
-          path: att.path,
-          displayName: att.displayName || filename,
-          accountId: att.accountId || email.account_id,
-          messageId: att.messageId || email.messageId,
-          originalData: att
+          isCSV: filename.toLowerCase().endsWith('.csv'),
+          isExcel: filename.toLowerCase().match(/\.(xlsx|xls)$/),
+          isWord: filename.toLowerCase().match(/\.(docx|doc)$/),
+          path: att.path
         };
-
-        console.log(`📎 Processed attachment ${index}:`, {
-          filename: processedAtt.filename,
-          url: processedAtt.url,
-          type: processedAtt.type,
-          isImage: processedAtt.isImage
-        });
-
-        return processedAtt;
       }).filter(att => att.filename && att.url);
 
       processedEmail.hasAttachments = processedEmail.attachments.length > 0;
       processedEmail.attachmentsCount = processedEmail.attachments.length;
-      
-      console.log(`✅ Final attachments for email ${processedEmail.id}:`, processedEmail.attachments.length);
-    } else {
-      console.log(`ℹ️ No attachments or empty array for email ${processedEmail.id}`);
     }
 
     return processedEmail;
   }, [processAttachmentUrl]);
 
-  // ✅ FIXED: Load emails function with duplicate prevention
+  // ✅ Load emails function - now loads list without content
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
-    // ✅ Prevent duplicate requests
     if (loadEmailsInProgress.current) {
       console.log('⚠️ Load emails already in progress, skipping...');
       return;
@@ -357,24 +356,13 @@ function App() {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
       console.log('🌐 Using API base:', API_BASE);
 
-      // Test backend connection first
-      try {
-        const healthResponse = await fetch(`${API_BASE}/api/health`);
-        if (!healthResponse.ok) {
-          throw new Error(`Backend health check failed: ${healthResponse.status}`);
-        }
-        const healthData = await healthResponse.json();
-        console.log('🏥 Backend health:', healthData.status);
-        
-        if (healthData.status !== 'healthy' && healthData.status !== 'degraded') {
-          throw new Error('Backend server is unhealthy. Please check server logs.');
-        }
-      } catch (healthErr) {
-        console.error('❌ Backend health check failed:', healthErr);
-        throw new Error(`Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`);
+      const healthResponse = await fetch(`${API_BASE}/api/health`);
+      if (!healthResponse.ok) {
+        throw new Error(`Backend health check failed: ${healthResponse.status}`);
       }
+      const healthData = await healthResponse.json();
+      console.log('🏥 Backend health:', healthData.status);
 
-      // Clear cache first if force refresh
       if (forceRefresh) {
         try {
           await fetchWithAuth('/api/clear-cache', { method: 'POST' });
@@ -388,10 +376,9 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=100`,
+        `limit=50`, // ✅ Reduced from 100 to 50
         `accountId=${selectedAccount}`,
-        `includeAttachments=true`,
-        `t=${Date.now()}` // Cache busting parameter
+        `t=${Date.now()}`
       ].join('&');
 
       const response = await fetchWithAuth(`/api/emails?${queries}`);
@@ -419,15 +406,11 @@ function App() {
       
       const processedEmails = emailsToProcess.map(processEmailData);
       
-      // Sort emails by date to ensure latest first
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
         return dateB - dateA;
       });
-      
-      const totalAttachments = sortedEmails.reduce((sum, email) => sum + email.attachments.length, 0);
-      console.log('📎 Total attachments found:', totalAttachments);
       
       setEmails(sortedEmails);
       console.log('✅ Emails set in state:', sortedEmails.length);
@@ -445,12 +428,6 @@ function App() {
         }, 2000);
       } else if (err.message.includes('Backend server is not responding')) {
         errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`;
-      } else if (err.message.includes('Failed to load emails from server')) {
-        errorMessage = `Server error: ${err.message}`;
-      } else if (err.message.includes('Network error')) {
-        errorMessage = `Network error: Cannot connect to backend. Please check your internet connection and ensure the backend is running.`;
-      } else if (err.message.includes('No email accounts accessible')) {
-        errorMessage = `Access denied: Your account (${user?.email}) doesn't have permission to access any email accounts. Please contact your administrator.`;
       }
       
       setError(errorMessage);
@@ -459,9 +436,9 @@ function App() {
       if (showLoading) setLoading(false);
       loadEmailsInProgress.current = false;
     }
-  }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData, user?.email]);
+  }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ FIXED: Fetch emails function with duplicate prevention
+  // ✅ Fetch emails function
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
@@ -491,10 +468,7 @@ function App() {
       if (response.ok && result.success) {
         setFetchStatus('success');
         setLastFetchTime(new Date());
-        
-        // Refresh the email list after fetch
         await loadEmails(false, true);
-        
       } else {
         setFetchStatus('error');
         setError(result.error || `Failed to ${mode} fetch emails`);
@@ -516,11 +490,9 @@ function App() {
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
-  // Individual fetch functions
   const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
   const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
-  // Refresh emails
   const forceRefreshEmails = useCallback(async () => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Refresh already in progress, skipping...');
@@ -535,7 +507,6 @@ function App() {
     try {
       console.log('🔄 Force refreshing emails...');
       await loadEmails(true, true);
-
       setFetchStatus('success');
       setLastFetchTime(new Date());
       console.log('✅ Force refresh completed');
@@ -561,13 +532,6 @@ function App() {
     if (mimeType.includes('excel') || extension === 'xlsx' || extension === 'xls') return '📊';
     if (mimeType.includes('csv') || extension === 'csv') return '📋';
     if (mimeType.includes('word') || extension === 'docx' || extension === 'doc') return '📝';
-    if (mimeType.includes('zip') || extension === 'zip' || extension === 'rar' || extension === '7z') return '📦';
-    if (mimeType.includes('text') || extension === 'txt') return '📄';
-    if (mimeType.includes('audio') || extension === 'mp3' || extension === 'wav' || extension === 'ogg') return '🎵';
-    if (mimeType.includes('video') || extension === 'mp4' || extension === 'avi' || extension === 'mov') return '🎬';
-    if (mimeType.includes('presentation') || extension === 'ppt' || extension === 'pptx') return '📊';
-    if (extension === 'exe' || extension === 'msi') return '⚙️';
-    if (extension === 'js' || extension === 'html' || extension === 'css') return '💻';
     
     return '📎';
   }, []);
@@ -583,7 +547,7 @@ function App() {
   // Download file
   const downloadFile = useCallback(async (attachment, filename) => {
     try {
-      console.log('⬇️ Downloading attachment:', { filename, url: attachment.url, type: attachment.type });
+      console.log('⬇️ Downloading attachment:', { filename, url: attachment.url });
 
       if (!attachment.url) {
         throw new Error('No URL available for download');
@@ -618,7 +582,7 @@ function App() {
     }));
   }, []);
 
-  // ✅ Render attachment with better error handling
+  // ✅ Render attachment
   const renderAttachment = useCallback((attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -626,54 +590,8 @@ function App() {
     const fileIcon = getFileIcon(mimeType, filename);
     const isImage = attachment.isImage || mimeType?.startsWith('image/');
     const isPDF = attachment.isPdf || mimeType === 'application/pdf';
-    const isCSV = attachment.isCSV || filename.toLowerCase().endsWith('.csv');
-    const isExcel = attachment.isExcel || filename.toLowerCase().endsWith('.xlsx') || filename.toLowerCase().endsWith('.xls');
-    const isWord = attachment.isWord || filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc');
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
     const safeUrl = attachment.url;
-
-    console.log(`📎 Rendering attachment ${index}:`, {
-      filename,
-      isImage,
-      isPDF,
-      url: safeUrl,
-      hasUrl: !!safeUrl
-    });
-
-    // Check for tracking pixels or problematic files
-    const isProblematicFile = 
-      attachment.url?.includes('godaddy') || 
-      attachment.url?.includes('tracking') ||
-      attachment.url?.includes('pixel') ||
-      filename.match(/track|pixel|beacon|analytics|spacer|forward/i) ||
-      (isImage && attachment.size < 1024); // Small images might be tracking pixels
-
-    if (isProblematicFile) {
-      return (
-        <div key={attachment.id} className="attachment-item blocked-attachment">
-          <div className="attachment-header">
-            <span className="file-icon">🚫</span>
-            <div className="file-info">
-              <span className="filename">{filename}</span>
-              {fileSize && <span className="file-size">{fileSize}</span>}
-              <div className="tracking-warning">
-                <small>Tracking pixel blocked for privacy</small>
-              </div>
-            </div>
-            <div className="attachment-actions">
-              <button 
-                className="download-btn blocked"
-                onClick={() => alert('Tracking pixels are blocked for privacy and performance reasons.')}
-                title="Blocked - Tracking Pixel"
-                disabled
-              >
-                🚫
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
 
     return (
       <div key={attachment.id} className="attachment-item">
@@ -682,12 +600,6 @@ function App() {
           <div className="file-info">
             <span className="filename">{filename}</span>
             {fileSize && <span className="file-size">{fileSize}</span>}
-            <div className="file-type">
-              <small>{mimeType || 'Unknown type'}</small>
-              {isCSV && <span className="csv-badge">CSV</span>}
-              {isExcel && <span className="excel-badge">Excel</span>}
-              {isWord && <span className="word-badge">Word</span>}
-            </div>
           </div>
           <div className="attachment-actions">
             {(isImage || isPDF) && safeUrl && (
@@ -720,91 +632,9 @@ function App() {
               loading="lazy"
               crossOrigin="anonymous"
               onError={(e) => {
-                console.error('❌ Image failed to load:', safeUrl);
                 e.target.style.display = 'none';
-                const fallback = e.target.parentElement.querySelector('.image-fallback');
-                if (fallback) fallback.style.display = 'block';
               }}
             />
-            <div className="image-fallback" style={{display: 'none'}}>
-              🖼️ Image not available - <a href={safeUrl} target="_blank" rel="noopener noreferrer">Open in new tab</a>
-            </div>
-            {isExpanded && (
-              <div className="image-overlay" onClick={() => toggleImageExpand(emailIndex, index)}>
-                <div className="expanded-image-container">
-                  <img
-                    src={safeUrl}
-                    alt={filename}
-                    className="expanded-image"
-                    crossOrigin="anonymous"
-                  />
-                  <button 
-                    className="close-expanded-btn"
-                    onClick={() => toggleImageExpand(emailIndex, index)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {isPDF && safeUrl && (
-          <div className={`pdf-preview ${isExpanded ? 'expanded' : ''}`}>
-            {isExpanded ? (
-              <div className="pdf-full-view">
-                <button 
-                  className="close-pdf-btn"
-                  onClick={() => toggleImageExpand(emailIndex, index)}
-                >
-                  ✕ Close PDF
-                </button>
-                <iframe
-                  src={safeUrl}
-                  title={filename}
-                  className="pdf-iframe"
-                  loading="lazy"
-                />
-              </div>
-            ) : (
-              <div className="pdf-thumbnail" onClick={() => toggleImageExpand(emailIndex, index)}>
-                <div className="pdf-icon">📄</div>
-                <span className="pdf-filename">{filename}</span>
-                <button className="view-pdf-btn">View PDF</button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {isCSV && safeUrl && (
-          <div className="csv-preview">
-            <div className="csv-preview-content">
-              <h5>📋 CSV File</h5>
-              <div className="csv-warning">
-                <p>⚠️ CSV files may contain data that could be automatically processed.</p>
-                <p>Click download to save this file to your computer.</p>
-              </div>
-              <div className="csv-actions">
-                <button 
-                  className="download-csv-btn"
-                  onClick={() => downloadFile(attachment, filename)}
-                >
-                  💾 Download CSV
-                </button>
-                <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="view-csv-link">
-                  🔗 Open in new tab
-                </a>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {!safeUrl && (
-          <div className="no-url-warning">
-            <p>⚠️ No download URL available for this attachment</p>
-            <p><small>Filename: {filename}</small></p>
-            <p><small>Check if the file exists in Supabase storage bucket "attachments"</small></p>
           </div>
         )}
       </div>
@@ -852,64 +682,92 @@ function App() {
     }
   }, [fetchWithAuth]);
 
-  // Enhanced EmailCard component
-  const EmailCard = React.memo(({ email, index }) => (
-    <div className="email-card">
-      <div className="email-actions-top">
-        <button 
-          className="delete-email-btn"
-          onClick={() => deleteEmail(email.id, email.messageId)}
-          disabled={deletingEmails[email.id]}
-          title="Permanently delete this email and all attachments"
-        >
-          {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
-        </button>
-      </div>
+  // ✅ UPDATED: EmailCard component with expandable content
+  const EmailCard = React.memo(({ email, index }) => {
+    const isExpanded = expandedEmailId === email.id;
+    const content = emailContent[email.messageId];
+    const isLoadingContent = loadingContent[email.messageId];
 
-      <div className="email-header">
-        <div className="email-subject">
-          <h3>{email.subject || '(No Subject)'}</h3>
-          {email.hasAttachments && (
-            <span className="attachment-badge">
-              📎 {email.attachmentsCount}
-            </span>
-          )}
+    return (
+      <div className="email-card">
+        <div className="email-actions-top">
+          <button 
+            className="delete-email-btn"
+            onClick={() => deleteEmail(email.id, email.messageId)}
+            disabled={deletingEmails[email.id]}
+            title="Permanently delete this email and all attachments"
+          >
+            {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
+          </button>
         </div>
-        <span className="email-date">
-          {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
-        </span>
-      </div>
 
-      <div className="email-from">
-        <strong>From:</strong> 
-        <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
-      </div>
-
-      <div
-        className="email-body"
-        dangerouslySetInnerHTML={{
-          __html:
-            email.html_content || email.html ||
-            email.text_content?.replace(/\n/g, '<br/>') ||
-            email.text?.replace(/\n/g, '<br/>') ||
-            '<p className="no-content">(No Content)</p>',
-        }}
-      />
-
-      {email.hasAttachments && (
-        <div className="attachments-section">
-          <div className="attachments-header">
-            <h4>📎 Attachments ({email.attachmentsCount})</h4>
-          </div>
-          <div className="attachments-grid">
-            {email.attachments.map((attachment, attachmentIndex) =>
-              renderAttachment(attachment, attachmentIndex, index)
+        {/* ✅ Clickable header to expand/collapse */}
+        <div 
+          className="email-header clickable" 
+          onClick={() => toggleEmailExpansion(email)}
+          style={{ cursor: 'pointer' }}
+        >
+          <div className="email-subject">
+            <h3>
+              {isExpanded ? '▼' : '▶'} {email.subject || '(No Subject)'}
+            </h3>
+            {email.hasAttachments && (
+              <span className="attachment-badge">
+                📎 {email.attachmentsCount}
+              </span>
             )}
           </div>
+          <span className="email-date">
+            {email.date ? new Date(email.date).toLocaleString() : 'No Date'}
+          </span>
         </div>
-      )}
-    </div>
-  ));
+
+        <div className="email-from">
+          <strong>From:</strong> 
+          <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
+        </div>
+
+        {/* ✅ Only show content when expanded */}
+        {isExpanded && (
+          <div className="email-content-section">
+            {isLoadingContent ? (
+              <div className="loading-content">
+                <div className="spinner-small"></div>
+                <p>Loading email content...</p>
+              </div>
+            ) : content ? (
+              <div
+                className="email-body"
+                dangerouslySetInnerHTML={{
+                  __html:
+                    content.html ||
+                    content.text?.replace(/\n/g, '<br/>') ||
+                    '<p className="no-content">(No Content)</p>',
+                }}
+              />
+            ) : (
+              <div className="no-content">
+                <p>(No Content Available)</p>
+              </div>
+            )}
+
+            {email.hasAttachments && (
+              <div className="attachments-section">
+                <div className="attachments-header">
+                  <h4>📎 Attachments ({email.attachmentsCount})</h4>
+                </div>
+                <div className="attachments-grid">
+                  {email.attachments.map((attachment, attachmentIndex) =>
+                    renderAttachment(attachment, attachmentIndex, index)
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  });
 
   // Get current user on component mount
   useEffect(() => {
@@ -919,7 +777,6 @@ function App() {
         setUser(user);
         console.log('👤 Current user:', user?.email);
         
-        // Fetch user accounts after getting user
         if (user) {
           await fetchUserAccounts();
         }
@@ -930,18 +787,18 @@ function App() {
     getUser();
   }, [fetchUserAccounts]);
 
-  // ✅ FIXED: Load emails only once when component mounts
+  // ✅ Load emails only once when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
       loadEmails(true, true);
-    }, 100); // Small delay to prevent double-loading
+    }, 100);
     
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array - load only once
+  }, []);
 
-  // ✅ FIXED: Debounce search and sort changes
+  // ✅ Debounce search and sort changes
   useEffect(() => {
     const timer = setTimeout(() => {
       if (loadEmailsInProgress.current) {
@@ -1158,6 +1015,9 @@ function App() {
 
           {!loading && emails.length > 0 && (
             <div className="email-list">
+              <div className="email-list-hint">
+                <p>💡 Click on email headers to expand and view content</p>
+              </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
               ))}
@@ -1175,6 +1035,8 @@ function App() {
               <p>User accounts: {userAccounts.map(a => a.name).join(', ') || 'None'}</p>
               <p>Selected account: {selectedAccount}</p>
               <p>Current emails: {emails.length}</p>
+              <p>Expanded email: {expandedEmailId || 'None'}</p>
+              <p>Cached content: {Object.keys(emailContent).length} emails</p>
               <p>Loading: {loading ? 'Yes' : 'No'}</p>
               <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
               <p>Fetch Status: {fetchStatus}</p>
