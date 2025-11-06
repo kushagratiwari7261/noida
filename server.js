@@ -129,6 +129,9 @@ const initializeSupabase = () => {
       },
       global: { 
         headers: { 'X-Client-Info': 'email-backend' } 
+      },
+      db: {
+        schema: 'public'
       }
     });
     
@@ -374,7 +377,7 @@ async function processEmailWithAttachments(parsed, messageId, accountId, seqno) 
   }
 }
 
-// ✅ FIXED: Enhanced Authentication Middleware (NO DEVELOPMENT BYPASS)
+// ✅ Enhanced Authentication Middleware
 const authenticateUser = async (req, res, next) => {
   try {
     console.log("🔐 Starting authentication for:", req.method, req.path);
@@ -785,26 +788,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// Debug endpoints
-app.get("/api/debug-env", (req, res) => {
-  res.json({
-    success: true,
-    environment: {
-      nodeEnv: process.env.NODE_ENV || 'not set',
-      port: process.env.PORT || 3001,
-      supabase: {
-        url: process.env.SUPABASE_URL ? "✅ Set" : "❌ Missing",
-        serviceKey: process.env.SUPABASE_SERVICE_KEY ? "✅ Set" : "❌ Missing"
-      },
-      emailConfigs: {
-        config1: process.env.EMAIL_CONFIG_1 ? "✅ Set" : "❌ Missing",
-        config2: process.env.EMAIL_CONFIG_2 ? "✅ Set" : "❌ Missing"
-      }
-    }
-  });
-});
-
-// ✅ FIXED: Main email endpoints with better error handling
+// ✅ OPTIMIZED: Main email LIST endpoint - NO text/html content
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
@@ -813,7 +797,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       search = "",
       sort = "date_desc",
       page = 1,
-      limit = 100,
+      limit = 50, // ✅ Reduced default from 100 to 50
       accountId = "all"
     } = req.query;
 
@@ -855,10 +839,23 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    // Build query
+    // ✅ CRITICAL FIX: Select only necessary columns to avoid timeout
+    // DO NOT select text_content and html_content for list view
     let query = supabase
       .from('emails')
-      .select('*', { count: 'exact' });
+      .select(`
+        id,
+        message_id,
+        account_id,
+        subject,
+        from_text,
+        to_text,
+        date,
+        attachments,
+        has_attachments,
+        attachments_count,
+        created_at
+      `, { count: 'exact' });
 
     // Apply account filter
     if (accountId !== "all") {
@@ -904,7 +901,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
 
-    console.log("🚀 Executing Supabase query...");
+    console.log("🚀 Executing optimized Supabase query...");
     console.log("📊 Query parameters:", { skip, limitNum, sort, search: search || 'none' });
     
     const { data: emails, error, count } = await query;
@@ -917,24 +914,11 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         hint: error.hint
       });
       
-      let userMessage = "Database query failed";
-      let statusCode = 500;
-      
-      if (error.code === '42P01') {
-        userMessage = "Emails table not found. Please check your database setup.";
-      } else if (error.code === '42501') {
-        userMessage = "Database permission denied. Please check your RLS policies.";
-        statusCode = 403;
-      } else if (error.code === 'PGRST116') {
-        userMessage = "No data found or access denied.";
-        statusCode = 404;
-      }
-      
-      return res.status(statusCode).json({
+      return res.status(500).json({
         success: false,
-        error: userMessage,
+        error: "Database query failed",
+        message: error.message,
         details: process.env.NODE_ENV === 'production' ? undefined : {
-          message: error.message,
           code: error.code,
           hint: error.hint
         },
@@ -948,7 +932,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
-    // Process emails
+    // ✅ Process emails - NO text/html content in list view
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
       id: email.id || email.message_id,
@@ -960,10 +944,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       to: email.to_text,
       to_text: email.to_text,
       date: email.date,
-      text: email.text_content,
-      text_content: email.text_content,
-      html: email.html_content,
-      html_content: email.html_content,
       attachments: Array.isArray(email.attachments) ? email.attachments : [],
       hasAttachments: email.has_attachments || (Array.isArray(email.attachments) && email.attachments.length > 0),
       attachmentsCount: email.attachments_count || (Array.isArray(email.attachments) ? email.attachments.length : 0),
@@ -1000,6 +980,94 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         userEmail: req.user?.email || 'unknown',
         timestamp: new Date().toISOString()
       }
+    });
+  }
+});
+
+// ✅ NEW: Get single email with FULL content (text & html)
+app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
+  console.log("🚀 /api/emails/:messageId endpoint called");
+  
+  try {
+    const { messageId } = req.params;
+    const userEmail = req.user.email;
+
+    console.log(`📧 Fetching full email content for: ${messageId}`);
+
+    if (!supabaseEnabled || !supabase) {
+      return res.status(500).json({
+        success: false,
+        error: "Database service is currently unavailable."
+      });
+    }
+
+    // Fetch email with ALL content including text_content and html_content
+    const { data: email, error } = await supabase
+      .from('emails')
+      .select('*')
+      .eq('message_id', messageId)
+      .single();
+
+    if (error) {
+      console.error("❌ Error fetching email:", error);
+      return res.status(404).json({
+        success: false,
+        error: "Email not found",
+        details: error.message
+      });
+    }
+
+    if (!email) {
+      return res.status(404).json({
+        success: false,
+        error: "Email not found"
+      });
+    }
+
+    // Check if user has access to this email's account
+    if (!emailConfigManager.canUserAccessAccount(userEmail, email.account_id)) {
+      console.log(`❌ Access denied: ${userEmail} cannot access email from account ${email.account_id}`);
+      return res.status(403).json({
+        success: false,
+        error: "Access denied to this email"
+      });
+    }
+
+    console.log(`✅ Email found and user authorized`);
+
+    // Return full email with content
+    res.json({
+      success: true,
+      email: {
+        _id: email.id || email.message_id,
+        id: email.id || email.message_id,
+        messageId: email.message_id,
+        message_id: email.message_id,
+        subject: email.subject || '(No Subject)',
+        from: email.from_text,
+        from_text: email.from_text,
+        to: email.to_text,
+        to_text: email.to_text,
+        date: email.date,
+        text: email.text_content,
+        text_content: email.text_content,
+        html: email.html_content,
+        html_content: email.html_content,
+        attachments: Array.isArray(email.attachments) ? email.attachments : [],
+        hasAttachments: email.has_attachments,
+        attachmentsCount: email.attachments_count,
+        account_id: email.account_id,
+        created_at: email.created_at,
+        updated_at: email.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get email error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch email",
+      details: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
 });
@@ -1346,6 +1414,7 @@ app.use('*', (req, res) => {
     availableEndpoints: [
       'GET /api/health',
       'GET /api/emails (auth required)',
+      'GET /api/emails/:messageId (auth required)',
       'POST /api/fetch-emails (auth required)',
       'GET /api/user-accounts (auth required)',
       'DELETE /api/emails/:messageId (auth required)'
