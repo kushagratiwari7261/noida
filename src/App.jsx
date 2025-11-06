@@ -32,7 +32,7 @@ function App() {
   const navigate = useNavigate()
 
   // Enhanced local cleanup function
-  const performLocalCleanup = async () => {
+  const performLocalCleanup = useCallback(async () => {
     try {
       // Clear all Supabase-related storage
       const storageKeys = Object.keys(localStorage);
@@ -54,20 +54,25 @@ function App() {
     } catch (cleanupError) {
       console.warn('Local cleanup error:', cleanupError);
     }
-  };
+  }, []);
 
   // Enhanced authentication state management
   useEffect(() => {
+    let mounted = true;
+
     const getInitialSession = async () => {
       try {
         setIsLoading(true);
         
-        const { data: { session }, error } = await supabase.auth.getSession();
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
-        if (error) {
-          console.error('Session error:', error);
+        if (!mounted) return;
+        
+        if (sessionError) {
+          console.error('Session error:', sessionError);
           await performLocalCleanup();
           setIsAuthenticated(false);
+          // Don't redirect from reset-password page
           if (!window.location.pathname.includes('/login') && 
               !window.location.pathname.includes('/forgot-password') &&
               !window.location.pathname.includes('/reset-password')) {
@@ -84,16 +89,19 @@ function App() {
             console.log('Session expired, clearing...');
             await performLocalCleanup();
             setIsAuthenticated(false);
-            navigate('/login', { replace: true });
+            // Don't redirect from reset-password page
+            if (!window.location.pathname.includes('/reset-password')) {
+              navigate('/login', { replace: true });
+            }
           } else {
             setIsAuthenticated(true);
             setUser(session.user);
-            // Redirect from auth pages to dashboard
+            // Redirect from auth pages to dashboard, but NOT from reset-password
             if (window.location.pathname === '/login' || 
-                window.location.pathname === '/forgot-password' || 
-                window.location.pathname === '/reset-password') {
+                window.location.pathname === '/forgot-password') {
               navigate('/dashboard', { replace: true });
             }
+            // reset-password page handles its own redirect logic
           }
         } else {
           setIsAuthenticated(false);
@@ -107,11 +115,18 @@ function App() {
         }
       } catch (error) {
         console.error('Auth initialization error:', error);
-        await performLocalCleanup();
-        setIsAuthenticated(false);
-        navigate('/login', { replace: true });
+        if (mounted) {
+          await performLocalCleanup();
+          setIsAuthenticated(false);
+          // Don't redirect from reset-password page
+          if (!window.location.pathname.includes('/reset-password')) {
+            navigate('/login', { replace: true });
+          }
+        }
       } finally {
-        setIsLoading(false);
+        if (mounted) {
+          setIsLoading(false);
+        }
       }
     };
 
@@ -122,17 +137,20 @@ function App() {
       async (event, session) => {
         console.log('Auth state change:', event, session);
         
+        if (!mounted) return;
+        
         try {
           switch (event) {
             case 'SIGNED_IN':
               if (session?.user) {
                 setIsAuthenticated(true);
                 setUser(session.user);
+                // Don't redirect from reset-password page during password reset flow
                 if (window.location.pathname === '/login' || 
-                    window.location.pathname === '/forgot-password' || 
-                    window.location.pathname === '/reset-password') {
+                    window.location.pathname === '/forgot-password') {
                   navigate('/dashboard', { replace: true });
                 }
+                // Allow reset-password page to handle its own redirect
               }
               break;
               
@@ -140,6 +158,7 @@ function App() {
               await performLocalCleanup();
               setIsAuthenticated(false);
               setUser(null);
+              // Don't redirect from reset-password page
               if (!window.location.pathname.includes('/login') && 
                   !window.location.pathname.includes('/forgot-password') &&
                   !window.location.pathname.includes('/reset-password')) {
@@ -160,46 +179,61 @@ function App() {
               }
               break;
               
+            case 'PASSWORD_RECOVERY':
+              // Handle password recovery specifically
+              console.log('Password recovery flow initiated');
+              break;
+              
             default:
               console.log('Unhandled auth event:', event);
           }
         } catch (error) {
           console.error('Auth state change error:', error);
           // Fallback to safe state
-          await performLocalCleanup();
-          setIsAuthenticated(false);
-          setUser(null);
-          navigate('/login', { replace: true });
+          if (mounted) {
+            await performLocalCleanup();
+            setIsAuthenticated(false);
+            setUser(null);
+            // Don't redirect from reset-password page on error
+            if (!window.location.pathname.includes('/reset-password')) {
+              navigate('/login', { replace: true });
+            }
+          }
         } finally {
-          setIsLoading(false);
+          if (mounted) {
+            setIsLoading(false);
+          }
         }
       }
     );
 
-    return () => subscription.unsubscribe();
-  }, [navigate]);
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [navigate, performLocalCleanup]);
 
   // Fetch data when authenticated
   useEffect(() => {
     if (isAuthenticated) {
-      fetchDashboardData()
+      fetchDashboardData();
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated]);
 
   // Fetch all dashboard data
   const fetchDashboardData = async () => {
     try {
-      setError(null)
+      setError(null);
       await Promise.all([
         fetchStatsData(),
         fetchJobsData(),
         fetchShipmentsData()
-      ])
+      ]);
     } catch (error) {
-      console.error('Error fetching dashboard data:', error)
-      setError('Failed to load dashboard data. Please try refreshing the page.')
+      console.error('Error fetching dashboard data:', error);
+      setError('Failed to load dashboard data. Please try refreshing the page.');
     }
-  }
+  };
 
   // Forgot Password function
   const handleForgotPassword = async (email) => {
@@ -223,12 +257,23 @@ function App() {
     }
   };
 
-  // Reset Password function
+  // Reset Password function - ENHANCED
   const handleResetPassword = async (password) => {
     try {
       console.log('Updating user password...');
       
-      const { error } = await supabase.auth.updateUser({
+      // First, check if we have a valid session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError || !session) {
+        console.error('No valid session for password reset:', sessionError);
+        return { 
+          success: false, 
+          error: 'Your reset session has expired. Please request a new reset link.' 
+        };
+      }
+      
+      const { data, error } = await supabase.auth.updateUser({
         password: password
       });
 
@@ -237,7 +282,11 @@ function App() {
         return { success: false, error: error.message };
       }
 
-      console.log('Password updated successfully');
+      console.log('Password updated successfully:', data);
+      
+      // After successful password update, sign out the user to clear the recovery session
+      await supabase.auth.signOut();
+      
       return { success: true };
     } catch (error) {
       console.error('Unexpected error in password update:', error);
@@ -285,7 +334,7 @@ function App() {
     } finally {
       setIsLoggingIn(false);
     }
-  }
+  };
 
   // Enhanced Logout function
   const handleLogout = useCallback(async () => {
@@ -334,83 +383,83 @@ function App() {
       setUser(null);
       navigate('/login', { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, performLocalCleanup]);
 
   // Fetch stats data from Supabase
   const fetchStatsData = async () => {
-    setIsStatsLoading(true)
+    setIsStatsLoading(true);
     try {
       // Get total shipments count
       const { count: totalShipments, error: shipmentsError } = await supabase
         .from('shipments')
-        .select('*', { count: 'exact', head: true })
+        .select('*', { count: 'exact', head: true });
       
       // Get jobs count
       const { count: jobsCount, error: jobsError } = await supabase
         .from('jobs')
-        .select('*', { count: 'exact', head: true })
+        .select('*', { count: 'exact', head: true });
       
       // Get invoices count (assuming you have an invoices table)
       const { count: invoicesCount, error: invoicesError } = await supabase
         .from('invoices')
-        .select('*', { count: 'exact', head: true })
+        .select('*', { count: 'exact', head: true });
       
       // Get messages count (assuming you have a messages table)
       const { count: messagesCount, error: messagesError } = await supabase
         .from('messages')
-        .select('*', { count: 'exact', head: true })
+        .select('*', { count: 'exact', head: true });
       
       if (shipmentsError || jobsError || invoicesError || messagesError) {
-        console.error('Error fetching stats:', { shipmentsError, jobsError, invoicesError, messagesError })
+        console.error('Error fetching stats:', { shipmentsError, jobsError, invoicesError, messagesError });
         // Fallback to default data
         setStatsData([
           { label: 'Total Shipments', value: '1,250', icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
           { label: 'Jobs', value: '320', icon: 'teal', id: 'Jobs', path: '/job-orders' },
           { label: 'Invoices', value: '15', icon: 'yellow', id: 'Invoices', path: '/invoices' },
           { label: 'Messages', value: '5', icon: 'red', id: 'Messages', path: '/messages' }
-        ])
-        return
+        ]);
+        return;
       }
       
       // Format numbers with commas
-      const formatNumber = (num) => num ? num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "0"
+      const formatNumber = (num) => num ? num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "0";
       
       setStatsData([
         { label: 'Total Shipments', value: formatNumber(totalShipments), icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
         { label: 'Jobs', value: formatNumber(jobsCount), icon: 'teal', id: 'Jobs', path: '/job-orders' },
         { label: 'Invoices', value: formatNumber(invoicesCount), icon: 'yellow', id: 'Invoices', path: '/invoices' },
         { label: 'Messages', value: formatNumber(messagesCount), icon: 'red', id: 'Messages', path: '/messages' }
-      ])
+      ]);
     } catch (error) {
-      console.error('Error in fetchStatsData:', error)
-      setError('Failed to load statistics data.')
+      console.error('Error in fetchStatsData:', error);
+      setError('Failed to load statistics data.');
     } finally {
-      setIsStatsLoading(false)
+      setIsStatsLoading(false);
     }
-  }
+  };
 
   // Fetch jobs data from Supabase
   const fetchJobsData = async () => {
-    setIsJobsLoading(true)
+    setIsJobsLoading(true);
     try {
       const { data, error } = await supabase
         .from('jobs')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(5)
+        .limit(5);
       
       if (error) {
-        console.error('Error fetching jobs:', error)
+        console.error('Error fetching jobs:', error);
         // Fallback to sample data
         setDashboardJobsData([
           { id: 'JOB-001', customer: 'Acme Corp', status: 'In Progress', date: '2024-07-26' },
           { id: 'JOB-002', customer: 'Global Imports', status: 'Completed', date: '2024-07-25' },
           { id: 'JOB-003', customer: 'Tech Solutions', status: 'Pending', date: '2024-07-24' }
-        ])
-        return
+        ]);
+        return;
       }
       
-      console.log('Jobs data from Supabase:', data)
+      console.log('Jobs data from Supabase:', data);
       
       // More flexible mapping to handle different column names
       const fetchJobs = data.map(job => ({
@@ -418,39 +467,39 @@ function App() {
         customer: job.client || 'Unknown Customer',
         status: job.status || 'Unknown',
         date: job.job_date ? new Date(job.job_date).toLocaleDateString() : 'Unknown date' 
-      }))
+      }));
       
-      setDashboardJobsData(fetchJobs)
+      setDashboardJobsData(fetchJobs);
     } catch (error) {
-      console.error('Error in fetchJobsData:', error)
-      setError('Failed to load jobs data.')
+      console.error('Error in fetchJobsData:', error);
+      setError('Failed to load jobs data.');
     } finally {
-      setIsJobsLoading(false)
+      setIsJobsLoading(false);
     }
-  }
+  };
 
   // Fetch shipments data from Supabase
   const fetchShipmentsData = async () => {
-    setIsShipmentsLoading(true)
+    setIsShipmentsLoading(true);
     try {
       const { data, error } = await supabase
         .from('shipments')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(5)
+        .limit(5);
       
       if (error) {
-        console.error('Error fetching shipments:', error)
+        console.error('Error fetching shipments:', error);
         // Fallback to sample data
         setDashboardShipmentsData([
           { id: 'SHIP-12345', destination: 'New York', status: 'In Transit', date: '2024-07-26' },
           { id: 'SHIP-67890', destination: 'Los Angeles', status: 'Delivered', date: '2024-07-25' },
           { id: 'SHIP-11223', destination: 'Chicago', status: 'Processing', date: '2024-07-24' }
-        ])
-        return
+        ]);
+        return;
       }
       
-      console.log('Shipments data from Supabase:', data)
+      console.log('Shipments data from Supabase:', data);
       
       // More flexible mapping to handle different column names
       const formattedData = data.map(shipment => ({
@@ -458,28 +507,28 @@ function App() {
         destination: shipment.destination || shipment.to_address || shipment.delivery_address || 'Unknown Destination',
         status: shipment.status || 'Unknown',
         date: shipment.created_at ? new Date(shipment.created_at).toLocaleDateString() : 'Unknown date'
-      }))
+      }));
       
-      setDashboardShipmentsData(formattedData)
+      setDashboardShipmentsData(formattedData);
     } catch (error) {
-      console.error('Error in fetchShipmentsData:', error)
-      setError('Failed to load shipments data.')
+      console.error('Error in fetchShipmentsData:', error);
+      setError('Failed to load shipments data.');
     } finally {
-      setIsShipmentsLoading(false)
+      setIsShipmentsLoading(false);
     }
-  }
+  };
 
   const toggleMobileMenu = useCallback(() => {
-    setMobileMenuOpen(prev => !prev)
-  }, [])
+    setMobileMenuOpen(prev => !prev);
+  }, []);
 
   const createNewShipment = useCallback(() => {
-    navigate('/new-shipment')
-  }, [navigate])
+    navigate('/new-shipment');
+  }, [navigate]);
 
   const creatActiveJob = useCallback(() => {
-    navigate('/job-orders')
-  }, [navigate])
+    navigate('/job-orders');
+  }, [navigate]);
 
   // Dashboard Job Summary Component
   const DashboardJobsSummary = ({ jobs, onViewAll, isLoading }) => (
@@ -511,7 +560,7 @@ function App() {
         )}
       </div>
     </div>
-  )
+  );
 
   // Dashboard Shipments Summary Component
   const DashboardShipmentsSummary = ({ shipments, onViewAll, isLoading }) => (
@@ -543,7 +592,7 @@ function App() {
         )}
       </div>
     </div>
-  )
+  );
 
   // Dashboard component
   const Dashboard = () => (
@@ -594,26 +643,33 @@ function App() {
         />
       </div>
     </>
-  )
+  );
 
-  // Protected Route Component
+  // Protected Route Component - UPDATED
   const ProtectedRoute = ({ children }) => {
     if (isLoading) {
       return (
         <div className="loading-container">
           <div>Loading...</div>
         </div>
-      )
+      );
     }
     
     // Allow access to auth pages without authentication
     const authPages = ['/login', '/forgot-password', '/reset-password'];
-    if (!isAuthenticated && !authPages.includes(window.location.pathname)) {
-      return <Navigate to="/login" replace />
+    const currentPath = window.location.pathname;
+    
+    // Special case: reset-password should always be accessible
+    if (currentPath === '/reset-password') {
+      return children;
     }
     
-    return children
-  }
+    if (!isAuthenticated && !authPages.includes(currentPath)) {
+      return <Navigate to="/login" replace />;
+    }
+  
+    return children;
+  };
 
   // Placeholder components for other routes
   const ShipmentsPage = () => (
@@ -621,35 +677,35 @@ function App() {
       <h1>Shipments Management</h1>
       <p>Track and manage all your shipments here.</p>
     </div>
-  )
+  );
 
   const ReportsPage = () => (
     <div className="page-container">
       <h1>Reports & Analytics</h1>
       <p>View detailed reports and analytics about your freight operations.</p>
     </div>
-  )
+  );
 
   const SettingsPage = () => (
     <div className="page-container">
       <h1>Settings</h1>
       <p>Configure your application settings and preferences.</p>
     </div>
-  )
+  );
 
   const InvoicesPage = () => (
     <div className="page-container">
       <h1>Invoices</h1>
       <p>View and manage all your invoices here.</p>
     </div>
-  )
+  );
 
   const MessagesPage = () => (
     <div className="page-container">
       <h1>Messages</h1>
       <p>View and manage all your messages here.</p>
     </div>
-  )
+  );
   
   // Show loading state while checking authentication
   if (isLoading) {
@@ -658,7 +714,7 @@ function App() {
         <div className="loading-spinner"></div>
         <div>Loading Application...</div>
       </div>
-    )
+    );
   }
 
   return (
@@ -702,16 +758,10 @@ function App() {
             }
           />
 
-          {/* Reset Password Route */}
+          {/* Reset Password Route - FIXED: Always accessible */}
           <Route
             path="/reset-password"
-            element={
-              isAuthenticated ? (
-                <Navigate to="/dashboard" replace />
-              ) : (
-                <ResetPassword onResetPassword={handleResetPassword} />
-              )
-            }
+            element={<ResetPassword onUpdatePassword={handleResetPassword} />}
           />
 
           <Route
@@ -818,7 +868,7 @@ function App() {
         </Routes>
       </main>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
