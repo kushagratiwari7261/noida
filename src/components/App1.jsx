@@ -16,16 +16,79 @@ function App() {
   const [deletingEmails, setDeletingEmails] = useState({});
   const [user, setUser] = useState(null);
 
-  // ✅ Dynamic API base URL
+  // ✅ FIXED: Dynamic API base URL for Vite - SIMPLIFIED VERSION
   const getApiBaseUrl = () => {
+    // For local development - ALWAYS use localhost:3001
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      console.log('🔧 Using local development URL');
+      return 'http://localhost:3001';
+    }
+    
+    // For Vercel production
     if (window.location.hostname.includes('.vercel.app')) {
+      console.log('🚀 Using production URL');
       const currentHost = window.location.hostname;
       return `https://${currentHost}`;
     }
-    return process.env.REACT_APP_API_URL || '/api';
+    
+    // Fallback to environment variable (remove trailing slashes)
+    const envUrl = import.meta.env.VITE_API_URL;
+    if (envUrl) {
+      console.log('⚙️ Using environment variable URL');
+      return envUrl.replace(/\/+$/, '');
+    }
+    
+    // Ultimate fallback
+    console.log('🔄 Using default fallback URL');
+    return 'http://localhost:3001';
   };
 
   const API_BASE = getApiBaseUrl();
+  console.log('🌐 FINAL API Base URL:', API_BASE);
+
+  // ✅ FIXED: Process attachment URLs for Supabase storage
+  const processAttachmentUrl = useCallback((attachment) => {
+    console.log('🔗 Processing attachment:', {
+      attachment,
+      url: attachment.url,
+      path: attachment.path
+    });
+
+    // If we already have a full URL, use it
+    if (attachment.url && attachment.url.startsWith('http')) {
+      return attachment.url;
+    }
+
+    // If we have a path, construct the Supabase storage URL
+    if (attachment.path) {
+      // Use Vite environment variable
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      if (supabaseUrl) {
+        const url = `${supabaseUrl}/storage/v1/object/public/attachments/${attachment.path}`;
+        console.log('🔗 Constructed Supabase URL:', url);
+        return url;
+      }
+    }
+
+    // If we have a publicUrl, use it
+    if (attachment.publicUrl) {
+      return attachment.publicUrl;
+    }
+
+    // Try to construct from attachment data
+    if (attachment.filename && attachment.messageId) {
+      // Use Vite environment variable
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      if (supabaseUrl) {
+        const url = `${supabaseUrl}/storage/v1/object/public/attachments/account_${attachment.accountId}/${attachment.filename}`;
+        console.log('🔗 Constructed fallback URL:', url);
+        return url;
+      }
+    }
+
+    console.warn('❌ No valid URL found for attachment:', attachment);
+    return null;
+  }, []);
 
   // Get authentication token
   const getAuthToken = useCallback(async () => {
@@ -59,7 +122,7 @@ function App() {
     }
   }, []);
 
-  // Enhanced fetch with auth
+  // ✅ FIXED: Enhanced fetch with auth - PROPER URL CONSTRUCTION
   const fetchWithAuth = useCallback(async (url, options = {}) => {
     try {
       const token = await getAuthToken();
@@ -68,9 +131,19 @@ function App() {
         throw new Error('No authentication token found. Please log in again.');
       }
 
-      let fullUrl = url;
-      if (!url.startsWith('http') && !url.startsWith('/api')) {
-        fullUrl = `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+      // ✅ FIXED: Proper URL construction to avoid double /api
+      let fullUrl;
+      if (url.startsWith('http')) {
+        fullUrl = url;
+      } else if (url.startsWith('/api/')) {
+        // If URL already starts with /api/, just append to base
+        fullUrl = `${API_BASE}${url}`;
+      } else if (url.startsWith('/')) {
+        // If URL starts with / but not /api/, still append to base
+        fullUrl = `${API_BASE}${url}`;
+      } else {
+        // If no leading slash, add /api/ prefix
+        fullUrl = `${API_BASE}/api/${url}`;
       }
 
       const headers = {
@@ -87,6 +160,7 @@ function App() {
       });
 
       if (response.status === 401) {
+        console.log('🔄 Token expired, attempting refresh...');
         try {
           const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
           if (refreshError || !session?.access_token) {
@@ -149,8 +223,8 @@ function App() {
       const data = await response.json();
       console.log('🏥 Backend health:', data);
       
-      if (data.status === 'healthy') {
-        setError('✅ Backend is healthy and running!');
+      if (data.status === 'healthy' || data.status === 'degraded') {
+        setError('✅ Backend is connected!');
         setTimeout(() => setError(null), 3000);
         return true;
       } else {
@@ -162,7 +236,7 @@ function App() {
       let errorMessage = `Cannot connect to backend: ${err.message}`;
       
       if (err.message.includes('Failed to fetch')) {
-        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
+        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is running.`;
       }
       
       setError(`❌ ${errorMessage}`);
@@ -170,47 +244,33 @@ function App() {
     }
   }, [API_BASE]);
 
-  // ✅ ENHANCED: Process attachment URLs for Supabase storage
-  const processAttachmentUrl = useCallback((attachment) => {
-    console.log('🔗 Processing attachment:', {
-      attachment,
-      url: attachment.url,
-      path: attachment.path
-    });
+  // ✅ FIXED: Test database write
+  const testDatabaseWrite = useCallback(async () => {
+    try {
+      setError(null);
+      console.log('🧪 Testing database write...');
+      
+      const response = await fetchWithAuth('/api/debug-db-write', {
+        method: 'POST'
+      });
 
-    // If we already have a full URL, use it
-    if (attachment.url && attachment.url.startsWith('http')) {
-      return attachment.url;
-    }
-
-    // If we have a path, construct the Supabase storage URL
-    if (attachment.path) {
-      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
-      if (supabaseUrl) {
-        const url = `${supabaseUrl}/storage/v1/object/public/attachments/${attachment.path}`;
-        console.log('🔗 Constructed Supabase URL:', url);
-        return url;
+      const result = await response.json();
+      console.log('📝 Database write test result:', result);
+      
+      if (result.success) {
+        setError('✅ Database write test successful!');
+        setTimeout(() => setError(null), 3000);
+        return true;
+      } else {
+        setError(`❌ Database write failed: ${result.error}`);
+        return false;
       }
+    } catch (err) {
+      console.error('❌ Database write test failed:', err);
+      setError(`❌ Database write test failed: ${err.message}`);
+      return false;
     }
-
-    // If we have a publicUrl, use it
-    if (attachment.publicUrl) {
-      return attachment.publicUrl;
-    }
-
-    // Try to construct from attachment data
-    if (attachment.filename && attachment.messageId) {
-      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
-      if (supabaseUrl) {
-        const url = `${supabaseUrl}/storage/v1/object/public/attachments/account_${attachment.accountId}/${attachment.filename}`;
-        console.log('🔗 Constructed fallback URL:', url);
-        return url;
-      }
-    }
-
-    console.warn('❌ No valid URL found for attachment:', attachment);
-    return null;
-  }, []);
+  }, [fetchWithAuth]);
 
   // ✅ ENHANCED: Process email data with better attachment handling
   const processEmailData = useCallback((email) => {
@@ -324,14 +384,14 @@ function App() {
           throw new Error(`Backend health check failed: ${healthResponse.status}`);
         }
         const healthData = await healthResponse.json();
-        console.log('🏥 Backend health:', healthData.status);
+        console.log('🏥 Backend health:', healthData);
         
         if (healthData.status === 'unhealthy') {
           throw new Error('Backend server is unhealthy. Please check server logs.');
         }
       } catch (healthErr) {
         console.error('❌ Backend health check failed:', healthErr);
-        throw new Error(`Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`);
+        throw new Error(`Backend server is not responding at ${API_BASE}. Please check if the server is running.`);
       }
 
       // Clear cache first if force refresh
@@ -403,7 +463,7 @@ function App() {
           window.location.href = '/login';
         }, 2000);
       } else if (err.message.includes('Backend server is not responding')) {
-        errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`;
+        errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is running.`;
       } else if (err.message.includes('Failed to load emails from server')) {
         errorMessage = `Server error: ${err.message}`;
       } else if (err.message.includes('Network error')) {
@@ -950,6 +1010,13 @@ function App() {
                   title="Test backend connection"
                 >
                   🧪 Test Connection
+                </button>
+                <button 
+                  onClick={testDatabaseWrite}
+                  className="test-db-btn"
+                  title="Test database write"
+                >
+                  💾 Test DB Write
                 </button>
               </div>
             </>
