@@ -56,7 +56,7 @@ app.use(cors({
 }));
 
 app.options('*', cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' })); // ✅ Increased for attachments
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Request logging middleware
@@ -69,10 +69,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Cache configuration with request deduplication
+// Cache configuration
 const cache = new Map();
 const CACHE_TTL = 300000;
-const activeRequests = new Map();
 
 function getFromCache(key) {
   try {
@@ -102,22 +101,6 @@ function setToCache(key, data) {
 function clearCache() {
   cache.clear();
   console.log("✅ Cache cleared");
-}
-
-function shouldProcessRequest(userEmail, endpoint) {
-  const key = `${userEmail}-${endpoint}`;
-  if (activeRequests.has(key)) {
-    console.log(`🔄 Skipping duplicate request for ${key}`);
-    return false;
-  }
-  activeRequests.set(key, Date.now());
-  
-  // Clean up after 5 seconds
-  setTimeout(() => {
-    activeRequests.delete(key);
-  }, 5000);
-  
-  return true;
 }
 
 // Enhanced Supabase client
@@ -193,7 +176,6 @@ const USER_EMAIL_MAPPING = {
 class EmailConfigManager {
   constructor() {
     this.configs = new Map();
-    this.failedConfigs = new Map();
     this.loadConfigs();
   }
 
@@ -201,7 +183,6 @@ class EmailConfigManager {
     try {
       let configIndex = 1;
       let loadedCount = 0;
-      let failedCount = 0;
       
       while (true) {
         const configKey = `EMAIL_CONFIG_${configIndex}`;
@@ -216,78 +197,24 @@ class EmailConfigManager {
 
         const [email, password] = configValue.split(':');
         if (email && password) {
-          const trimmedEmail = email.trim();
-          const trimmedPassword = password.trim();
-          
-          // Test the configuration
-          this.testEmailConfig(trimmedEmail, trimmedPassword).then(isValid => {
-            if (isValid) {
-              this.configs.set(configIndex, {
-                id: configIndex,
-                email: trimmedEmail,
-                password: trimmedPassword,
-                name: `Account ${configIndex} (${trimmedEmail})`,
-                status: 'active'
-              });
-              console.log(`✅ Loaded email config ${configIndex}: ${trimmedEmail}`);
-              loadedCount++;
-            } else {
-              this.failedConfigs.set(configIndex, {
-                id: configIndex,
-                email: trimmedEmail,
-                error: 'Authentication failed',
-                status: 'failed'
-              });
-              console.error(`❌ Email config ${configIndex} failed: ${trimmedEmail}`);
-              failedCount++;
-            }
-          }).catch(error => {
-            this.failedConfigs.set(configIndex, {
-              id: configIndex,
-              email: trimmedEmail,
-              error: error.message,
-              status: 'failed'
-            });
-            console.error(`❌ Email config ${configIndex} error: ${trimmedEmail}`, error.message);
-            failedCount++;
+          this.configs.set(configIndex, {
+            id: configIndex,
+            email: email.trim(),
+            password: password.trim(),
+            name: `Account ${configIndex} (${email.trim()})`
           });
+          console.log(`✅ Loaded email config ${configIndex}: ${email}`);
+          loadedCount++;
         } else {
           console.error(`❌ Invalid email configuration format for ${configKey}`);
         }
         configIndex++;
       }
 
-      console.log(`📧 Loaded ${loadedCount} email configurations, ${failedCount} failed`);
+      console.log(`📧 Loaded ${loadedCount} email configurations`);
     } catch (error) {
       console.error("❌ Error loading email configs:", error);
     }
-  }
-
-  async testEmailConfig(email, password) {
-    return new Promise((resolve) => {
-      const testImap = new Imap({
-        user: email,
-        password: password,
-        host: "imap.gmail.com",
-        port: 993,
-        tls: true,
-        tlsOptions: { rejectUnauthorized: false },
-        connTimeout: 10000,
-        authTimeout: 10000
-      });
-
-      testImap.once('ready', () => {
-        testImap.end();
-        resolve(true);
-      });
-
-      testImap.once('error', (err) => {
-        console.error(`❌ Config test failed for ${email}:`, err.message);
-        resolve(false);
-      });
-
-      testImap.connect();
-    });
   }
 
   getConfig(configId) {
@@ -303,16 +230,11 @@ class EmailConfigManager {
     return Array.from(this.configs.values());
   }
 
-  getActiveConfigs() {
-    return this.getAllConfigs().filter(config => config.status === 'active');
-  }
-
   getAllowedAccounts(userEmail) {
     try {
       const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
       console.log(`🔐 User ${userEmail} allowed accounts:`, allowedAccountIds);
-      
-      return this.getActiveConfigs().filter(config => 
+      return this.getAllConfigs().filter(config => 
         allowedAccountIds.includes(config.id)
       );
     } catch (error) {
@@ -337,7 +259,7 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// ✅ Function to upload attachments to Supabase storage
+// ✅ ADDED: Function to upload attachments to Supabase storage
 async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   try {
     if (!supabaseEnabled || !supabase) {
@@ -386,7 +308,7 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   }
 }
 
-// ✅ Function to process email with attachments
+// ✅ ADDED: Function to process email with attachments
 async function processEmailWithAttachments(parsed, messageId, accountId, seqno) {
   try {
     const emailData = {
@@ -497,7 +419,7 @@ const authenticateUser = async (req, res, next) => {
     if (process.env.NODE_ENV !== 'production') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
       req.user = { 
-        email: "pankaj.singh@seal.co.in",
+        email: "anshuman.singh@seal.co.in",
         id: "dev-user" 
       };
       console.log("🔐 Development user set:", req.user.email);
@@ -770,10 +692,7 @@ async function processEmailsInBatch(emails, batchSize = 3) {
 
 async function saveEmailToSupabase(email) {
   try {
-    if (!supabaseEnabled || !supabase) {
-      console.log("❌ Supabase not available, skipping save");
-      return false;
-    }
+    if (!supabaseEnabled || !supabase) return false;
 
     const supabaseData = {
       message_id: email.messageId,
@@ -786,7 +705,9 @@ async function saveEmailToSupabase(email) {
       html_content: email.html,
       attachments: email.attachments || [],
       has_attachments: email.hasAttachments || false,
-      attachments_count: email.attachmentsCount || 0
+      attachments_count: email.attachmentsCount || 0,
+      created_at: new Date(),
+      updated_at: new Date()
     };
 
     const { error } = await supabase.from('emails').upsert(supabaseData);
@@ -867,59 +788,6 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Database setup and debug endpoint
-app.get("/api/setup-database", authenticateUser, async (req, res) => {
-  try {
-    if (!supabaseEnabled || !supabase) {
-      return res.status(500).json({
-        success: false,
-        error: "Supabase not available"
-      });
-    }
-
-    // Check if emails table exists
-    const { error: tableError } = await supabase
-      .from('emails')
-      .select('id')
-      .limit(1);
-
-    if (tableError) {
-      return res.json({
-        success: false,
-        error: "Emails table issue",
-        details: tableError.message,
-        solution: "Please run the SQL setup script in Supabase"
-      });
-    }
-
-    // Get sample data to verify access
-    const { data: sampleEmails, error: sampleError } = await supabase
-      .from('emails')
-      .select('*')
-      .limit(5);
-
-    return res.json({
-      success: true,
-      database: {
-        tableExists: true,
-        sampleDataCount: sampleEmails?.length || 0,
-        sampleData: sampleEmails || []
-      },
-      user: {
-        email: req.user.email,
-        allowedAccounts: emailConfigManager.getAllowedAccounts(req.user.email).map(acc => acc.id)
-      }
-    });
-
-  } catch (error) {
-    console.error("❌ Database setup check error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
@@ -929,8 +797,7 @@ app.get("/", (req, res) => {
     endpoints: {
       health: "/api/health",
       emails: "/api/emails (requires auth)",
-      fetch_emails: "/api/fetch-emails (requires auth)",
-      setup_database: "/api/setup-database (requires auth)"
+      fetch_emails: "/api/fetch-emails (requires auth)"
     }
   });
 });
@@ -958,15 +825,6 @@ app.get("/api/debug-env", (req, res) => {
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   console.log("🚀 /api/emails endpoint called");
   
-  const userEmail = req.user.email;
-  
-  if (!shouldProcessRequest(userEmail, 'get-emails')) {
-    return res.status(429).json({
-      success: false,
-      error: "Request already in progress"
-    });
-  }
-
   try {
     const {
       search = "",
@@ -976,6 +834,7 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       accountId = "all"
     } = req.query;
 
+    const userEmail = req.user.email;
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
@@ -997,44 +856,6 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       });
     }
 
-    // First, let's check if the emails table exists and is accessible
-    try {
-      const { error: tableCheckError } = await supabase
-        .from('emails')
-        .select('id')
-        .limit(1);
-
-      if (tableCheckError) {
-        console.error("❌ Emails table access error:", tableCheckError);
-        
-        // If table doesn't exist, create it dynamically or return empty
-        if (tableCheckError.code === '42P01') { // Table doesn't exist
-          console.log("📋 Emails table doesn't exist, returning empty results");
-          return res.json({
-            success: true,
-            emails: [],
-            total: 0,
-            hasMore: false,
-            page: pageNum,
-            limit: limitNum,
-            userAccess: {
-              email: userEmail,
-              allowedAccounts: emailConfigManager.getAllowedAccounts(userEmail).map(acc => acc.id)
-            }
-          });
-        }
-        
-        throw tableCheckError;
-      }
-    } catch (tableError) {
-      console.error("❌ Table check failed:", tableError);
-      return res.status(500).json({
-        success: false,
-        error: "Database configuration issue",
-        details: process.env.NODE_ENV === 'production' ? undefined : tableError.message
-      });
-    }
-
     let query = supabase
       .from('emails')
       .select('*', { count: 'exact' });
@@ -1043,17 +864,9 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     const allowedAccountIds = allowedAccounts.map(acc => acc.id);
     
     if (allowedAccountIds.length === 0) {
-      return res.json({
-        success: true,
-        emails: [],
-        total: 0,
-        hasMore: false,
-        page: pageNum,
-        limit: limitNum,
-        userAccess: {
-          email: userEmail,
-          allowedAccounts: []
-        }
+      return res.status(403).json({
+        success: false,
+        error: "No email accounts accessible for your user"
       });
     }
 
@@ -1098,24 +911,19 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       console.error("Error code:", error.code);
       console.error("Error details:", error.details);
       
-      // Return empty results instead of error for certain cases
-      if (error.code === '42P01' || error.code === '42501') {
-        console.log("🔄 Returning empty results due to table/permission issues");
-        return res.json({
-          success: true,
-          emails: [],
-          total: 0,
-          hasMore: false,
-          page: pageNum,
-          limit: limitNum,
-          userAccess: {
-            email: userEmail,
-            allowedAccounts: allowedAccountIds
-          }
-        });
+      let userMessage = "Database query failed";
+      if (error.code === '42P01') {
+        userMessage = "Emails table not found. Please check your database setup.";
+      } else if (error.code === '42501') {
+        userMessage = "Database permission denied. Please check your RLS policies.";
       }
       
-      throw error;
+      return res.status(500).json({
+        success: false,
+        error: userMessage,
+        details: process.env.NODE_ENV === 'production' ? undefined : error.message,
+        code: error.code
+      });
     }
 
     console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
@@ -1163,33 +971,16 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     console.error("❌ Emails fetch error:", error);
     console.error("Error stack:", error.stack);
     
-    // Return empty results instead of error
-    res.json({
-      success: true,
-      emails: [],
-      total: 0,
-      hasMore: false,
-      page: 1,
-      limit: 100,
-      userAccess: {
-        email: req.user?.email,
-        allowedAccounts: []
-      }
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch emails from database",
+      details: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
 });
 
 // ✅ UPDATED: Email fetching endpoint with attachment processing
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
-  const userEmail = req.user.email;
-  
-  if (!shouldProcessRequest(userEmail, 'fetch-emails')) {
-    return res.status(429).json({
-      success: false,
-      error: "Request already in progress"
-    });
-  }
-
   try {
     const { 
       mode = "latest", 
@@ -1197,6 +988,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
       accountId = "all"
     } = req.body;
     
+    const userEmail = req.user.email;
     const validatedCount = Math.min(parseInt(count) || 10, 20);
     
     let accountsToProcess = [];
@@ -1487,32 +1279,6 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// Get user accounts endpoint
-app.get("/api/user-accounts", authenticateUser, (req, res) => {
-  try {
-    const userEmail = req.user.email;
-    const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
-    
-    res.json({
-      success: true,
-      user: {
-        email: userEmail,
-        allowedAccounts: allowedAccounts.map(acc => ({
-          id: acc.id,
-          email: acc.email,
-          name: acc.name
-        }))
-      }
-    });
-  } catch (error) {
-    console.error("❌ User accounts error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Global error handler
 app.use((error, req, res, next) => {
   console.error("🚨 Global error handler:", error);
@@ -1531,9 +1297,7 @@ app.use('*', (req, res) => {
     availableEndpoints: [
       'GET /api/health',
       'GET /api/emails (auth required)',
-      'POST /api/fetch-emails (auth required)',
-      'GET /api/setup-database (auth required)',
-      'GET /api/user-accounts (auth required)'
+      'POST /api/fetch-emails (auth required)'
     ]
   });
 });
