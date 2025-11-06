@@ -419,7 +419,7 @@ const authenticateUser = async (req, res, next) => {
     if (process.env.NODE_ENV !== 'production') {
       console.log("🚨 DEVELOPMENT: Bypassing authentication for testing");
       req.user = { 
-        email: "anshuman.singh@seal.co.in",
+        email: "pankaj.singh@seal.co.in",
         id: "dev-user" 
       };
       console.log("🔐 Development user set:", req.user.email);
