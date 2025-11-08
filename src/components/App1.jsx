@@ -18,12 +18,15 @@ function App() {
   const [userAccounts, setUserAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('all');
   
-  // ✅ NEW: Track which email is expanded and its content
+  // ✅ Track which email is expanded and its content
   const [expandedEmailId, setExpandedEmailId] = useState(null);
   const [emailContent, setEmailContent] = useState({});
   const [loadingContent, setLoadingContent] = useState({});
 
-  // ✅ FIXED: Prevent duplicate requests
+  // ✅ NEW: Fetch progress tracking
+  const [fetchProgress, setFetchProgress] = useState(null);
+
+  // ✅ Prevent duplicate requests
   const loadEmailsInProgress = useRef(false);
   const fetchEmailsInProgress = useRef(false);
 
@@ -32,7 +35,7 @@ function App() {
     if (window.location.hostname.includes('.vercel.app')) {
       return 'https://seal-freight.vercel.app';
     }
-   return process.env.REACT_APP_API_URL || '/api';
+    return process.env.REACT_APP_API_URL || '/api';
   };
 
   const API_BASE = getApiBaseUrl();
@@ -123,9 +126,6 @@ function App() {
           if (errorData.details) {
             errorDetails += ` (${errorData.details})`;
           }
-          if (errorData.debugInfo) {
-            console.error('🐛 Debug info:', errorData.debugInfo);
-          }
         } catch (e) {
           errorDetails = response.statusText || errorDetails;
         }
@@ -139,7 +139,7 @@ function App() {
     }
   }, [getAuthToken, API_BASE]);
 
-  // ✅ NEW: Load full email content when user clicks on an email
+  // ✅ Load full email content when user clicks on an email
   const loadEmailContent = useCallback(async (messageId) => {
     if (emailContent[messageId]) {
       console.log('✅ Email content already loaded from cache');
@@ -182,7 +182,7 @@ function App() {
     }
   }, [fetchWithAuth, emailContent]);
 
-  // ✅ NEW: Toggle email expansion and load content
+  // ✅ Toggle email expansion and load content
   const toggleEmailExpansion = useCallback(async (email) => {
     const emailId = email.id || email.messageId;
     
@@ -264,7 +264,7 @@ function App() {
     }
   }, [API_BASE]);
 
-  // ✅ Process attachment URLs for Supabase storage
+  // ✅ Process attachment URLs
   const processAttachmentUrl = useCallback((attachment) => {
     if (attachment.url && attachment.url.startsWith('http')) {
       return attachment.url;
@@ -284,7 +284,7 @@ function App() {
     return null;
   }, []);
 
-  // ✅ Process email data - NOW WITHOUT content
+  // ✅ Process email data - WITHOUT content
   const processEmailData = useCallback((email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -296,7 +296,6 @@ function App() {
       to: email.to || email.to_text,
       to_text: email.to_text || email.to,
       date: email.date,
-      // ✅ Content will be loaded separately
       text: null,
       text_content: null,
       html: null,
@@ -340,7 +339,7 @@ function App() {
     return processedEmail;
   }, [processAttachmentUrl]);
 
-  // ✅ Load emails function - now loads list without content
+  // ✅ Load emails function - loads list without content
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
     if (loadEmailsInProgress.current) {
       console.log('⚠️ Load emails already in progress, skipping...');
@@ -376,7 +375,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=50`, // ✅ Reduced from 100 to 50
+        `limit=50`,
         `accountId=${selectedAccount}`,
         `t=${Date.now()}`
       ].join('&');
@@ -438,7 +437,7 @@ function App() {
     }
   }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ Fetch emails function
+  // ✅ OPTIMIZED: Fetch emails with progress tracking
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
@@ -449,34 +448,57 @@ function App() {
     setFetching(true);
     setFetchStatus('fetching');
     setError(null);
+    setFetchProgress({ message: 'Starting email fetch...', stage: 'init' });
 
     try {
-      console.log(`🔄 Starting ${mode} fetch...`);
+      console.log(`🚀 Starting ${mode} fetch...`);
+      
+      setFetchProgress({ message: 'Connecting to email server...', stage: 'connect' });
       
       const response = await fetchWithAuth('/api/fetch-emails', {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 20 : 30,
+          count: mode === 'force' ? 50 : 30, // Increased counts
           accountId: selectedAccount
         })
       });
+
+      setFetchProgress({ message: 'Processing server response...', stage: 'process' });
 
       const result = await response.json();
       console.log(`📨 ${mode} fetch result:`, result);
       
       if (response.ok && result.success) {
+        // ✅ Display detailed timing information
+        if (result.summary) {
+          const { totalProcessed, totalTimeMs } = result.summary;
+          const emailsPerSecond = totalTimeMs > 0 ? (totalProcessed / (totalTimeMs / 1000)).toFixed(2) : 0;
+          
+          setFetchProgress({ 
+            message: `✅ Processed ${totalProcessed} emails in ${(totalTimeMs / 1000).toFixed(2)}s (${emailsPerSecond} emails/s)`, 
+            stage: 'success' 
+          });
+        }
+        
         setFetchStatus('success');
         setLastFetchTime(new Date());
+        
+        // Reload emails with new data
+        setFetchProgress({ message: 'Refreshing email list...', stage: 'reload' });
         await loadEmails(false, true);
+        
+        setFetchProgress(null);
       } else {
         setFetchStatus('error');
         setError(result.error || `Failed to ${mode} fetch emails`);
+        setFetchProgress(null);
         console.error(`❌ ${mode} fetch failed:`, result.error);
       }
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
+      setFetchProgress(null);
       console.error(`❌ ${mode} fetch failed:`, err);
       
       if (err.message.includes('Authentication failed')) {
@@ -487,6 +509,8 @@ function App() {
     } finally {
       setFetching(false);
       fetchEmailsInProgress.current = false;
+      // Clear progress after 3 seconds if successful
+      setTimeout(() => setFetchProgress(null), 3000);
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
@@ -682,7 +706,7 @@ function App() {
     }
   }, [fetchWithAuth]);
 
-  // ✅ UPDATED: EmailCard component with expandable content
+  // ✅ EmailCard component with expandable content
   const EmailCard = React.memo(({ email, index }) => {
     const isExpanded = expandedEmailId === email.id;
     const content = emailContent[email.messageId];
@@ -787,7 +811,7 @@ function App() {
     getUser();
   }, [fetchUserAccounts]);
 
-  // ✅ Load emails only once when component mounts
+  // ✅ Load emails once when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
@@ -969,8 +993,22 @@ function App() {
           </div>
         )}
 
+        {/* ✅ NEW: Fetch Progress Banner */}
+        {fetchProgress && (
+          <div className={`progress-banner ${fetchProgress.stage}`}>
+            <div className="progress-content">
+              <span className="progress-message">{fetchProgress.message}</span>
+              {fetchProgress.stage === 'fetching' && (
+                <div className="progress-spinner">
+                  <div className="spinner-small"></div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Status Banner */}
-        {statusMessage && (
+        {statusMessage && !fetchProgress && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
             {fetchStatus === 'fetching' && (
@@ -1016,7 +1054,7 @@ function App() {
           {!loading && emails.length > 0 && (
             <div className="email-list">
               <div className="email-list-hint">
-                <p>💡 Click on email headers to expand and view content</p>
+                <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
               </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1028,21 +1066,34 @@ function App() {
         {/* Debug Info */}
         <div className="debug-info">
           <details>
-            <summary>Debug Info</summary>
+            <summary>Debug Info (Performance)</summary>
             <div className="debug-content">
-              <p>Backend URL: {API_BASE}</p>
-              <p>Current user: {user?.email}</p>
-              <p>User accounts: {userAccounts.map(a => a.name).join(', ') || 'None'}</p>
-              <p>Selected account: {selectedAccount}</p>
-              <p>Current emails: {emails.length}</p>
-              <p>Expanded email: {expandedEmailId || 'None'}</p>
-              <p>Cached content: {Object.keys(emailContent).length} emails</p>
-              <p>Loading: {loading ? 'Yes' : 'No'}</p>
-              <p>Fetching: {fetching ? 'Yes' : 'No'}</p>
-              <p>Fetch Status: {fetchStatus}</p>
-              <p>Last Fetch: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
-              <p>Environment: {window.location.hostname.includes('vercel.app') ? 'Production' : 'Development'}</p>
-              {error && <p>Error: {error}</p>}
+              <p><strong>Backend:</strong> {API_BASE}</p>
+              <p><strong>User:</strong> {user?.email}</p>
+              <p><strong>Accounts:</strong> {userAccounts.map(a => a.name).join(', ') || 'None'}</p>
+              <p><strong>Selected Account:</strong> {selectedAccount}</p>
+              <p><strong>Current Emails:</strong> {emails.length}</p>
+              <p><strong>Expanded Email:</strong> {expandedEmailId || 'None'}</p>
+              <p><strong>Cached Content:</strong> {Object.keys(emailContent).length} emails</p>
+              <p><strong>Loading:</strong> {loading ? 'Yes' : 'No'}</p>
+              <p><strong>Fetching:</strong> {fetching ? 'Yes' : 'No'}</p>
+              <p><strong>Fetch Status:</strong> {fetchStatus}</p>
+              <p><strong>Last Fetch:</strong> {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
+              <p><strong>Environment:</strong> {window.location.hostname.includes('vercel.app') ? 'Production' : 'Development'}</p>
+              {fetchProgress && <p><strong>Fetch Progress:</strong> {fetchProgress.message}</p>}
+              {error && <p style={{color: 'red'}}><strong>Error:</strong> {error}</p>}
+              
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
+                <p><strong>Performance Features:</strong></p>
+                <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
+                  <li>✅ Parallel email parsing</li>
+                  <li>✅ Batch duplicate checking</li>
+                  <li>✅ Concurrent attachment uploads (3 at a time)</li>
+                  <li>✅ Batch database saves (10 at a time)</li>
+                  <li>✅ Lazy content loading (on expand)</li>
+                  <li>✅ Smart caching</li>
+                </ul>
+              </div>
             </div>
           </details>
         </div>
