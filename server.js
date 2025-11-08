@@ -29,7 +29,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ✅ Enhanced CORS configuration
+// Enhanced CORS configuration
 app.use(cors({
   origin: function (origin, callback) {
     if (process.env.NODE_ENV === 'production') {
@@ -63,8 +63,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.path}`, {
     timestamp: new Date().toISOString(),
-    origin: req.get('origin'),
-    userAgent: req.get('User-Agent')?.substring(0, 50)
+    origin: req.get('origin')
   });
   next();
 });
@@ -103,7 +102,7 @@ function clearCache() {
   console.log("✅ Cache cleared");
 }
 
-// Enhanced Supabase client
+// Supabase client
 let supabase = null;
 let supabaseEnabled = false;
 
@@ -114,8 +113,6 @@ const initializeSupabase = () => {
 
     if (!supabaseUrl || !supabaseKey) {
       console.error("❌ Supabase environment variables not set");
-      console.log("SUPABASE_URL:", supabaseUrl ? "Set" : "Missing");
-      console.log("SUPABASE_KEY:", supabaseKey ? "Set" : "Missing");
       supabaseEnabled = false;
       return false;
     }
@@ -129,16 +126,12 @@ const initializeSupabase = () => {
       },
       global: { 
         headers: { 'X-Client-Info': 'email-backend' } 
-      },
-      db: {
-        schema: 'public'
       }
     });
     
     supabaseEnabled = true;
     console.log("✅ Supabase client created successfully");
     
-    // Test connection
     testSupabaseConnection();
     return true;
   } catch (error) {
@@ -175,7 +168,7 @@ const USER_EMAIL_MAPPING = {
   "transport@seal.co.in": [1, 2]
 };
 
-// Enhanced Email Configuration Manager
+// Email Configuration Manager
 class EmailConfigManager {
   constructor() {
     this.configs = new Map();
@@ -193,7 +186,7 @@ class EmailConfigManager {
         
         if (!configValue) {
           if (configIndex === 1) {
-            console.warn("⚠️ No email configurations found in environment variables");
+            console.warn("⚠️ No email configurations found");
           }
           break;
         }
@@ -208,8 +201,6 @@ class EmailConfigManager {
           });
           console.log(`✅ Loaded email config ${configIndex}: ${email}`);
           loadedCount++;
-        } else {
-          console.error(`❌ Invalid email configuration format for ${configKey}`);
         }
         configIndex++;
       }
@@ -222,10 +213,7 @@ class EmailConfigManager {
 
   getConfig(configId) {
     const id = parseInt(configId);
-    if (isNaN(id)) {
-      console.error(`❌ Invalid config ID: ${configId}`);
-      return null;
-    }
+    if (isNaN(id)) return null;
     return this.configs.get(id);
   }
 
@@ -236,7 +224,6 @@ class EmailConfigManager {
   getAllowedAccounts(userEmail) {
     try {
       const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
-      console.log(`🔐 User ${userEmail} allowed accounts:`, allowedAccountIds);
       return this.getAllConfigs().filter(config => 
         allowedAccountIds.includes(config.id)
       );
@@ -250,9 +237,7 @@ class EmailConfigManager {
     try {
       const allowedAccountIds = USER_EMAIL_MAPPING[userEmail] || [];
       const accountIdNum = parseInt(accountId);
-      const canAccess = allowedAccountIds.includes(accountIdNum);
-      console.log(`🔐 Access check: ${userEmail} -> account ${accountId}: ${canAccess}`);
-      return canAccess;
+      return allowedAccountIds.includes(accountIdNum);
     } catch (error) {
       console.error("❌ Error checking account access:", error);
       return false;
@@ -262,13 +247,12 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// ✅ OPTIMIZED: Batch duplicate checking
+// Batch duplicate checking
 async function checkDuplicatesBatch(messageIds, accountId) {
   const cacheKeys = messageIds.map(id => `duplicate:${id}:${accountId}`);
   const cachedResults = {};
   const uncachedIds = [];
 
-  // Check cache first
   messageIds.forEach((id, index) => {
     const cached = getFromCache(cacheKeys[index]);
     if (cached !== null) {
@@ -278,7 +262,6 @@ async function checkDuplicatesBatch(messageIds, accountId) {
     }
   });
 
-  // Batch query for uncached
   if (uncachedIds.length > 0 && supabaseEnabled && supabase) {
     try {
       const { data, error } = await supabase
@@ -306,20 +289,15 @@ async function checkDuplicatesBatch(messageIds, accountId) {
   return cachedResults;
 }
 
-// ✅ Function to upload attachments to Supabase storage
+// Upload attachments to Supabase storage
 async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   try {
-    if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available for attachment upload");
-      return null;
-    }
+    if (!supabaseEnabled || !supabase) return null;
 
     const fileExtension = attachment.filename ? 
       path.extname(attachment.filename) : '.bin';
     const uniqueFilename = `${messageId}_${Date.now()}_${Math.random().toString(36).substring(7)}${fileExtension}`;
     const filePath = `account_${accountId}/${uniqueFilename}`;
-
-    console.log(`📎 Uploading attachment: ${attachment.filename} -> ${filePath}`);
 
     const { data, error } = await supabase.storage
       .from('attachments')
@@ -337,8 +315,6 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
       .from('attachments')
       .getPublicUrl(filePath);
 
-    console.log(`✅ Attachment uploaded successfully: ${publicUrl}`);
-
     return {
       filename: attachment.filename || 'unnamed',
       path: filePath,
@@ -352,13 +328,12 @@ async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
   }
 }
 
-// ✅ OPTIMIZED: Parallel attachment processing with concurrency limit
+// Parallel attachment processing
 async function uploadAttachmentsBatch(attachments, messageId, accountId, concurrencyLimit = 3) {
   if (!attachments || attachments.length === 0) return [];
   
   const results = [];
   
-  // Process in chunks to control concurrency
   for (let i = 0; i < attachments.length; i += concurrencyLimit) {
     const chunk = attachments.slice(i, i + concurrencyLimit);
     const chunkPromises = chunk.map(att => 
@@ -376,7 +351,7 @@ async function uploadAttachmentsBatch(attachments, messageId, accountId, concurr
   return results;
 }
 
-// ✅ OPTIMIZED: Function to process email with parallel attachment uploads
+// Process email with attachments
 async function processEmailWithAttachmentsFast(parsed, messageId, accountId, seqno) {
   try {
     const emailData = {
@@ -394,14 +369,11 @@ async function processEmailWithAttachmentsFast(parsed, messageId, accountId, seq
     };
 
     if (parsed.attachments && parsed.attachments.length > 0) {
-      console.log(`📎 Processing ${parsed.attachments.length} attachments for ${messageId}`);
-      
-      // Upload attachments in parallel with concurrency control
       const uploadedAttachments = await uploadAttachmentsBatch(
         parsed.attachments.filter(att => att.content),
         messageId,
         accountId,
-        3 // Process 3 attachments at a time
+        3
       );
       
       emailData.attachments = uploadedAttachments.map((att, index) => ({
@@ -416,8 +388,6 @@ async function processEmailWithAttachmentsFast(parsed, messageId, accountId, seq
       
       emailData.hasAttachments = emailData.attachments.length > 0;
       emailData.attachmentsCount = emailData.attachments.length;
-      
-      console.log(`✅ Processed ${emailData.attachments.length}/${parsed.attachments.length} attachments`);
     }
 
     return emailData;
@@ -427,7 +397,7 @@ async function processEmailWithAttachmentsFast(parsed, messageId, accountId, seq
   }
 }
 
-// ✅ OPTIMIZED: Batch saving with upsert
+// Batch saving with upsert
 async function saveEmailsBatch(emails, batchSize = 10) {
   if (emails.length === 0) return [];
   
@@ -452,7 +422,6 @@ async function saveEmailsBatch(emails, batchSize = 10) {
 
     const results = [];
     
-    // Process in batches
     for (let i = 0; i < supabaseData.length; i += batchSize) {
       const batch = supabaseData.slice(i, i + batchSize);
       
@@ -475,7 +444,6 @@ async function saveEmailsBatch(emails, batchSize = 10) {
         results.push({ success: false, count: 0 });
       }
       
-      // Small delay between batches to avoid rate limits
       if (i + batchSize < supabaseData.length) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
@@ -491,71 +459,36 @@ async function saveEmailsBatch(emails, batchSize = 10) {
   }
 }
 
-// ✅ Enhanced Authentication Middleware
+// Authentication Middleware
 const authenticateUser = async (req, res, next) => {
   try {
-    console.log("🔐 Starting authentication for:", req.method, req.path);
-    
     const authHeader = req.headers.authorization;
     
-    if (!authHeader) {
-      console.log("❌ No authorization header");
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
-        error: "Authentication required. Please log in."
-      });
-    }
-
-    if (!authHeader.startsWith('Bearer ')) {
-      console.log("❌ Invalid authorization format");
-      return res.status(401).json({
-        success: false,
-        error: "Invalid authentication format. Use Bearer token."
+        error: "Authentication required"
       });
     }
 
     const token = authHeader.substring(7);
-    
-    if (!token || token.length < 10) {
-      console.log("❌ Token too short or empty");
-      return res.status(401).json({
-        success: false,
-        error: "Invalid authentication token."
-      });
-    }
-    
-    console.log("🔐 Token received, length:", token.length);
 
     if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available for authentication");
       return res.status(500).json({
         success: false,
         error: "Authentication service unavailable"
       });
     }
 
-    console.log("🔐 Verifying token with Supabase...");
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
-    if (error) {
-      console.error("❌ Supabase token verification failed:", error.message);
+    if (error || !user || !user.email) {
       return res.status(401).json({
         success: false,
-        error: "Authentication failed. Please log in again.",
-        details: error.message
+        error: "Authentication failed"
       });
     }
 
-    if (!user || !user.email) {
-      console.log("❌ No user found for token");
-      return res.status(401).json({
-        success: false,
-        error: "User not found. Please log in again."
-      });
-    }
-
-    console.log(`✅ Authenticated user: ${user.email} (${user.id})`);
-    
     req.user = {
       email: user.email,
       id: user.id
@@ -563,46 +496,39 @@ const authenticateUser = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error("❌ Authentication process error:", error);
+    console.error("❌ Authentication error:", error);
     return res.status(401).json({
       success: false,
-      error: "Authentication failed",
-      details: process.env.NODE_ENV === 'production' ? undefined : error.message
+      error: "Authentication failed"
     });
   }
 };
 
-// Enhanced Authorization Middleware
+// Authorization Middleware
 const authorizeEmailAccess = (accountId = null) => {
   return (req, res, next) => {
     try {
       const userEmail = req.user.email;
       const targetAccountId = accountId || req.body.accountId || req.query.accountId;
       
-      console.log(`🔐 Authorization check for ${userEmail}, account: ${targetAccountId}`);
-      
       if (!targetAccountId || targetAccountId === 'all') {
         const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
         if (allowedAccounts.length === 0) {
-          console.log(`❌ User ${userEmail} has no allowed accounts`);
           return res.status(403).json({
             success: false,
-            error: "Access denied. No email accounts assigned to your user."
+            error: "Access denied"
           });
         }
-        console.log(`✅ User ${userEmail} authorized for accounts:`, allowedAccounts.map(a => a.id));
         return next();
       }
       
       if (!emailConfigManager.canUserAccessAccount(userEmail, targetAccountId)) {
-        console.log(`❌ User ${userEmail} not authorized for account ${targetAccountId}`);
         return res.status(403).json({
           success: false,
-          error: "Access denied. You don't have permission to access this email account."
+          error: "Access denied"
         });
       }
       
-      console.log(`✅ User ${userEmail} authorized for account ${targetAccountId}`);
       next();
     } catch (error) {
       console.error("❌ Authorization error:", error);
@@ -664,12 +590,6 @@ class IMAPConnectionManager {
       this.connectionTimeouts.delete(configId);
     }
   }
-
-  async disconnectAll() {
-    for (const [configId] of this.connections) {
-      this.closeConnection(configId);
-    }
-  }
 }
 
 class IMAPConnection {
@@ -692,24 +612,21 @@ class IMAPConnection {
         tlsOptions: { rejectUnauthorized: false },
         connTimeout: 30000,
         authTimeout: 15000,
-        keepAlive: false
+        keepalive: false
       });
 
       this.connection.once('ready', () => {
         this.isConnected = true;
-        console.log(`✅ IMAP connection ready for ${this.config.email}`);
         resolve(this.connection);
       });
 
       this.connection.once('error', (err) => {
         this.isConnected = false;
-        console.error(`❌ IMAP connection error for ${this.config.email}:`, err.message);
         reject(err);
       });
 
       this.connection.once('end', () => {
         this.isConnected = false;
-        console.log(`📤 IMAP connection closed for ${this.config.email}`);
       });
 
       this.connection.connect();
@@ -748,66 +665,32 @@ const imapManager = new IMAPConnectionManager();
 
 // ========== API ENDPOINTS ==========
 
-// Health check - NO AUTH REQUIRED
+// Health check
 app.get("/api/health", async (req, res) => {
   try {
     let supabaseStatus = "not_configured";
-    let supabaseDetails = {};
     
     if (supabaseEnabled && supabase) {
       try {
-        const startTime = Date.now();
-        const { data, error } = await supabase
-          .from('emails')
-          .select('message_id')
-          .limit(1);
-        const responseTime = Date.now() - startTime;
-
-        if (error) {
-          supabaseStatus = "disconnected";
-          supabaseDetails = {
-            error: error.message,
-            code: error.code
-          };
-        } else {
-          supabaseStatus = "connected";
-          supabaseDetails = {
-            responseTime: `${responseTime}ms`,
-            canQuery: true
-          };
-        }
+        const { error } = await supabase.from('emails').select('message_id').limit(1);
+        supabaseStatus = error ? "disconnected" : "connected";
       } catch (error) {
         supabaseStatus = "error";
-        supabaseDetails = {
-          error: error.message
-        };
       }
     }
 
-    const healthStatus = supabaseStatus === "connected" ? "healthy" : "degraded";
-
     res.json({
-      status: healthStatus,
+      status: supabaseStatus === "connected" ? "healthy" : "degraded",
       timestamp: new Date().toISOString(),
       services: {
-        supabase: {
-          status: supabaseStatus,
-          enabled: supabaseEnabled,
-          ...supabaseDetails
-        },
-        email_configs: {
-          count: emailConfigManager.getAllConfigs().length,
-          loaded: emailConfigManager.getAllConfigs().length > 0
-        }
-      },
-      environment: process.env.NODE_ENV || 'development',
-      platform: "Vercel Serverless"
+        supabase: { status: supabaseStatus },
+        email_configs: { count: emailConfigManager.getAllConfigs().length }
+      }
     });
   } catch (error) {
     res.status(500).json({
       status: "unhealthy",
-      error: error.message,
-      timestamp: new Date().toISOString()
+      error: error.message
     });
   }
 });
@@ -816,20 +699,12 @@ app.get("/api/health", async (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     message: "Email Backend API is running!",
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    endpoints: {
-      health: "/api/health",
-      emails: "/api/emails (requires auth)",
-      fetch_emails: "/api/fetch-emails (requires auth)"
-    }
+    timestamp: new Date().toISOString()
   });
 });
 
-// ✅ OPTIMIZED: Main email LIST endpoint - NO text/html content
+// Get emails list (WITHOUT content)
 app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
-  console.log("🚀 /api/emails endpoint called");
-  
   try {
     const {
       search = "",
@@ -844,40 +719,23 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    console.log(`📧 Fetching emails for user: ${userEmail}`, {
-      accountId,
-      search,
-      sort,
-      page: pageNum,
-      limit: limitNum,
-      skip
-    });
-
     if (!supabaseEnabled || !supabase) {
-      console.error("❌ Supabase not available");
       return res.status(500).json({
         success: false,
-        error: "Database service is currently unavailable."
+        error: "Database unavailable"
       });
     }
 
-    // Get allowed accounts for the authenticated user
     const allowedAccounts = emailConfigManager.getAllowedAccounts(userEmail);
     const allowedAccountIds = allowedAccounts.map(acc => acc.id);
     
-    console.log(`🔐 User ${userEmail} has access to accounts:`, allowedAccountIds);
-    
     if (allowedAccountIds.length === 0) {
-      console.log(`❌ No allowed accounts found for ${userEmail}`);
       return res.status(403).json({
         success: false,
-        error: "No email accounts accessible for your user",
-        userEmail: userEmail,
-        allowedAccounts: []
+        error: "No accessible accounts"
       });
     }
 
-    // ✅ Select only necessary columns to avoid timeout
     let query = supabase
       .from('emails')
       .select(`
@@ -894,33 +752,24 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         created_at
       `, { count: 'exact' });
 
-    // Apply account filter
     if (accountId !== "all") {
       const accountIdNum = parseInt(accountId);
       if (!emailConfigManager.canUserAccessAccount(userEmail, accountIdNum)) {
-        console.log(`❌ Access denied: ${userEmail} cannot access account ${accountIdNum}`);
         return res.status(403).json({
           success: false,
-          error: "Access denied to this email account",
-          requestedAccount: accountIdNum,
-          allowedAccounts: allowedAccountIds
+          error: "Access denied"
         });
       }
       query = query.eq('account_id', accountIdNum);
-      console.log(`📌 Filtering by account: ${accountIdNum}`);
     } else {
       query = query.in('account_id', allowedAccountIds);
-      console.log(`📌 Filtering by accounts: ${allowedAccountIds.join(', ')}`);
     }
 
-    // Apply search filter
     if (search && search.trim().length > 0) {
       const trimmedSearch = search.trim();
-      console.log(`🔍 Applying search filter: "${trimmedSearch}"`);
       query = query.or(`subject.ilike.%${trimmedSearch}%,from_text.ilike.%${trimmedSearch}%,to_text.ilike.%${trimmedSearch}%`);
     }
 
-    // Apply sorting
     switch (sort) {
       case "date_asc":
         query = query.order('date', { ascending: true });
@@ -935,33 +784,16 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
         query = query.order('date', { ascending: false });
     }
 
-    // Apply pagination
     query = query.range(skip, skip + limitNum - 1);
 
-    console.log("🚀 Executing optimized Supabase query...");
-    
     const { data: emails, error, count } = await query;
 
     if (error) {
-      console.error("❌ Supabase query error:", {
-        message: error.message,
-        code: error.code,
-        details: error.details,
-        hint: error.hint
-      });
-      
       return res.status(500).json({
         success: false,
-        error: "Database query failed",
-        message: error.message,
-        details: process.env.NODE_ENV === 'production' ? undefined : {
-          code: error.code,
-          hint: error.hint
-        }
+        error: "Database query failed"
       });
     }
-
-    console.log(`✅ Query successful: Found ${emails?.length || 0} emails out of ${count || 0} total`);
 
     const processedEmails = (emails || []).map(email => ({
       _id: email.id || email.message_id,
@@ -975,54 +807,39 @@ app.get("/api/emails", authenticateUser, authorizeEmailAccess(), async (req, res
       to_text: email.to_text,
       date: email.date,
       attachments: Array.isArray(email.attachments) ? email.attachments : [],
-      hasAttachments: email.has_attachments || (Array.isArray(email.attachments) && email.attachments.length > 0),
-      attachmentsCount: email.attachments_count || (Array.isArray(email.attachments) ? email.attachments.length : 0),
+      hasAttachments: email.has_attachments,
+      attachmentsCount: email.attachments_count,
       account_id: email.account_id
     }));
 
-    const hasMore = skip + (emails?.length || 0) < (count || 0);
-    
-    const response = {
+    res.json({
       success: true,
       emails: processedEmails,
       total: count || 0,
-      hasMore,
+      hasMore: skip + (emails?.length || 0) < (count || 0),
       page: pageNum,
-      limit: limitNum,
-      userAccess: {
-        email: userEmail,
-        allowedAccounts: allowedAccountIds
-      }
-    };
-
-    console.log(`📨 Sending response with ${processedEmails.length} emails`);
-    res.json(response);
+      limit: limitNum
+    });
 
   } catch (error) {
     console.error("❌ Emails fetch error:", error);
-    
     res.status(500).json({
       success: false,
-      error: "Failed to fetch emails from database",
-      details: process.env.NODE_ENV === 'production' ? undefined : error.message
+      error: "Failed to fetch emails"
     });
   }
 });
 
-// ✅ Get single email with FULL content (text & html)
+// Get single email WITH content
 app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
-  console.log("🚀 /api/emails/:messageId endpoint called");
-  
   try {
     const { messageId } = req.params;
     const userEmail = req.user.email;
 
-    console.log(`📧 Fetching full email content for: ${messageId}`);
-
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({
         success: false,
-        error: "Database service is currently unavailable."
+        error: "Database unavailable"
       });
     }
 
@@ -1032,16 +849,7 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
       .eq('message_id', messageId)
       .single();
 
-    if (error) {
-      console.error("❌ Error fetching email:", error);
-      return res.status(404).json({
-        success: false,
-        error: "Email not found",
-        details: error.message
-      });
-    }
-
-    if (!email) {
+    if (error || !email) {
       return res.status(404).json({
         success: false,
         error: "Email not found"
@@ -1049,14 +857,11 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
     }
 
     if (!emailConfigManager.canUserAccessAccount(userEmail, email.account_id)) {
-      console.log(`❌ Access denied: ${userEmail} cannot access email from account ${email.account_id}`);
       return res.status(403).json({
         success: false,
-        error: "Access denied to this email"
+        error: "Access denied"
       });
     }
-
-    console.log(`✅ Email found and user authorized`);
 
     res.json({
       success: true,
@@ -1078,9 +883,7 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
         attachments: Array.isArray(email.attachments) ? email.attachments : [],
         hasAttachments: email.has_attachments,
         attachmentsCount: email.attachments_count,
-        account_id: email.account_id,
-        created_at: email.created_at,
-        updated_at: email.updated_at
+        account_id: email.account_id
       }
     });
 
@@ -1088,26 +891,24 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
     console.error("❌ Get email error:", error);
     res.status(500).json({
       success: false,
-      error: "Failed to fetch email",
-      details: process.env.NODE_ENV === 'production' ? undefined : error.message
+      error: "Failed to fetch email"
     });
   }
 });
 
-// ✅ OPTIMIZED: Email fetching endpoint with parallel processing
+// ✅ OPTIMIZED: Fetch emails endpoint - ALWAYS gets LATEST emails
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();
   
   try {
     const { 
       mode = "latest", 
-      count = 10,
+      count = 100,
       accountId = "all"
     } = req.body;
     
     const userEmail = req.user.email;
-    // ✅ INCREASED: Fetch more emails to ensure we get latest
-    const validatedCount = Math.min(parseInt(count) || 100, 200); // Increased from 50 to 200
+    const validatedCount = Math.min(parseInt(count) || 100, 300);
     
     let accountsToProcess = [];
     
@@ -1117,7 +918,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
       if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
         return res.status(403).json({
           success: false,
-          error: "Access denied to this email account"
+          error: "Access denied"
         });
       }
       const config = emailConfigManager.getConfig(accountId);
@@ -1133,16 +934,21 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     if (accountsToProcess.length === 0) {
       return res.status(403).json({
         success: false,
-        error: "No email accounts accessible"
+        error: "No accessible accounts"
       });
     }
 
-    console.log(`🚀 OPTIMIZED fetch started for ${accountsToProcess.length} accounts`);
+    console.log(`\n🚀 ========== FETCH STARTED ==========`);
+    console.log(`   Accounts: ${accountsToProcess.length}`);
+    console.log(`   Mode: ${mode}`);
+    console.log(`   Count: ${validatedCount}`);
+    console.log(`========================================\n`);
+    
     const allResults = [];
     
     for (const account of accountsToProcess) {
       const accountStartTime = Date.now();
-      console.log(`📧 Processing account ${account.id}: ${account.email}`);
+      console.log(`\n📧 ========== ACCOUNT ${account.id}: ${account.email} ==========`);
       
       try {
         const connection = await imapManager.getConnection(account.id);
@@ -1155,26 +961,45 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 accountId: account.id,
                 accountEmail: account.email,
                 success: false,
-                error: "Failed to open inbox: " + err.message
+                error: err.message
               });
               return;
             }
             
             const totalMessages = box.messages.total;
+            console.log(`📊 Total messages in inbox: ${totalMessages}`);
+            
+            if (totalMessages === 0) {
+              console.log(`📭 No messages in inbox`);
+              resolve({
+                accountId: account.id,
+                accountEmail: account.email,
+                success: true,
+                message: "No messages in inbox",
+                data: { processed: 0, duplicates: 0, total: 0, saved: 0 }
+              });
+              imapManager.closeConnection(account.id);
+              return;
+            }
+            
             const fetchCount = Math.min(validatedCount, totalMessages);
             
-            // ✅ CRITICAL FIX: Fetch from NEWEST emails (highest sequence numbers)
-            // This ensures we always get the latest emails
+            // ✅ CRITICAL: Always fetch from END (newest emails)
+            // Sequence numbers: 1 = oldest, totalMessages = newest
             const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-            const fetchEnd = totalMessages; // Always end at the latest email
+            const fetchEnd = totalMessages;
             const fetchRange = `${fetchStart}:${fetchEnd}`;
 
-            console.log(`📨 Fetching LATEST ${fetchCount} emails from inbox (range: ${fetchRange}, total: ${totalMessages})`);
+            console.log(`📨 FETCHING LATEST EMAILS`);
+            console.log(`   Range: ${fetchRange}`);
+            console.log(`   Start: ${fetchStart} (${totalMessages - fetchStart + 1} from end)`);
+            console.log(`   End: ${fetchEnd} (NEWEST)`);
+            console.log(`   Count: ${fetchCount}`);
 
             const f = connection.connection.seq.fetch(fetchRange, { 
               bodies: "",
               struct: true,
-              markSeen: false // Don't mark emails as read
+              markSeen: false
             });
 
             const emailBuffers = [];
@@ -1200,7 +1025,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 accountId: account.id,
                 accountEmail: account.email,
                 success: false,
-                error: "Fetch error: " + err.message
+                error: err.message
               });
             });
 
@@ -1208,9 +1033,13 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
               const fetchTime = Date.now() - accountStartTime;
               console.log(`⚡ Fetched ${emailBuffers.length} emails in ${fetchTime}ms`);
               
+              // Sort by sequence (highest = newest)
+              emailBuffers.sort((a, b) => b.seqno - a.seqno);
+              console.log(`📊 Sequence range: ${emailBuffers[emailBuffers.length - 1]?.seqno} to ${emailBuffers[0]?.seqno}`);
+              
               try {
-                // ✅ PARALLEL PARSING
-                console.log(`🔄 Parsing ${emailBuffers.length} emails in parallel...`);
+                // Parse emails in parallel
+                console.log(`🔄 Parsing ${emailBuffers.length} emails...`);
                 const parseStartTime = Date.now();
                 
                 const parsedEmailsPromises = emailBuffers.map(async ({ buffer, seqno }) => {
@@ -1228,7 +1057,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 const parseTime = Date.now() - parseStartTime;
                 console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
 
-                // ✅ BATCH DUPLICATE CHECK (but still process in force mode)
+                // Check duplicates (only in 'latest' mode)
                 let newEmails = parsedEmails;
                 let duplicateCount = 0;
                 
@@ -1242,33 +1071,10 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                   
                   const duplicateCheckTime = Date.now() - duplicateCheckStartTime;
                   console.log(`✅ Duplicate check in ${duplicateCheckTime}ms: ${newEmails.length} new, ${duplicateCount} duplicates`);
-                  
-                  if (newEmails.length === 0) {
-                    console.log(`ℹ️ No new emails to process`);
-                    resolve({
-                      accountId: account.id,
-                      accountEmail: account.email,
-                      success: true,
-                      message: `No new emails found (${duplicateCount} already exist)`,
-                      data: {
-                        processed: 0,
-                        duplicates: duplicateCount,
-                        total: parsedEmails.length
-                      },
-                      timing: {
-                        fetch: fetchTime,
-                        parse: parseTime,
-                        duplicateCheck: duplicateCheckTime,
-                        total: Date.now() - accountStartTime
-                      }
-                    });
-                    imapManager.closeConnection(account.id);
-                    return;
-                  }
                 }
 
-                // ✅ PARALLEL PROCESSING WITH ATTACHMENTS
-                console.log(`🔄 Processing ${newEmails.length} emails with attachments...`);
+                // Process emails with attachments
+                console.log(`🔄 Processing ${newEmails.length} emails...`);
                 const processStartTime = Date.now();
                 
                 const processedEmailsPromises = newEmails.map(async ({ parsed, messageId, seqno }) => {
@@ -1284,7 +1090,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 const processTime = Date.now() - processStartTime;
                 console.log(`✅ Processed ${processedEmails.length} emails in ${processTime}ms`);
 
-                // ✅ BATCH SAVE
+                // Save to database
                 const saveStartTime = Date.now();
                 const saveResults = await saveEmailsBatch(processedEmails, 10);
                 const saveTime = Date.now() - saveStartTime;
@@ -1292,13 +1098,14 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 console.log(`💾 Saved ${successfulSaves} emails in ${saveTime}ms`);
 
                 const totalTime = Date.now() - accountStartTime;
-                console.log(`✅ Account ${account.email} completed in ${totalTime}ms`);
+                console.log(`✅ Account completed in ${totalTime}ms`);
+                console.log(`========== ACCOUNT ${account.id} FINISHED ==========\n`);
                 
                 resolve({
                   accountId: account.id,
                   accountEmail: account.email,
                   success: true,
-                  message: `Processed ${processedEmails.length} new emails`,
+                  message: `Processed ${processedEmails.length} ${mode === 'force' ? '' : 'new '}emails`,
                   data: {
                     processed: processedEmails.length,
                     duplicates: duplicateCount,
@@ -1320,7 +1127,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                   accountId: account.id,
                   accountEmail: account.email,
                   success: false,
-                  error: "Batch processing failed: " + batchError.message
+                  error: batchError.message
                 });
               } finally {
                 imapManager.closeConnection(account.id);
@@ -1348,7 +1155,11 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.processed || 0), 0);
     const totalTime = Date.now() - startTime;
 
-    console.log(`🎉 Total fetch completed in ${totalTime}ms - Processed ${totalProcessed} emails`);
+    console.log(`\n🎉 ========== FETCH COMPLETED ==========`);
+    console.log(`   Total time: ${totalTime}ms`);
+    console.log(`   Processed: ${totalProcessed} emails`);
+    console.log(`   Successful accounts: ${successfulAccounts.length}/${accountsToProcess.length}`);
+    console.log(`========================================\n`);
 
     res.json({
       success: true,
@@ -1359,15 +1170,11 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
         totalProcessed,
         totalTimeMs: totalTime
       },
-      accounts: allResults,
-      userAccess: {
-        email: userEmail,
-        allowedAccounts: accountsToProcess.map(acc => acc.id)
-      }
+      accounts: allResults
     });
 
   } catch (error) {
-    console.error("❌ Fetch emails API error:", error);
+    console.error("❌ Fetch emails error:", error);
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -1375,7 +1182,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
-// Delete email with authorization
+// Delete email
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
     const { messageId } = req.params;
@@ -1384,7 +1191,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     if (!supabaseEnabled || !supabase) {
       return res.status(500).json({
         success: false,
-        error: "Supabase is not available"
+        error: "Database unavailable"
       });
     }
 
@@ -1404,7 +1211,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
     if (!emailConfigManager.canUserAccessAccount(userEmail, email.account_id)) {
       return res.status(403).json({
         success: false,
-        error: "Access denied to delete this email"
+        error: "Access denied"
       });
     }
 
@@ -1412,17 +1219,9 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
       const deletePromises = email.attachments.map(async (attachment) => {
         if (attachment.path) {
           try {
-            const { error: deleteError } = await supabase.storage
-              .from('attachments')
-              .remove([attachment.path]);
-            
-            if (deleteError) {
-              console.error(`❌ Failed to delete attachment ${attachment.path}:`, deleteError);
-            } else {
-              console.log(`✅ Deleted attachment: ${attachment.path}`);
-            }
-          } catch (attachmentError) {
-            console.error(`❌ Error deleting attachment ${attachment.path}:`, attachmentError);
+            await supabase.storage.from('attachments').remove([attachment.path]);
+          } catch (err) {
+            console.error(`❌ Error deleting attachment:`, err);
           }
         }
       });
@@ -1446,7 +1245,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Email and attachments deleted successfully"
+      message: "Email deleted successfully"
     });
 
   } catch (error) {
@@ -1458,7 +1257,7 @@ app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
-// Clear cache endpoint
+// Clear cache
 app.post("/api/clear-cache", (req, res) => {
   clearCache();
   res.json({ 
@@ -1467,7 +1266,7 @@ app.post("/api/clear-cache", (req, res) => {
   });
 });
 
-// Get user accounts endpoint
+// Get user accounts
 app.get("/api/user-accounts", authenticateUser, (req, res) => {
   try {
     const userEmail = req.user.email;
@@ -1493,11 +1292,10 @@ app.get("/api/user-accounts", authenticateUser, (req, res) => {
 
 // Global error handler
 app.use((error, req, res, next) => {
-  console.error("🚨 Global error handler:", error);
+  console.error("🚨 Global error:", error);
   res.status(500).json({
     success: false,
-    error: "Internal server error",
-    ...(process.env.NODE_ENV !== 'production' && { details: error.message })
+    error: "Internal server error"
   });
 });
 
@@ -1505,29 +1303,18 @@ app.use((error, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
-    error: 'Endpoint not found',
-    availableEndpoints: [
-      'GET /api/health',
-      'GET /api/emails (auth required)',
-      'GET /api/emails/:messageId (auth required)',
-      'POST /api/fetch-emails (auth required)',
-      'GET /api/user-accounts (auth required)',
-      'DELETE /api/emails/:messageId (auth required)'
-    ]
+    error: 'Endpoint not found'
   });
 });
 
 export default app;
 
-// Only start server in development
+// Start server in development
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log(`🌐 Accessible from other devices at: http://YOUR_LOCAL_IP:${PORT}`);
     console.log(`📧 Email accounts loaded: ${emailConfigManager.getAllConfigs().length}`);
     console.log(`🔐 Supabase enabled: ${supabaseEnabled}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`📍 Health check: http://localhost:${PORT}/api/health`);
     console.log(`\n👥 User mappings:`);
     Object.entries(USER_EMAIL_MAPPING).forEach(([email, accounts]) => {
       console.log(`   ${email} -> accounts ${accounts.join(', ')}`);

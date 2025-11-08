@@ -18,40 +18,30 @@ function App() {
   const [userAccounts, setUserAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('all');
   
-  // ✅ Track which email is expanded and its content
   const [expandedEmailId, setExpandedEmailId] = useState(null);
   const [emailContent, setEmailContent] = useState({});
   const [loadingContent, setLoadingContent] = useState({});
-
-  // ✅ NEW: Fetch progress tracking
   const [fetchProgress, setFetchProgress] = useState(null);
-  
-  // ✅ NEW: Auto-refresh feature
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState(300000); // 5 minutes default
-  const autoRefreshTimerRef = useRef(null);
 
-  // ✅ Prevent duplicate requests
   const loadEmailsInProgress = useRef(false);
   const fetchEmailsInProgress = useRef(false);
 
-  // ✅ Dynamic API base URL
+  // Dynamic API URL
   const getApiBaseUrl = () => {
     if (window.location.hostname.includes('.vercel.app')) {
       return 'https://seal-freight.vercel.app';
     }
-    return process.env.REACT_APP_API_URL || '/api';
+    return process.env.REACT_APP_API_URL || 'http://localhost:3001';
   };
 
   const API_BASE = getApiBaseUrl();
 
-  // Get authentication token
+  // Get auth token
   const getAuthToken = useCallback(async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       
       if (error) {
-        console.error('❌ Auth session error:', error);
         throw new Error('Authentication failed: ' + error.message);
       }
       
@@ -61,29 +51,24 @@ function App() {
       
       const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
       
-      if (refreshError) {
-        console.error('❌ Session refresh failed:', refreshError);
+      if (refreshError || !refreshedSession?.access_token) {
         throw new Error('Session expired. Please log in again.');
       }
       
-      if (refreshedSession?.access_token) {
-        return refreshedSession.access_token;
-      }
-      
-      throw new Error('No active session found. Please log in.');
+      return refreshedSession.access_token;
     } catch (error) {
       console.error('❌ Error getting auth token:', error);
       throw error;
     }
   }, []);
 
-  // Enhanced fetch with auth
+  // Fetch with authentication
   const fetchWithAuth = useCallback(async (url, options = {}) => {
     try {
       const token = await getAuthToken();
       
       if (!token) {
-        throw new Error('No authentication token found. Please log in again.');
+        throw new Error('No authentication token. Please log in again.');
       }
 
       let fullUrl = url;
@@ -97,30 +82,24 @@ function App() {
         ...options.headers,
       };
 
-      console.log('🔐 Making authenticated request to:', fullUrl);
-      
       const response = await fetch(fullUrl, {
         ...options,
         headers,
       });
 
       if (response.status === 401) {
-        try {
-          const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
-          if (refreshError || !session?.access_token) {
-            throw new Error('Authentication failed. Please log in again.');
-          }
-          
-          headers.Authorization = `Bearer ${session.access_token}`;
-          const retryResponse = await fetch(fullUrl, { ...options, headers });
-          
-          if (!retryResponse.ok) {
-            throw new Error(`HTTP error! status: ${retryResponse.status}`);
-          }
-          return retryResponse;
-        } catch (refreshErr) {
+        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+        if (refreshError || !session?.access_token) {
           throw new Error('Authentication failed. Please log in again.');
         }
+        
+        headers.Authorization = `Bearer ${session.access_token}`;
+        const retryResponse = await fetch(fullUrl, { ...options, headers });
+        
+        if (!retryResponse.ok) {
+          throw new Error(`HTTP error! status: ${retryResponse.status}`);
+        }
+        return retryResponse;
       }
 
       if (!response.ok) {
@@ -128,9 +107,6 @@ function App() {
         try {
           const errorData = await response.json();
           errorDetails = errorData.error || errorData.message || errorDetails;
-          if (errorData.details) {
-            errorDetails += ` (${errorData.details})`;
-          }
         } catch (e) {
           errorDetails = response.statusText || errorDetails;
         }
@@ -144,18 +120,15 @@ function App() {
     }
   }, [getAuthToken, API_BASE]);
 
-  // ✅ Load full email content when user clicks on an email
+  // Load email content
   const loadEmailContent = useCallback(async (messageId) => {
     if (emailContent[messageId]) {
-      console.log('✅ Email content already loaded from cache');
       return emailContent[messageId];
     }
 
     setLoadingContent(prev => ({ ...prev, [messageId]: true }));
 
     try {
-      console.log(`📧 Loading full content for email: ${messageId}`);
-      
       const response = await fetchWithAuth(`/api/emails/${messageId}`);
       const data = await response.json();
       
@@ -163,14 +136,11 @@ function App() {
         throw new Error(data.error || 'Failed to load email content');
       }
       
-      console.log('✅ Email content loaded successfully');
-      
       const content = {
         text: data.email.text || data.email.text_content,
         html: data.email.html || data.email.html_content
       };
       
-      // Cache the content
       setEmailContent(prev => ({
         ...prev,
         [messageId]: content
@@ -187,35 +157,28 @@ function App() {
     }
   }, [fetchWithAuth, emailContent]);
 
-  // ✅ Toggle email expansion and load content
+  // Toggle email expansion
   const toggleEmailExpansion = useCallback(async (email) => {
     const emailId = email.id || email.messageId;
     
     if (expandedEmailId === emailId) {
-      // Collapse
       setExpandedEmailId(null);
     } else {
-      // Expand and load content
       setExpandedEmailId(emailId);
-      
-      // Load content if not already loaded
       if (!emailContent[email.messageId]) {
         await loadEmailContent(email.messageId);
       }
     }
   }, [expandedEmailId, emailContent, loadEmailContent]);
 
-  // ✅ Fetch user accounts
+  // Fetch user accounts
   const fetchUserAccounts = useCallback(async () => {
     try {
-      console.log('👤 Fetching user accounts...');
       const response = await fetchWithAuth('/api/user-accounts');
       const data = await response.json();
       
       if (data.success && data.accounts) {
-        console.log('✅ User accounts:', data.accounts);
         setUserAccounts(data.accounts);
-        
         if (data.accounts.length === 1) {
           setSelectedAccount(data.accounts[0].id.toString());
         }
@@ -229,47 +192,29 @@ function App() {
   const testBackendConnection = useCallback(async () => {
     try {
       setError(null);
-      console.log('🧪 Testing backend connection...');
-      
-      const testUrl = `${API_BASE}/api/health`;
-      console.log('Testing URL:', testUrl);
-      
-      const response = await fetch(testUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+      const response = await fetch(`${API_BASE}/api/health`);
       
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(`HTTP ${response.status}`);
       }
       
       const data = await response.json();
-      console.log('🏥 Backend health:', data);
       
       if (data.status === 'healthy') {
-        setError('✅ Backend is healthy and running!');
+        setError('✅ Backend is healthy!');
         setTimeout(() => setError(null), 3000);
         return true;
       } else {
-        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+        setError(`⚠️ Backend status: ${data.status}`);
         return false;
       }
     } catch (err) {
-      console.error('❌ Backend connection failed:', err);
-      let errorMessage = `Cannot connect to backend: ${err.message}`;
-      
-      if (err.message.includes('Failed to fetch')) {
-        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
-      }
-      
-      setError(`❌ ${errorMessage}`);
+      setError(`❌ Cannot connect to backend: ${err.message}`);
       return false;
     }
   }, [API_BASE]);
 
-  // ✅ Process attachment URLs
+  // Process attachment URL
   const processAttachmentUrl = useCallback((attachment) => {
     if (attachment.url && attachment.url.startsWith('http')) {
       return attachment.url;
@@ -282,14 +227,10 @@ function App() {
       }
     }
 
-    if (attachment.publicUrl) {
-      return attachment.publicUrl;
-    }
-
-    return null;
+    return attachment.publicUrl || null;
   }, []);
 
-  // ✅ Process email data - WITHOUT content
+  // Process email data
   const processEmailData = useCallback((email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -311,14 +252,13 @@ function App() {
       account_id: email.account_id
     };
 
-    // Process attachments
     if (Array.isArray(email.attachments) && email.attachments.length > 0) {
       processedEmail.attachments = email.attachments.map((att, index) => {
         const attachmentUrl = processAttachmentUrl(att);
         const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
-        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
-        const isImage = att.isImage || mimeType.startsWith('image/');
-        const isPDF = att.isPdf || mimeType === 'application/pdf';
+        const filename = att.filename || att.name || `attachment-${index}`;
+        const isImage = mimeType.startsWith('image/');
+        const isPDF = mimeType === 'application/pdf';
 
         return {
           id: att.id || `att-${processedEmail.id}-${index}`,
@@ -326,13 +266,9 @@ function App() {
           url: attachmentUrl,
           type: mimeType,
           contentType: mimeType,
-          mimeType: mimeType,
           size: att.size || 0,
           isImage: isImage,
           isPdf: isPDF,
-          isCSV: filename.toLowerCase().endsWith('.csv'),
-          isExcel: filename.toLowerCase().match(/\.(xlsx|xls)$/),
-          isWord: filename.toLowerCase().match(/\.(docx|doc)$/),
           path: att.path
         };
       }).filter(att => att.filename && att.url);
@@ -344,35 +280,25 @@ function App() {
     return processedEmail;
   }, [processAttachmentUrl]);
 
-  // ✅ Load emails function - loads list without content
+  // ✅ OPTIMIZED: Load emails from backend
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
     if (loadEmailsInProgress.current) {
-      console.log('⚠️ Load emails already in progress, skipping...');
+      console.log('⚠️ Load already in progress, skipping...');
       return;
     }
 
     loadEmailsInProgress.current = true;
-
     if (showLoading) setLoading(true);
     setError(null);
 
     try {
-      console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
-      console.log('🌐 Using API base:', API_BASE);
-
-      const healthResponse = await fetch(`${API_BASE}/api/health`);
-      if (!healthResponse.ok) {
-        throw new Error(`Backend health check failed: ${healthResponse.status}`);
-      }
-      const healthData = await healthResponse.json();
-      console.log('🏥 Backend health:', healthData.status);
+      console.log('🔄 Loading emails...', forceRefresh ? '(FORCE)' : '');
 
       if (forceRefresh) {
         try {
           await fetchWithAuth('/api/clear-cache', { method: 'POST' });
-          console.log('🗑️ Cache cleared');
-        } catch (cacheErr) {
-          console.log('⚠️ Cache clear failed, continuing...');
+        } catch (err) {
+          console.log('⚠️ Cache clear failed');
         }
       }
 
@@ -380,7 +306,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=50`,
+        `limit=100`,
         `accountId=${selectedAccount}`,
         `t=${Date.now()}`
       ].join('&');
@@ -388,28 +314,14 @@ function App() {
       const response = await fetchWithAuth(`/api/emails?${queries}`);
       const data = await response.json();
       
-      console.log('📧 Backend response:', data);
-      
       if (!data.success) {
-        throw new Error(data.error || 'Failed to load emails from server');
+        throw new Error(data.error || 'Failed to load emails');
       }
       
-      let emailsToProcess = [];
-      
-      if (data.emails && Array.isArray(data.emails)) {
-        emailsToProcess = data.emails;
-      } else if (Array.isArray(data)) {
-        emailsToProcess = data;
-      } else {
-        console.log('ℹ️ No emails found in response');
-        setEmails([]);
-        return;
-      }
-      
-      console.log('📧 Loaded emails:', emailsToProcess.length);
-      
+      const emailsToProcess = data.emails || [];
       const processedEmails = emailsToProcess.map(processEmailData);
       
+      // Sort by date (newest first)
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
@@ -417,35 +329,29 @@ function App() {
       });
       
       setEmails(sortedEmails);
-      console.log('✅ Emails set in state:', sortedEmails.length);
+      console.log(`✅ Loaded ${sortedEmails.length} emails`);
       
     } catch (err) {
       console.error('❌ Load emails error:', err);
       setEmails([]);
       
-      let errorMessage = `Failed to load emails: ${err.message}`;
-      
       if (err.message.includes('Authentication failed')) {
-        errorMessage = 'Authentication failed. Please log in again.';
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 2000);
-      } else if (err.message.includes('Backend server is not responding')) {
-        errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`;
+        setError('Authentication failed. Please log in again.');
+        setTimeout(() => window.location.href = '/login', 2000);
+      } else {
+        setError(`Failed to load emails: ${err.message}`);
       }
-      
-      setError(errorMessage);
       
     } finally {
       if (showLoading) setLoading(false);
       loadEmailsInProgress.current = false;
     }
-  }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
+  }, [fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ OPTIMIZED: Fetch emails with progress tracking and auto-refresh
+  // ✅ OPTIMIZED: Fetch emails from server
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
-      console.log('⚠️ Fetch emails already in progress, skipping...');
+      console.log('⚠️ Fetch already in progress...');
       return;
     }
 
@@ -464,56 +370,45 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
-          // ✅ INCREASED: Fetch more emails to ensure latest ones are included
-          count: mode === 'force' ? 200 : 100, // Increased from 50/30 to 200/100
+          count: mode === 'force' ? 200 : 100,
           accountId: selectedAccount
         })
       });
 
-      setFetchProgress({ message: 'Processing server response...', stage: 'process' });
+      setFetchProgress({ message: 'Processing...', stage: 'process' });
 
       const result = await response.json();
-      console.log(`📨 ${mode} fetch result:`, result);
       
       if (response.ok && result.success) {
-        // ✅ Display detailed timing information
-        if (result.summary) {
-          const { totalProcessed, totalTimeMs } = result.summary;
-          const emailsPerSecond = totalTimeMs > 0 ? (totalProcessed / (totalTimeMs / 1000)).toFixed(2) : 0;
-          
-          setFetchProgress({ 
-            message: `✅ Processed ${totalProcessed} emails in ${(totalTimeMs / 1000).toFixed(2)}s (${emailsPerSecond} emails/s)`, 
-            stage: 'success' 
-          });
-        }
+        const { totalProcessed, totalTimeMs } = result.summary || {};
+        const emailsPerSec = totalTimeMs > 0 ? (totalProcessed / (totalTimeMs / 1000)).toFixed(2) : 0;
+        
+        setFetchProgress({ 
+          message: `✅ Processed ${totalProcessed} emails in ${(totalTimeMs / 1000).toFixed(2)}s (${emailsPerSec}/s)`, 
+          stage: 'success' 
+        });
         
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // ✅ IMMEDIATE REFRESH: Reload emails immediately to show new data
+        // ✅ IMMEDIATE RELOAD
         setFetchProgress({ message: 'Loading latest emails...', stage: 'reload' });
         await loadEmails(false, true);
         
-        setFetchProgress({ message: '✅ Done! Latest emails loaded', stage: 'complete' });
-        
-        // Clear progress after showing success message
+        setFetchProgress({ message: '✅ Done!', stage: 'complete' });
         setTimeout(() => setFetchProgress(null), 2000);
       } else {
         setFetchStatus('error');
-        setError(result.error || `Failed to ${mode} fetch emails`);
+        setError(result.error || 'Failed to fetch emails');
         setFetchProgress(null);
-        console.error(`❌ ${mode} fetch failed:`, result.error);
       }
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
       setFetchProgress(null);
-      console.error(`❌ ${mode} fetch failed:`, err);
       
       if (err.message.includes('Authentication failed')) {
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 2000);
+        setTimeout(() => window.location.href = '/login', 2000);
       }
     } finally {
       setFetching(false);
@@ -524,53 +419,25 @@ function App() {
   const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
   const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
-  const forceRefreshEmails = useCallback(async () => {
-    if (fetchEmailsInProgress.current || fetching) {
-      console.log('⚠️ Refresh already in progress, skipping...');
-      return;
-    }
-
-    fetchEmailsInProgress.current = true;
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-
-    try {
-      console.log('🔄 Force refreshing emails...');
-      await loadEmails(true, true);
-      setFetchStatus('success');
-      setLastFetchTime(new Date());
-      console.log('✅ Force refresh completed');
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      console.error('❌ Force refresh failed:', err);
-    } finally {
-      setFetching(false);
-      fetchEmailsInProgress.current = false;
-    }
-  }, [fetching, loadEmails]);
-
-  // File icon helper
+  // File helpers
   const getFileIcon = useCallback((mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
-    const extension = filename?.split('.').pop()?.toLowerCase();
+    const ext = filename?.split('.').pop()?.toLowerCase();
     mimeType = mimeType?.toLowerCase() || '';
 
     if (mimeType.startsWith('image/')) return '🖼️';
     if (mimeType === 'application/pdf') return '📄';
-    if (mimeType.includes('excel') || extension === 'xlsx' || extension === 'xls') return '📊';
-    if (mimeType.includes('csv') || extension === 'csv') return '📋';
-    if (mimeType.includes('word') || extension === 'docx' || extension === 'doc') return '📝';
+    if (mimeType.includes('excel') || ext === 'xlsx' || ext === 'xls') return '📊';
+    if (mimeType.includes('csv') || ext === 'csv') return '📋';
+    if (mimeType.includes('word') || ext === 'docx' || ext === 'doc') return '📝';
     
     return '📎';
   }, []);
 
-  // File size helper
   const getFileSize = useCallback((bytes) => {
-    if (!bytes || bytes === 0) return 'Unknown size';
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    if (!bytes || bytes === 0) return 'Unknown';
+    const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   }, []);
@@ -578,17 +445,14 @@ function App() {
   // Download file
   const downloadFile = useCallback(async (attachment, filename) => {
     try {
-      console.log('⬇️ Downloading attachment:', { filename, url: attachment.url });
-
       if (!attachment.url) {
-        throw new Error('No URL available for download');
+        throw new Error('No URL available');
       }
 
       const link = document.createElement('a');
       link.href = attachment.url;
       link.download = filename;
       link.target = '_blank';
-      link.rel = 'noopener noreferrer';
       
       document.body.appendChild(link);
       link.click();
@@ -613,7 +477,7 @@ function App() {
     }));
   }, []);
 
-  // ✅ Render attachment
+  // Render attachment
   const renderAttachment = useCallback((attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -622,7 +486,7 @@ function App() {
     const isImage = attachment.isImage || mimeType?.startsWith('image/');
     const isPDF = attachment.isPdf || mimeType === 'application/pdf';
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
-    const safeUrl = attachment.url;
+    const url = attachment.url;
 
     return (
       <div key={attachment.id} className="attachment-item">
@@ -633,7 +497,7 @@ function App() {
             {fileSize && <span className="file-size">{fileSize}</span>}
           </div>
           <div className="attachment-actions">
-            {(isImage || isPDF) && safeUrl && (
+            {(isImage || isPDF) && url && (
               <button 
                 className="expand-btn"
                 onClick={() => toggleImageExpand(emailIndex, index)}
@@ -646,25 +510,23 @@ function App() {
               className="download-btn"
               onClick={() => downloadFile(attachment, filename)}
               title={`Download ${filename}`}
-              disabled={!safeUrl}
+              disabled={!url}
             >
-              {safeUrl ? '⬇️' : '🚫'}
+              {url ? '⬇️' : '🚫'}
             </button>
           </div>
         </div>
 
-        {isImage && safeUrl && (
+        {isImage && url && (
           <div className={`image-preview ${isExpanded ? 'expanded' : ''}`}>
             <img
-              src={safeUrl}
+              src={url}
               alt={filename}
               className="attachment-image"
               onClick={() => toggleImageExpand(emailIndex, index)}
               loading="lazy"
               crossOrigin="anonymous"
-              onError={(e) => {
-                e.target.style.display = 'none';
-              }}
+              onError={(e) => e.target.style.display = 'none'}
             />
           </div>
         )}
@@ -675,13 +537,12 @@ function App() {
   // Delete email
   const deleteEmail = useCallback(async (emailId, messageId) => {
     if (!emailId && !messageId) {
-      console.error('❌ No email ID or message ID provided for deletion');
       setError('Cannot delete email: Missing identifier');
       return;
     }
 
     const confirmed = window.confirm(
-      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
+      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and attachments.'
     );
 
     if (!confirmed) return;
@@ -689,31 +550,27 @@ function App() {
     setDeletingEmails(prev => ({ ...prev, [emailId]: true }));
 
     try {
-      console.log('🗑️ Deleting email:', { emailId, messageId });
       const response = await fetchWithAuth(`/api/emails/${messageId}`, {
         method: 'DELETE',
       });
 
       const result = await response.json();
-      console.log('🗑️ Delete response:', result);
 
       if (response.ok && result.success) {
         setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
-        console.log('✅ Email deleted successfully');
         setFetchStatus('success');
         setTimeout(() => setFetchStatus('idle'), 3000);
       } else {
         throw new Error(result.error || 'Failed to delete email');
       }
     } catch (err) {
-      console.error('❌ Delete error:', err);
-      setError(`Failed to delete email: ${err.message}`);
+      setError(`Failed to delete: ${err.message}`);
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
   }, [fetchWithAuth]);
 
-  // ✅ EmailCard component with expandable content
+  // Email Card component
   const EmailCard = React.memo(({ email, index }) => {
     const isExpanded = expandedEmailId === email.id;
     const content = emailContent[email.messageId];
@@ -726,13 +583,12 @@ function App() {
             className="delete-email-btn"
             onClick={() => deleteEmail(email.id, email.messageId)}
             disabled={deletingEmails[email.id]}
-            title="Permanently delete this email and all attachments"
+            title="Delete email"
           >
             {deletingEmails[email.id] ? '🗑️ Deleting...' : '🗑️ Delete'}
           </button>
         </div>
 
-        {/* ✅ Clickable header to expand/collapse */}
         <div 
           className="email-header clickable" 
           onClick={() => toggleEmailExpansion(email)}
@@ -758,13 +614,12 @@ function App() {
           <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
         </div>
 
-        {/* ✅ Only show content when expanded */}
         {isExpanded && (
           <div className="email-content-section">
             {isLoadingContent ? (
               <div className="loading-content">
                 <div className="spinner-small"></div>
-                <p>Loading email content...</p>
+                <p>Loading content...</p>
               </div>
             ) : content ? (
               <div
@@ -800,13 +655,12 @@ function App() {
     );
   });
 
-  // Get current user on component mount
+  // Get user on mount
   useEffect(() => {
     const getUser = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
-        console.log('👤 Current user:', user?.email);
         
         if (user) {
           await fetchUserAccounts();
@@ -818,9 +672,8 @@ function App() {
     getUser();
   }, [fetchUserAccounts]);
 
-  // ✅ Load emails once when component mounts
+  // Load emails on mount
   useEffect(() => {
-    console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
       loadEmails(true, true);
     }, 100);
@@ -829,26 +682,22 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Debounce search and sort changes
+  // Debounce search/sort changes
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (loadEmailsInProgress.current) {
-        console.log('⚠️ Load already in progress, skipping search/sort update');
-        return;
+      if (!loadEmailsInProgress.current) {
+        loadEmails(true, false);
       }
-      loadEmails(true, false);
     }, 500);
     
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, sort, selectedAccount]);
 
-  // Reset fetch status after 5 seconds
+  // Reset fetch status
   useEffect(() => {
     if (fetchStatus === 'success' || fetchStatus === 'error') {
-      const timer = setTimeout(() => {
-        setFetchStatus('idle');
-      }, 5000);
+      const timer = setTimeout(() => setFetchStatus('idle'), 5000);
       return () => clearTimeout(timer);
     }
   }, [fetchStatus]);
@@ -856,7 +705,7 @@ function App() {
   const getStatusMessage = () => {
     switch (fetchStatus) {
       case 'fetching':
-        return { message: '🔄 Fetching latest emails from server...', type: 'info' };
+        return { message: '🔄 Fetching latest emails...', type: 'info' };
       case 'success':
         return { message: '✅ Successfully fetched emails!', type: 'success' };
       case 'error':
@@ -868,7 +717,6 @@ function App() {
 
   const statusMessage = getStatusMessage();
 
-  // Add error boundary fallback
   if (error && error.includes('Authentication failed')) {
     return (
       <div className="error-container">
@@ -899,10 +747,10 @@ function App() {
           {!sidebarCollapsed && (
             <>
               <div className="user-info">
-                <p>Logged in as: <strong>{user?.email}</strong></p>
+                <p>User: <strong>{user?.email}</strong></p>
                 {userAccounts.length > 0 && (
                   <div className="account-selector">
-                    <label>Email Account:</label>
+                    <label>Account:</label>
                     <select 
                       value={selectedAccount} 
                       onChange={(e) => setSelectedAccount(e.target.value)}
@@ -922,7 +770,6 @@ function App() {
                 <button 
                   onClick={testBackendConnection}
                   className="test-connection-btn"
-                  title="Test backend connection"
                 >
                   🧪 Test Connection
                 </button>
@@ -934,22 +781,17 @@ function App() {
 
       {/* Main Content */}
       <div className="main-content">
-        {/* Compact Header */}
         <header className="app-header-compact">
           <div className="header-top">
             <h1>📧 Email Inbox</h1>
             <div className="header-stats">
-              <span className="email-count-badge">📊 {emails.length} emails</span>
+              <span className="email-count-badge">📊 {emails.length}</span>
               {lastFetchTime && (
                 <span className="last-fetch">Last: {lastFetchTime.toLocaleTimeString()}</span>
-              )}
-              {user && (
-                <span className="user-email">User: {user.email}</span>
               )}
             </div>
           </div>
 
-          {/* Compact Controls */}
           <div className="compact-controls">
             <button 
               onClick={fetchNewEmails} 
@@ -968,8 +810,8 @@ function App() {
             </button>
 
             <button 
-              onClick={forceRefreshEmails} 
-              disabled={fetching}
+              onClick={() => loadEmails(true, true)} 
+              disabled={fetching || loading}
               className="force-refresh-button"
             >
               🔄 Refresh
@@ -992,7 +834,6 @@ function App() {
           </div>
         </header>
 
-        {/* Error Display */}
         {error && (
           <div className="error-banner">
             ❌ {error}
@@ -1000,7 +841,6 @@ function App() {
           </div>
         )}
 
-        {/* ✅ NEW: Fetch Progress Banner */}
         {fetchProgress && (
           <div className={`progress-banner ${fetchProgress.stage}`}>
             <div className="progress-content">
@@ -1014,21 +854,12 @@ function App() {
           </div>
         )}
 
-        {/* Status Banner */}
         {statusMessage && !fetchProgress && (
           <div className={`status-banner ${statusMessage.type}`}>
             {statusMessage.message}
-            {fetchStatus === 'fetching' && (
-              <div className="loading-dots">
-                <span>.</span>
-                <span>.</span>
-                <span>.</span>
-              </div>
-            )}
           </div>
         )}
 
-        {/* Email List */}
         <div className="email-content-area">
           {loading && (
             <div className="loading-state">
@@ -1041,7 +872,7 @@ function App() {
             <div className="empty-state">
               <p>📭 No emails found</p>
               {selectedAccount !== 'all' && (
-                <p>Selected account: {userAccounts.find(a => a.id.toString() === selectedAccount)?.name}</p>
+                <p>Account: {userAccounts.find(a => a.id.toString() === selectedAccount)?.name}</p>
               )}
               <p>Try fetching emails from your inbox</p>
               <div className="empty-actions">
@@ -1051,9 +882,6 @@ function App() {
                 <button onClick={forceFetchEmails} className="force-fetch-button">
                   ⚡ Force Fetch
                 </button>
-                <button onClick={testBackendConnection} className="test-connection-btn">
-                  🧪 Test Connection
-                </button>
               </div>
             </div>
           )}
@@ -1061,9 +889,9 @@ function App() {
           {!loading && emails.length > 0 && (
             <div className="email-list">
               <div className="email-list-hint">
-                <p>💡 Click on email headers to expand and view content • ⚡ Showing {emails.length} emails (sorted by newest first)</p>
+                <p>💡 Click email headers to expand • ⚡ {emails.length} emails (newest first)</p>
                 <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                  📬 Latest emails appear at the top • Click "Smart Fetch" or "Force Fetch" to get newest emails from server
+                  📬 Latest emails at top • Click "Smart Fetch" for newest from server
                 </p>
               </div>
               {emails.map((email, index) => (
@@ -1076,34 +904,21 @@ function App() {
         {/* Debug Info */}
         <div className="debug-info">
           <details>
-            <summary>Debug Info (Performance)</summary>
+            <summary>Debug Info</summary>
             <div className="debug-content">
               <p><strong>Backend:</strong> {API_BASE}</p>
               <p><strong>User:</strong> {user?.email}</p>
               <p><strong>Accounts:</strong> {userAccounts.map(a => a.name).join(', ') || 'None'}</p>
-              <p><strong>Selected Account:</strong> {selectedAccount}</p>
-              <p><strong>Current Emails:</strong> {emails.length}</p>
-              <p><strong>Expanded Email:</strong> {expandedEmailId || 'None'}</p>
-              <p><strong>Cached Content:</strong> {Object.keys(emailContent).length} emails</p>
+              <p><strong>Selected:</strong> {selectedAccount}</p>
+              <p><strong>Emails:</strong> {emails.length}</p>
+              <p><strong>Expanded:</strong> {expandedEmailId || 'None'}</p>
+              <p><strong>Cached Content:</strong> {Object.keys(emailContent).length}</p>
               <p><strong>Loading:</strong> {loading ? 'Yes' : 'No'}</p>
               <p><strong>Fetching:</strong> {fetching ? 'Yes' : 'No'}</p>
-              <p><strong>Fetch Status:</strong> {fetchStatus}</p>
+              <p><strong>Status:</strong> {fetchStatus}</p>
               <p><strong>Last Fetch:</strong> {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'Never'}</p>
-              <p><strong>Environment:</strong> {window.location.hostname.includes('vercel.app') ? 'Production' : 'Development'}</p>
-              {fetchProgress && <p><strong>Fetch Progress:</strong> {fetchProgress.message}</p>}
+              {fetchProgress && <p><strong>Progress:</strong> {fetchProgress.message}</p>}
               {error && <p style={{color: 'red'}}><strong>Error:</strong> {error}</p>}
-              
-              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
-                <p><strong>Performance Features:</strong></p>
-                <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
-                  <li>✅ Parallel email parsing</li>
-                  <li>✅ Batch duplicate checking</li>
-                  <li>✅ Concurrent attachment uploads (3 at a time)</li>
-                  <li>✅ Batch database saves (10 at a time)</li>
-                  <li>✅ Lazy content loading (on expand)</li>
-                  <li>✅ Smart caching</li>
-                </ul>
-              </div>
             </div>
           </details>
         </div>
