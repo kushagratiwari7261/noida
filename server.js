@@ -896,7 +896,7 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ OPTIMIZED: Fetch emails endpoint - ALWAYS gets LATEST emails
+// ✅ CRITICAL FIX: Fetch emails endpoint - Properly gets NEWEST emails first
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();
   
@@ -908,7 +908,8 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     } = req.body;
     
     const userEmail = req.user.email;
-    const validatedCount = Math.min(parseInt(count) || 100, 300);
+    const shouldFetchAll = count === "all";
+    const fetchCount = shouldFetchAll ? null : Math.min(parseInt(count) || 100, 500);
     
     let accountsToProcess = [];
     
@@ -941,7 +942,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     console.log(`\n🚀 ========== FETCH STARTED ==========`);
     console.log(`   Accounts: ${accountsToProcess.length}`);
     console.log(`   Mode: ${mode}`);
-    console.log(`   Count: ${validatedCount}`);
+    console.log(`   Count: ${shouldFetchAll ? 'ALL EMAILS' : fetchCount}`);
     console.log(`========================================\n`);
     
     const allResults = [];
@@ -982,19 +983,22 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
               return;
             }
             
-            const fetchCount = Math.min(validatedCount, totalMessages);
-            
-            // ✅ CRITICAL: Always fetch from END (newest emails)
-            // Sequence numbers: 1 = oldest, totalMessages = newest
-            const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-            const fetchEnd = totalMessages;
-            const fetchRange = `${fetchStart}:${fetchEnd}`;
+            // ✅ CRITICAL FIX: Always fetch NEWEST emails first
+            let fetchRange;
+            if (shouldFetchAll) {
+              // Fetch ALL emails but process newest first
+              fetchRange = `1:${totalMessages}`;
+            } else {
+              // Fetch specific count of NEWEST emails
+              const startSeq = Math.max(1, totalMessages - fetchCount + 1);
+              fetchRange = `${startSeq}:${totalMessages}`;
+            }
 
-            console.log(`📨 FETCHING LATEST EMAILS`);
+            console.log(`📨 FETCHING EMAILS`);
             console.log(`   Range: ${fetchRange}`);
-            console.log(`   Start: ${fetchStart} (${totalMessages - fetchStart + 1} from end)`);
-            console.log(`   End: ${fetchEnd} (NEWEST)`);
-            console.log(`   Count: ${fetchCount}`);
+            console.log(`   Total: ${totalMessages}`);
+            console.log(`   Count: ${fetchCount || 'ALL'}`);
+            console.log(`   Strategy: NEWEST FIRST`);
 
             const f = connection.connection.seq.fetch(fetchRange, { 
               bodies: "",
@@ -1033,9 +1037,10 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
               const fetchTime = Date.now() - accountStartTime;
               console.log(`⚡ Fetched ${emailBuffers.length} emails in ${fetchTime}ms`);
               
-              // Sort by sequence (highest = newest)
+              // ✅ CRITICAL FIX: Sort by sequence number DESCENDING (newest first)
               emailBuffers.sort((a, b) => b.seqno - a.seqno);
               console.log(`📊 Sequence range: ${emailBuffers[emailBuffers.length - 1]?.seqno} to ${emailBuffers[0]?.seqno}`);
+              console.log(`🔄 Processing order: NEWEST FIRST (highest seqno first)`);
               
               try {
                 // Parse emails in parallel
