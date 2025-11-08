@@ -313,35 +313,35 @@ function App() {
 
       const response = await fetchWithAuth(`/api/emails?${queries}`);
       const data = await response.json();
-      
+
       if (!data.success) {
         throw new Error(data.error || 'Failed to load emails');
       }
-      
+
       const emailsToProcess = data.emails || [];
       const processedEmails = emailsToProcess.map(processEmailData);
-      
+
       // Sort by date (newest first)
       const sortedEmails = processedEmails.sort((a, b) => {
         const dateA = new Date(a.date || 0);
         const dateB = new Date(b.date || 0);
         return dateB - dateA;
       });
-      
+
       setEmails(sortedEmails);
       console.log(`✅ Loaded ${sortedEmails.length} emails`);
-      
+
     } catch (err) {
       console.error('❌ Load emails error:', err);
       setEmails([]);
-      
+
       if (err.message.includes('Authentication failed')) {
         setError('Authentication failed. Please log in again.');
         setTimeout(() => window.location.href = '/login', 2000);
       } else {
         setError(`Failed to load emails: ${err.message}`);
       }
-      
+
     } finally {
       if (showLoading) setLoading(false);
       loadEmailsInProgress.current = false;
@@ -678,10 +678,9 @@ function App() {
     const timer = setTimeout(() => {
       loadEmails(true, true);
     }, 100);
-    
+
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadEmails]);
 
   // Debounce search/sort changes
   useEffect(() => {
@@ -690,10 +689,9 @@ function App() {
         loadEmails(true, false);
       }
     }, 500);
-    
+
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, sort, selectedAccount]);
+  }, [search, sort, selectedAccount, loadEmails]);
 
   // Reset fetch status
   useEffect(() => {

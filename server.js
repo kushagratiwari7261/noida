@@ -120,12 +120,16 @@ const initializeSupabase = () => {
     console.log("🔗 Initializing Supabase...");
     
     supabase = createClient(supabaseUrl, supabaseKey, {
-      auth: { 
+      auth: {
         persistSession: false,
-        autoRefreshToken: false 
+        autoRefreshToken: false
       },
-      global: { 
-        headers: { 'X-Client-Info': 'email-backend' } 
+      global: {
+        headers: {
+          'Authorization': `Bearer ${supabaseKey}`,
+          'apikey': supabaseKey,
+          'X-Client-Info': 'email-backend'
+        }
       }
     });
     
@@ -428,10 +432,7 @@ async function saveEmailsBatch(emails, batchSize = 10) {
       try {
         const { data, error } = await supabase
           .from('emails')
-          .upsert(batch, { 
-            onConflict: 'message_id,account_id',
-            ignoreDuplicates: false 
-          });
+          .upsert(batch);
         
         if (error) {
           console.error(`❌ Batch save error:`, error);
