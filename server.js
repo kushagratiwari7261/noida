@@ -1106,7 +1106,8 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     } = req.body;
     
     const userEmail = req.user.email;
-    const validatedCount = Math.min(parseInt(count) || 10, 50);
+    // ✅ INCREASED: Fetch more emails to ensure we get latest
+    const validatedCount = Math.min(parseInt(count) || 100, 200); // Increased from 50 to 200
     
     let accountsToProcess = [];
     
@@ -1161,15 +1162,19 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
             
             const totalMessages = box.messages.total;
             const fetchCount = Math.min(validatedCount, totalMessages);
+            
+            // ✅ CRITICAL FIX: Fetch from NEWEST emails (highest sequence numbers)
+            // This ensures we always get the latest emails
             const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-            const fetchEnd = totalMessages;
+            const fetchEnd = totalMessages; // Always end at the latest email
             const fetchRange = `${fetchStart}:${fetchEnd}`;
 
-            console.log(`📨 Fetching ${fetchCount} emails (${fetchRange})`);
+            console.log(`📨 Fetching LATEST ${fetchCount} emails from inbox (range: ${fetchRange}, total: ${totalMessages})`);
 
             const f = connection.connection.seq.fetch(fetchRange, { 
               bodies: "",
-              struct: true 
+              struct: true,
+              markSeen: false // Don't mark emails as read
             });
 
             const emailBuffers = [];
@@ -1223,7 +1228,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 const parseTime = Date.now() - parseStartTime;
                 console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
 
-                // ✅ BATCH DUPLICATE CHECK
+                // ✅ BATCH DUPLICATE CHECK (but still process in force mode)
                 let newEmails = parsedEmails;
                 let duplicateCount = 0;
                 
@@ -1244,7 +1249,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                       accountId: account.id,
                       accountEmail: account.email,
                       success: true,
-                      message: `No new emails found`,
+                      message: `No new emails found (${duplicateCount} already exist)`,
                       data: {
                         processed: 0,
                         duplicates: duplicateCount,

@@ -25,6 +25,11 @@ function App() {
 
   // ✅ NEW: Fetch progress tracking
   const [fetchProgress, setFetchProgress] = useState(null);
+  
+  // ✅ NEW: Auto-refresh feature
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(300000); // 5 minutes default
+  const autoRefreshTimerRef = useRef(null);
 
   // ✅ Prevent duplicate requests
   const loadEmailsInProgress = useRef(false);
@@ -437,7 +442,7 @@ function App() {
     }
   }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ OPTIMIZED: Fetch emails with progress tracking
+  // ✅ OPTIMIZED: Fetch emails with progress tracking and auto-refresh
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
@@ -459,7 +464,8 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 50 : 30, // Increased counts
+          // ✅ INCREASED: Fetch more emails to ensure latest ones are included
+          count: mode === 'force' ? 200 : 100, // Increased from 50/30 to 200/100
           accountId: selectedAccount
         })
       });
@@ -484,11 +490,14 @@ function App() {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // Reload emails with new data
-        setFetchProgress({ message: 'Refreshing email list...', stage: 'reload' });
+        // ✅ IMMEDIATE REFRESH: Reload emails immediately to show new data
+        setFetchProgress({ message: 'Loading latest emails...', stage: 'reload' });
         await loadEmails(false, true);
         
-        setFetchProgress(null);
+        setFetchProgress({ message: '✅ Done! Latest emails loaded', stage: 'complete' });
+        
+        // Clear progress after showing success message
+        setTimeout(() => setFetchProgress(null), 2000);
       } else {
         setFetchStatus('error');
         setError(result.error || `Failed to ${mode} fetch emails`);
@@ -509,8 +518,6 @@ function App() {
     } finally {
       setFetching(false);
       fetchEmailsInProgress.current = false;
-      // Clear progress after 3 seconds if successful
-      setTimeout(() => setFetchProgress(null), 3000);
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
@@ -1054,7 +1061,10 @@ function App() {
           {!loading && emails.length > 0 && (
             <div className="email-list">
               <div className="email-list-hint">
-                <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
+                <p>💡 Click on email headers to expand and view content • ⚡ Showing {emails.length} emails (sorted by newest first)</p>
+                <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+                  📬 Latest emails appear at the top • Click "Smart Fetch" or "Force Fetch" to get newest emails from server
+                </p>
               </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
