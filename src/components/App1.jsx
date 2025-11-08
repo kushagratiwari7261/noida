@@ -349,7 +349,7 @@ function App() {
   }, [fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
   // ✅ OPTIMIZED: Fetch emails from server
-  const fetchEmails = useCallback(async (mode = 'latest') => {
+  const fetchEmails = useCallback(async (mode = 'latest', fetchAll = false) => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch already in progress...');
       return;
@@ -362,7 +362,7 @@ function App() {
     setFetchProgress({ message: 'Starting email fetch...', stage: 'init' });
 
     try {
-      console.log(`🚀 Starting ${mode} fetch...`);
+      console.log(`🚀 Starting ${mode} fetch (${fetchAll ? 'ALL EMAILS' : 'limited'})...`);
       
       setFetchProgress({ message: 'Connecting to email server...', stage: 'connect' });
       
@@ -370,7 +370,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           mode: mode,
-          count: mode === 'force' ? 200 : 100,
+          count: fetchAll ? 'all' : (mode === 'force' ? 200 : 100),
           accountId: selectedAccount
         })
       });
@@ -416,8 +416,9 @@ function App() {
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
-  const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
-  const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
+  const fetchNewEmails = useCallback(() => fetchEmails('latest', false), [fetchEmails]);
+  const forceFetchEmails = useCallback(() => fetchEmails('force', false), [fetchEmails]);
+  const fetchAllEmails = useCallback(() => fetchEmails('force', true), [fetchEmails]);
 
   // File helpers
   const getFileIcon = useCallback((mimeType, filename) => {
