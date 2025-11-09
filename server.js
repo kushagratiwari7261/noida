@@ -1094,21 +1094,20 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ OPTIMIZED: Email fetching endpoint with parallel processing
+// ✅ FIXED: Email fetching endpoint with CORRECT latest email fetching
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();
   
   try {
     const { 
       mode = "latest", 
-      count = 10,
+      count = 50,
       accountId = "all"
     } = req.body;
     
     const userEmail = req.user.email;
-    // ✅ INCREASED: Fetch more emails to ensure we get latest
-    const validatedCount = Math.min(parseInt(count) || 100, 200); // Increased from 50 to 200
-    
+    const validatedCount = Math.min(parseInt(count) || 50, 200);
+
     let accountsToProcess = [];
     
     if (accountId === "all") {
@@ -1137,7 +1136,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
       });
     }
 
-    console.log(`🚀 OPTIMIZED fetch started for ${accountsToProcess.length} accounts`);
+    console.log(`🚀 FIXED fetch started for ${accountsToProcess.length} accounts`);
     const allResults = [];
     
     for (const account of accountsToProcess) {
@@ -1164,9 +1163,10 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
             const fetchCount = Math.min(validatedCount, totalMessages);
             
             // ✅ CRITICAL FIX: Fetch from NEWEST emails (highest sequence numbers)
-            // This ensures we always get the latest emails
+            // IMAP sequence numbers: 1 is oldest, totalMessages is newest
+            // We want the LATEST emails, so we fetch from the end
             const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
-            const fetchEnd = totalMessages; // Always end at the latest email
+            const fetchEnd = totalMessages;
             const fetchRange = `${fetchStart}:${fetchEnd}`;
 
             console.log(`📨 Fetching LATEST ${fetchCount} emails from inbox (range: ${fetchRange}, total: ${totalMessages})`);
@@ -1174,7 +1174,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
             const f = connection.connection.seq.fetch(fetchRange, { 
               bodies: "",
               struct: true,
-              markSeen: false // Don't mark emails as read
+              markSeen: false
             });
 
             const emailBuffers = [];
@@ -1228,7 +1228,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 const parseTime = Date.now() - parseStartTime;
                 console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
 
-                // ✅ BATCH DUPLICATE CHECK (but still process in force mode)
+                // ✅ BATCH DUPLICATE CHECK
                 let newEmails = parsedEmails;
                 let duplicateCount = 0;
                 
@@ -1375,6 +1375,273 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
+// ✅ NEW: Force fetch latest emails endpoint (bypasses duplicate check)
+app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const { 
+      hours = 24, // Fetch emails from last X hours
+      accountId = "all"
+    } = req.body;
+    
+    const userEmail = req.user.email;
+
+    let accountsToProcess = [];
+    
+    if (accountId === "all") {
+      accountsToProcess = emailConfigManager.getAllowedAccounts(userEmail);
+    } else {
+      if (!emailConfigManager.canUserAccessAccount(userEmail, accountId)) {
+        return res.status(403).json({
+          success: false,
+          error: "Access denied to this email account"
+        });
+      }
+      const config = emailConfigManager.getConfig(accountId);
+      if (!config) {
+        return res.status(400).json({ 
+          success: false,
+          error: `Account ${accountId} not found` 
+        });
+      }
+      accountsToProcess = [config];
+    }
+
+    if (accountsToProcess.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: "No email accounts accessible"
+      });
+    }
+
+    console.log(`🚀 FORCE FETCH started for ${accountsToProcess.length} accounts (last ${hours} hours)`);
+    const allResults = [];
+    
+    for (const account of accountsToProcess) {
+      const accountStartTime = Date.now();
+      console.log(`📧 Force fetching latest emails for account ${account.id}: ${account.email}`);
+      
+      try {
+        const connection = await imapManager.getConnection(account.id);
+        
+        const accountResult = await new Promise((resolve) => {
+          connection.openInbox(async function (err, box) {
+            if (err) {
+              console.error(`❌ Failed to open inbox:`, err.message);
+              resolve({
+                accountId: account.id,
+                accountEmail: account.email,
+                success: false,
+                error: "Failed to open inbox: " + err.message
+              });
+              return;
+            }
+
+            // Calculate date for filtering
+            const sinceDate = new Date();
+            sinceDate.setHours(sinceDate.getHours() - parseInt(hours));
+            console.log(`📅 Fetching emails since: ${sinceDate.toISOString()}`);
+
+            // Search for recent emails
+            connection.connection.search([
+              ['SINCE', sinceDate]
+            ], async function (searchErr, results) {
+              if (searchErr) {
+                console.error(`❌ Search error:`, searchErr);
+                resolve({
+                  accountId: account.id,
+                  accountEmail: account.email,
+                  success: false,
+                  error: "Search failed: " + searchErr.message
+                });
+                return;
+              }
+
+              if (!results || results.length === 0) {
+                console.log(`ℹ️ No recent emails found in the last ${hours} hours`);
+                resolve({
+                  accountId: account.id,
+                  accountEmail: account.email,
+                  success: true,
+                  message: `No recent emails found in the last ${hours} hours`,
+                  data: {
+                    processed: 0,
+                    total: 0
+                  }
+                });
+                imapManager.closeConnection(account.id);
+                return;
+              }
+
+              console.log(`📨 Found ${results.length} recent emails since ${sinceDate.toISOString()}`);
+
+              // Fetch the found emails
+              const f = connection.connection.fetch(results, { 
+                bodies: "",
+                struct: true,
+                markSeen: false
+              });
+
+              const emailBuffers = [];
+
+              f.on("message", function (msg, seqno) {
+                let buffer = "";
+                let currentSeqno = seqno;
+
+                msg.on("body", function (stream) {
+                  stream.on("data", function (chunk) {
+                    buffer += chunk.toString("utf8");
+                  });
+                });
+
+                msg.once("end", function () {
+                  emailBuffers.push({ buffer, seqno: currentSeqno });
+                });
+              });
+
+              f.once("error", function (err) {
+                console.error(`❌ Fetch error:`, err);
+                resolve({
+                  accountId: account.id,
+                  accountEmail: account.email,
+                  success: false,
+                  error: "Fetch error: " + err.message
+                });
+              });
+
+              f.once("end", async function () {
+                const fetchTime = Date.now() - accountStartTime;
+                console.log(`⚡ Fetched ${emailBuffers.length} recent emails in ${fetchTime}ms`);
+                
+                try {
+                  // Process all fetched emails (no duplicate check in force mode)
+                  console.log(`🔄 Processing ${emailBuffers.length} emails...`);
+                  const parseStartTime = Date.now();
+                  
+                  const parsedEmailsPromises = emailBuffers.map(async ({ buffer, seqno }) => {
+                    try {
+                      const parsed = await simpleParser(buffer);
+                      const messageId = parsed.messageId || `email-${account.id}-${Date.now()}-${seqno}`;
+                      return { parsed, messageId, seqno };
+                    } catch (parseErr) {
+                      console.error(`❌ Parse error for seqno ${seqno}:`, parseErr.message);
+                      return null;
+                    }
+                  });
+                  
+                  const parsedEmails = (await Promise.all(parsedEmailsPromises)).filter(e => e !== null);
+                  const parseTime = Date.now() - parseStartTime;
+                  console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
+
+                  // Process with attachments
+                  console.log(`🔄 Processing emails with attachments...`);
+                  const processStartTime = Date.now();
+                  
+                  const processedEmailsPromises = parsedEmails.map(async ({ parsed, messageId, seqno }) => {
+                    try {
+                      return await processEmailWithAttachmentsFast(parsed, messageId, account.id, seqno);
+                    } catch (processErr) {
+                      console.error(`❌ Process error for ${messageId}:`, processErr.message);
+                      return null;
+                    }
+                  });
+                  
+                  const processedEmails = (await Promise.all(processedEmailsPromises)).filter(e => e !== null);
+                  const processTime = Date.now() - processStartTime;
+                  console.log(`✅ Processed ${processedEmails.length} emails in ${processTime}ms`);
+
+                  // Save all emails (force mode - upsert will handle duplicates)
+                  const saveStartTime = Date.now();
+                  const saveResults = await saveEmailsBatch(processedEmails, 10);
+                  const saveTime = Date.now() - saveStartTime;
+                  const successfulSaves = saveResults.filter(r => r.success).reduce((sum, r) => sum + r.count, 0);
+                  console.log(`💾 Saved ${successfulSaves} emails in ${saveTime}ms`);
+
+                  const totalTime = Date.now() - accountStartTime;
+                  console.log(`✅ Account ${account.email} completed in ${totalTime}ms`);
+                  
+                  resolve({
+                    accountId: account.id,
+                    accountEmail: account.email,
+                    success: true,
+                    message: `Force processed ${processedEmails.length} recent emails`,
+                    data: {
+                      processed: processedEmails.length,
+                      total: processedEmails.length,
+                      saved: successfulSaves
+                    },
+                    timing: {
+                      fetch: fetchTime,
+                      parse: parseTime,
+                      process: processTime,
+                      save: saveTime,
+                      total: totalTime
+                    }
+                  });
+
+                } catch (batchError) {
+                  console.error(`❌ Batch processing error:`, batchError);
+                  resolve({
+                    accountId: account.id,
+                    accountEmail: account.email,
+                    success: false,
+                    error: "Batch processing failed: " + batchError.message
+                  });
+                } finally {
+                  imapManager.closeConnection(account.id);
+                }
+              });
+            });
+          });
+        });
+
+        allResults.push(accountResult);
+
+      } catch (accountError) {
+        console.error(`❌ Account processing error:`, accountError);
+        allResults.push({
+          accountId: account.id,
+          accountEmail: account.email,
+          success: false,
+          error: accountError.message
+        });
+      }
+    }
+
+    clearCache();
+
+    const successfulAccounts = allResults.filter(r => r.success);
+    const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.processed || 0), 0);
+    const totalTime = Date.now() - startTime;
+
+    console.log(`🎉 Force fetch completed in ${totalTime}ms - Processed ${totalProcessed} emails`);
+
+    res.json({
+      success: true,
+      message: `Force fetched ${accountsToProcess.length} accounts in ${totalTime}ms`,
+      summary: {
+        totalAccounts: accountsToProcess.length,
+        successfulAccounts: successfulAccounts.length,
+        totalProcessed,
+        totalTimeMs: totalTime
+      },
+      accounts: allResults,
+      userAccess: {
+        email: userEmail,
+        allowedAccounts: accountsToProcess.map(acc => acc.id)
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Force fetch emails API error:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
 // Delete email with authorization
 app.delete("/api/emails/:messageId", authenticateUser, async (req, res) => {
   try {
@@ -1511,6 +1778,7 @@ app.use('*', (req, res) => {
       'GET /api/emails (auth required)',
       'GET /api/emails/:messageId (auth required)',
       'POST /api/fetch-emails (auth required)',
+      'POST /api/fetch-latest-emails (auth required)',
       'GET /api/user-accounts (auth required)',
       'DELETE /api/emails/:messageId (auth required)'
     ]

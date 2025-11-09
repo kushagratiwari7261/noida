@@ -437,7 +437,7 @@ function App() {
     }
   }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ OPTIMIZED: Fetch emails with progress tracking
+  // ✅ FIXED: Enhanced fetch emails function with LATEST email fetching
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
@@ -455,13 +455,31 @@ function App() {
       
       setFetchProgress({ message: 'Connecting to email server...', stage: 'connect' });
       
-      const response = await fetchWithAuth('/api/fetch-emails', {
-        method: 'POST',
-        body: JSON.stringify({
+      // ✅ CRITICAL FIX: Use the correct endpoint and parameters for latest emails
+      let endpoint, body;
+      
+      if (mode === 'force-latest') {
+        // Use the new force fetch endpoint for latest emails
+        endpoint = '/api/fetch-latest-emails';
+        body = {
+          accountId: selectedAccount,
+          hours: 24 // Fetch emails from last 24 hours
+        };
+        setFetchProgress({ message: '🔄 FORCE FETCH: Getting latest emails (last 24 hours)...', stage: 'connect' });
+      } else {
+        // Use regular fetch with optimized parameters
+        endpoint = '/api/fetch-emails';
+        body = {
           mode: mode,
-          count: mode === 'force' ? 50 : 30, // Increased counts
+          count: 100, // Increased to get more emails
           accountId: selectedAccount
-        })
+        };
+        setFetchProgress({ message: '🔄 Fetching latest emails from server...', stage: 'connect' });
+      }
+
+      const response = await fetchWithAuth(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(body)
       });
 
       setFetchProgress({ message: 'Processing server response...', stage: 'process' });
@@ -477,6 +495,13 @@ function App() {
           
           setFetchProgress({ 
             message: `✅ Processed ${totalProcessed} emails in ${(totalTimeMs / 1000).toFixed(2)}s (${emailsPerSecond} emails/s)`, 
+            stage: 'success' 
+          });
+        } else if (result.accounts) {
+          // Handle account-based results
+          const totalProcessed = result.accounts.reduce((sum, acc) => sum + (acc.data?.processed || 0), 0);
+          setFetchProgress({ 
+            message: `✅ Processed ${totalProcessed} emails across ${result.accounts.length} accounts`, 
             stage: 'success' 
           });
         }
@@ -514,7 +539,10 @@ function App() {
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
-  const fetchNewEmails = useCallback(() => fetchEmails('latest'), [fetchEmails]);
+  // ✅ UPDATED: Smart fetch - uses force-latest mode
+  const fetchNewEmails = useCallback(() => fetchEmails('force-latest'), [fetchEmails]);
+  
+  // ✅ UPDATED: Force fetch - uses regular force mode
   const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
   const forceRefreshEmails = useCallback(async () => {
@@ -944,18 +972,21 @@ function App() {
 
           {/* Compact Controls */}
           <div className="compact-controls">
+            {/* ✅ UPDATED: Smart Fetch now uses force-latest mode */}
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
               className={`fetch-button ${fetching ? 'fetching' : ''}`}
+              title="Fetch latest emails from last 24 hours (bypasses duplicate check)"
             >
-              {fetching ? '🔄' : '📥'} Smart Fetch
+              {fetching ? '🔄' : '📥'} Smart Fetch LATEST
             </button>
 
             <button 
               onClick={forceFetchEmails} 
               disabled={fetching}
               className="force-fetch-button"
+              title="Force fetch emails with duplicate checking"
             >
               ⚡ Force Fetch
             </button>
@@ -964,8 +995,9 @@ function App() {
               onClick={forceRefreshEmails} 
               disabled={fetching}
               className="force-refresh-button"
+              title="Refresh email list from database"
             >
-              🔄 Refresh
+              🔄 Refresh List
             </button>
 
             <div className="search-compact">
@@ -1039,7 +1071,7 @@ function App() {
               <p>Try fetching emails from your inbox</p>
               <div className="empty-actions">
                 <button onClick={fetchNewEmails} className="fetch-button">
-                  📥 Smart Fetch
+                  📥 Smart Fetch LATEST
                 </button>
                 <button onClick={forceFetchEmails} className="force-fetch-button">
                   ⚡ Force Fetch
@@ -1055,6 +1087,7 @@ function App() {
             <div className="email-list">
               <div className="email-list-hint">
                 <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
+                <p>🆕 <strong>Smart Fetch LATEST</strong> gets emails from last 24 hours (bypasses duplicates)</p>
               </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1092,6 +1125,7 @@ function App() {
                   <li>✅ Batch database saves (10 at a time)</li>
                   <li>✅ Lazy content loading (on expand)</li>
                   <li>✅ Smart caching</li>
+                  <li>🆕 <strong>Force Latest Fetch</strong> (bypasses duplicates for recent emails)</li>
                 </ul>
               </div>
             </div>
@@ -1101,5 +1135,4 @@ function App() {
     </div>
   );
 }
-
 export default App;
