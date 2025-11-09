@@ -35,7 +35,7 @@ function App() {
     if (window.location.hostname.includes('.vercel.app')) {
       return 'https://seal-freight.vercel.app';
     }
-    return process.env.REACT_APP_API_URL || '/api';
+    return import.meta.env.VITE_API_URL || '/api';
   };
 
   const API_BASE = getApiBaseUrl();
@@ -271,7 +271,7 @@ function App() {
     }
 
     if (attachment.path) {
-      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       if (supabaseUrl) {
         return `${supabaseUrl}/storage/v1/object/public/attachments/${attachment.path}`;
       }

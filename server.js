@@ -1441,11 +1441,18 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
             // Calculate date for filtering
             const sinceDate = new Date();
             sinceDate.setHours(sinceDate.getHours() - parseInt(hours));
-            console.log(`📅 Fetching emails since: ${sinceDate.toISOString()}`);
+
+            // Format as YYYY-MM-DD for IMAP SINCE criterion
+            const year = sinceDate.getFullYear();
+            const month = String(sinceDate.getMonth() + 1).padStart(2, '0');
+            const day = String(sinceDate.getDate()).padStart(2, '0');
+            const imapSinceDate = `${year}-${month}-${day}`;
+
+            console.log(`📅 Fetching emails since: ${sinceDate.toISOString()} (IMAP SINCE: ${imapSinceDate})`);
 
             // Search for recent emails using SINCE date
             connection.connection.search([
-              ['SINCE', sinceDate]
+              ['SINCE', imapSinceDate]
             ], async function (searchErr, results) {
               if (searchErr) {
                 console.error(`❌ Search error:`, searchErr);
