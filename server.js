@@ -36,9 +36,9 @@ app.use(cors({
       callback(null, true);
     } else {
       const allowedOrigins = [
-        'http://localhost:3000',
+        'http://localhost:5173',
         'http://localhost:3001',
-        'http://127.0.0.1:3000',
+        'http://127.0.0.1:5173',
         'http://127.0.0.1:3001',
         process.env.FRONTEND_URL
       ].filter(Boolean);
@@ -262,7 +262,6 @@ class EmailConfigManager {
 
 const emailConfigManager = new EmailConfigManager();
 
-// ✅ OPTIMIZED: Batch duplicate checking
 async function checkDuplicatesBatch(messageIds, accountId) {
   const cacheKeys = messageIds.map(id => `duplicate:${id}:${accountId}`);
   const cachedResults = {};
@@ -277,6 +276,8 @@ async function checkDuplicatesBatch(messageIds, accountId) {
       uncachedIds.push(id);
     }
   });
+
+  console.log(`🔍 Duplicate check: ${Object.keys(cachedResults).length} cached, ${uncachedIds.length} need DB check`);
 
   // Batch query for uncached
   if (uncachedIds.length > 0 && supabaseEnabled && supabase) {
@@ -293,18 +294,35 @@ async function checkDuplicatesBatch(messageIds, accountId) {
           const isDuplicate = existingIds.has(id);
           cachedResults[id] = isDuplicate;
           setToCache(`duplicate:${id}:${accountId}`, isDuplicate);
+          
+          if (isDuplicate) {
+            console.log(`   🔄 Found in DB: ${id.substring(0, 30)}...`);
+          }
+        });
+      } else if (error) {
+        console.error("❌ Duplicate check query error:", error);
+        // Assume not duplicates on error to allow saving
+        uncachedIds.forEach(id => {
+          cachedResults[id] = false;
         });
       }
     } catch (error) {
       console.error("❌ Batch duplicate check error:", error);
+      // Assume not duplicates on error to allow saving
       uncachedIds.forEach(id => {
         cachedResults[id] = false;
       });
     }
+  } else if (uncachedIds.length > 0) {
+    // Supabase not available, assume not duplicates
+    uncachedIds.forEach(id => {
+      cachedResults[id] = false;
+    });
   }
 
   return cachedResults;
 }
+
 
 // ✅ Function to upload attachments to Supabase storage
 async function uploadAttachmentToSupabase(attachment, messageId, accountId) {
@@ -427,12 +445,16 @@ async function processEmailWithAttachmentsFast(parsed, messageId, accountId, seq
   }
 }
 
-// ✅ OPTIMIZED: Batch saving with upsert
-async function saveEmailsBatch(emails, batchSize = 10) {
+async function saveEmailsBatch(emails, batchSize = 5) {
   if (emails.length === 0) return [];
   
   try {
-    if (!supabaseEnabled || !supabase) return [];
+    if (!supabaseEnabled || !supabase) {
+      console.log("⚠️ Supabase not enabled, skipping save");
+      return [];
+    }
+
+    console.log(`💾 Preparing to save ${emails.length} emails...`);
 
     const supabaseData = emails.map(email => ({
       message_id: email.messageId,
@@ -451,38 +473,117 @@ async function saveEmailsBatch(emails, batchSize = 10) {
     }));
 
     const results = [];
+    let totalSaved = 0;
     
-    // Process in batches
+    // Process in smaller batches (reduced to 5 for safety)
     for (let i = 0; i < supabaseData.length; i += batchSize) {
       const batch = supabaseData.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(supabaseData.length / batchSize);
       
-      try {
-        const { data, error } = await supabase
-          .from('emails')
-          .upsert(batch, { 
-            onConflict: 'message_id,account_id',
-            ignoreDuplicates: false 
-          });
-        
-        if (error) {
-          console.error(`❌ Batch save error:`, error);
-          results.push({ success: false, count: 0 });
-        } else {
-          results.push({ success: true, count: batch.length });
+      console.log(`💾 Processing batch ${batchNum}/${totalBatches} (${batch.length} emails)...`);
+      
+      let batchSavedCount = 0;
+      
+      // Process each email individually with proper duplicate handling
+      for (const emailData of batch) {
+        try {
+          // Check if email already exists
+          const { data: existing, error: checkError } = await supabase
+            .from('emails')
+            .select('id, updated_at')
+            .eq('message_id', emailData.message_id)
+            .eq('account_id', emailData.account_id)
+            .maybeSingle(); // Use maybeSingle() instead of single() to avoid error on no results
+
+          if (checkError) {
+            console.error(`❌ Check error for ${emailData.message_id}:`, checkError.message);
+            continue;
+          }
+
+          if (existing) {
+            // Email exists - update it
+            const { error: updateError } = await supabase
+              .from('emails')
+              .update({
+                subject: emailData.subject,
+                from_text: emailData.from_text,
+                to_text: emailData.to_text,
+                date: emailData.date,
+                text_content: emailData.text_content,
+                html_content: emailData.html_content,
+                attachments: emailData.attachments,
+                has_attachments: emailData.has_attachments,
+                attachments_count: emailData.attachments_count,
+                updated_at: new Date()
+              })
+              .eq('id', existing.id);
+
+            if (updateError) {
+              console.error(`❌ Update error for ${emailData.message_id}:`, updateError.message);
+            } else {
+              console.log(`   ♻️  Updated: ${emailData.subject?.substring(0, 50)}`);
+              batchSavedCount++;
+            }
+          } else {
+            // Email doesn't exist - insert it
+            const { error: insertError } = await supabase
+              .from('emails')
+              .insert([emailData]);
+
+            if (insertError) {
+              // Check if it's a duplicate key error (race condition)
+              if (insertError.code === '23505') {
+                console.log(`   ⚠️  Duplicate detected during insert: ${emailData.message_id}`);
+                // Try to update instead
+                const { error: retryUpdateError } = await supabase
+                  .from('emails')
+                  .update({
+                    subject: emailData.subject,
+                    from_text: emailData.from_text,
+                    to_text: emailData.to_text,
+                    date: emailData.date,
+                    text_content: emailData.text_content,
+                    html_content: emailData.html_content,
+                    attachments: emailData.attachments,
+                    has_attachments: emailData.has_attachments,
+                    attachments_count: emailData.attachments_count,
+                    updated_at: new Date()
+                  })
+                  .eq('message_id', emailData.message_id)
+                  .eq('account_id', emailData.account_id);
+                
+                if (!retryUpdateError) {
+                  console.log(`   ♻️  Updated on retry: ${emailData.subject?.substring(0, 50)}`);
+                  batchSavedCount++;
+                }
+              } else {
+                console.error(`❌ Insert error for ${emailData.message_id}:`, insertError.message);
+              }
+            } else {
+              console.log(`   ✅ Inserted: ${emailData.subject?.substring(0, 50)}`);
+              batchSavedCount++;
+            }
+          }
+        } catch (itemError) {
+          console.error(`❌ Error processing ${emailData.message_id}:`, itemError.message);
         }
-      } catch (batchError) {
-        console.error(`❌ Batch processing error:`, batchError);
-        results.push({ success: false, count: 0 });
+        
+        // Small delay between individual emails to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
       
-      // Small delay between batches to avoid rate limits
+      totalSaved += batchSavedCount;
+      results.push({ success: true, count: batchSavedCount });
+      console.log(`✅ Batch ${batchNum} completed: ${batchSavedCount}/${batch.length} emails saved`);
+      
+      // Delay between batches
       if (i + batchSize < supabaseData.length) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
     
-    const totalSaved = results.reduce((sum, r) => sum + (r.success ? r.count : 0), 0);
-    console.log(`💾 Saved ${totalSaved}/${emails.length} emails to database`);
+    console.log(`💾 ✅ TOTAL SAVED: ${totalSaved}/${emails.length} emails`);
     
     return results;
   } catch (error) {
@@ -490,6 +591,7 @@ async function saveEmailsBatch(emails, batchSize = 10) {
     return [];
   }
 }
+
 
 // ✅ Enhanced Authentication Middleware
 const authenticateUser = async (req, res, next) => {
@@ -1095,6 +1197,8 @@ app.get("/api/emails/:messageId", authenticateUser, async (req, res) => {
 });
 
 // ✅ FIXED: Email fetching endpoint with CORRECT latest email fetching
+// ✅ FIXED: Replace your /api/fetch-emails endpoint with this improved version
+
 app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();
   
@@ -1136,7 +1240,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
       });
     }
 
-    console.log(`🚀 FIXED fetch started for ${accountsToProcess.length} accounts`);
+    console.log(`🚀 Fetch started for ${accountsToProcess.length} accounts (mode: ${mode})`);
     const allResults = [];
     
     for (const account of accountsToProcess) {
@@ -1160,26 +1264,49 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
             }
             
             const totalMessages = box.messages.total;
+            
+            if (totalMessages === 0) {
+              console.log(`ℹ️ No messages in inbox`);
+              resolve({
+                accountId: account.id,
+                accountEmail: account.email,
+                success: true,
+                message: "No messages in inbox",
+                data: {
+                  processed: 0,
+                  total: 0
+                }
+              });
+              imapManager.closeConnection(account.id);
+              return;
+            }
+            
             const fetchCount = Math.min(validatedCount, totalMessages);
             
-            // ✅ CRITICAL FIX: Fetch from NEWEST emails (highest sequence numbers)
-            // IMAP sequence numbers: 1 is oldest, totalMessages is newest
-            // We want the LATEST emails, so we fetch from the end
+            // ✅ CRITICAL: Always fetch from the END (newest emails)
+            // IMAP sequence numbers: 1 = oldest, totalMessages = newest
             const fetchStart = Math.max(1, totalMessages - fetchCount + 1);
             const fetchEnd = totalMessages;
-            const fetchRange = `${fetchStart}:${fetchEnd}`;
+            
+            console.log(`📨 Fetching NEWEST ${fetchCount} emails`);
+            console.log(`   Total in inbox: ${totalMessages}`);
+            console.log(`   Fetching range: ${fetchStart}:${fetchEnd} (seq numbers)`);
+            console.log(`   This gets the ${fetchCount} most recent emails`);
 
-            console.log(`📨 Fetching LATEST ${fetchCount} emails from inbox (range: ${fetchRange}, total: ${totalMessages})`);
-
-            const f = connection.connection.seq.fetch(fetchRange, { 
+            // Use SEQ fetch to get emails by sequence number
+            const f = connection.connection.seq.fetch(`${fetchStart}:${fetchEnd}`, { 
               bodies: "",
               struct: true,
               markSeen: false
             });
 
             const emailBuffers = [];
+            let fetchedCount = 0;
 
             f.on("message", function (msg, seqno) {
+              fetchedCount++;
+              console.log(`📩 Fetching email ${fetchedCount}/${fetchCount} (seq: ${seqno})`);
+              
               let buffer = "";
               let currentSeqno = seqno;
 
@@ -1206,17 +1333,21 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
 
             f.once("end", async function () {
               const fetchTime = Date.now() - accountStartTime;
-              console.log(`⚡ Fetched ${emailBuffers.length} emails in ${fetchTime}ms`);
+              console.log(`⚡ Fetched ${emailBuffers.length} email buffers in ${fetchTime}ms`);
               
               try {
-                // ✅ PARALLEL PARSING
-                console.log(`🔄 Parsing ${emailBuffers.length} emails in parallel...`);
+                // ✅ Parse emails in parallel
+                console.log(`🔄 Parsing ${emailBuffers.length} emails...`);
                 const parseStartTime = Date.now();
                 
                 const parsedEmailsPromises = emailBuffers.map(async ({ buffer, seqno }) => {
                   try {
                     const parsed = await simpleParser(buffer);
                     const messageId = parsed.messageId || `email-${account.id}-${Date.now()}-${seqno}`;
+                    
+                    // Log email date to verify we're getting newest
+                    console.log(`   📅 Email seq ${seqno}: ${parsed.subject?.substring(0, 50)} (${parsed.date})`);
+                    
                     return { parsed, messageId, seqno };
                   } catch (parseErr) {
                     console.error(`❌ Parse error for seqno ${seqno}:`, parseErr.message);
@@ -1224,27 +1355,49 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                   }
                 });
                 
-                const parsedEmails = (await Promise.all(parsedEmailsPromises)).filter(e => e !== null);
+                let parsedEmails = (await Promise.all(parsedEmailsPromises)).filter(e => e !== null);
                 const parseTime = Date.now() - parseStartTime;
                 console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
 
-                // ✅ BATCH DUPLICATE CHECK
+                // ✅ Sort by date DESCENDING to ensure newest first
+                parsedEmails.sort((a, b) => {
+                  const dateA = new Date(a.parsed.date || 0);
+                  const dateB = new Date(b.parsed.date || 0);
+                  return dateB - dateA; // Newest first
+                });
+
+                console.log(`📊 Email date range:`);
+                if (parsedEmails.length > 0) {
+                  console.log(`   Newest: ${parsedEmails[0].parsed.date}`);
+                  console.log(`   Oldest: ${parsedEmails[parsedEmails.length - 1].parsed.date}`);
+                }
+
+                // ✅ Check duplicates (unless force mode)
                 let newEmails = parsedEmails;
                 let duplicateCount = 0;
                 
                 if (mode !== "force") {
                   const duplicateCheckStartTime = Date.now();
                   const messageIds = parsedEmails.map(e => e.messageId);
+                  
+                  console.log(`🔍 Checking ${messageIds.length} message IDs for duplicates...`);
                   const duplicateResults = await checkDuplicatesBatch(messageIds, account.id);
                   
-                  newEmails = parsedEmails.filter(e => !duplicateResults[e.messageId]);
+                  newEmails = parsedEmails.filter(e => {
+                    const isDuplicate = duplicateResults[e.messageId];
+                    if (isDuplicate) {
+                      console.log(`   ⏭️  Skipping duplicate: ${e.parsed.subject?.substring(0, 40)} (${e.parsed.date})`);
+                    }
+                    return !isDuplicate;
+                  });
+                  
                   duplicateCount = parsedEmails.length - newEmails.length;
                   
                   const duplicateCheckTime = Date.now() - duplicateCheckStartTime;
                   console.log(`✅ Duplicate check in ${duplicateCheckTime}ms: ${newEmails.length} new, ${duplicateCount} duplicates`);
                   
                   if (newEmails.length === 0) {
-                    console.log(`ℹ️ No new emails to process`);
+                    console.log(`ℹ️ All ${parsedEmails.length} emails already exist in database`);
                     resolve({
                       accountId: account.id,
                       accountEmail: account.email,
@@ -1265,10 +1418,16 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                     imapManager.closeConnection(account.id);
                     return;
                   }
+                } else {
+                  console.log(`🔄 Force mode enabled - processing all ${newEmails.length} emails`);
                 }
 
-                // ✅ PARALLEL PROCESSING WITH ATTACHMENTS
-                console.log(`🔄 Processing ${newEmails.length} emails with attachments...`);
+                // ✅ Process emails with attachments
+                console.log(`🔄 Processing ${newEmails.length} NEW emails with attachments...`);
+                newEmails.forEach((email, idx) => {
+                  console.log(`   ${idx + 1}. ${email.parsed.subject?.substring(0, 50)} (${email.parsed.date})`);
+                });
+                
                 const processStartTime = Date.now();
                 
                 const processedEmailsPromises = newEmails.map(async ({ parsed, messageId, seqno }) => {
@@ -1284,26 +1443,31 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
                 const processTime = Date.now() - processStartTime;
                 console.log(`✅ Processed ${processedEmails.length} emails in ${processTime}ms`);
 
-                // ✅ BATCH SAVE
+                // ✅ Save to database
                 const saveStartTime = Date.now();
+                console.log(`💾 Saving ${processedEmails.length} emails to database...`);
+                
                 const saveResults = await saveEmailsBatch(processedEmails, 10);
                 const saveTime = Date.now() - saveStartTime;
                 const successfulSaves = saveResults.filter(r => r.success).reduce((sum, r) => sum + r.count, 0);
-                console.log(`💾 Saved ${successfulSaves} emails in ${saveTime}ms`);
+                
+                console.log(`✅ Saved ${successfulSaves}/${processedEmails.length} emails in ${saveTime}ms`);
 
                 const totalTime = Date.now() - accountStartTime;
                 console.log(`✅ Account ${account.email} completed in ${totalTime}ms`);
+                console.log(`   📊 Summary: ${successfulSaves} saved, ${duplicateCount} duplicates, ${fetchCount} fetched`);
                 
                 resolve({
                   accountId: account.id,
                   accountEmail: account.email,
                   success: true,
-                  message: `Processed ${processedEmails.length} new emails`,
+                  message: `Processed ${successfulSaves} new emails`,
                   data: {
                     processed: processedEmails.length,
                     duplicates: duplicateCount,
                     total: processedEmails.length + duplicateCount,
-                    saved: successfulSaves
+                    saved: successfulSaves,
+                    fetched: fetchCount
                   },
                   timing: {
                     fetch: fetchTime,
@@ -1345,10 +1509,10 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     clearCache();
 
     const successfulAccounts = allResults.filter(r => r.success);
-    const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.processed || 0), 0);
+    const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.saved || 0), 0);
     const totalTime = Date.now() - startTime;
 
-    console.log(`🎉 Total fetch completed in ${totalTime}ms - Processed ${totalProcessed} emails`);
+    console.log(`🎉 FETCH COMPLETE in ${totalTime}ms - ${totalProcessed} new emails saved`);
 
     res.json({
       success: true,
@@ -1374,7 +1538,6 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     });
   }
 });
-
 // ✅ FIXED: Fetch latest emails endpoint with proper date-based sorting and duplicate detection
 app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();

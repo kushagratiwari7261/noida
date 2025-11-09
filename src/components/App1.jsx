@@ -31,14 +31,16 @@ function App() {
   const fetchEmailsInProgress = useRef(false);
 
   // ✅ Dynamic API base URL
-  const getApiBaseUrl = () => {
-    if (window.location.hostname.includes('.vercel.app')) {
-      return 'https://seal-freight.vercel.app';
-    }
-    return import.meta.env.VITE_API_URL || '/api';
-  };
+// ✅ FIXED: Dynamic API base URL
+// ✅ SIMPLE FIX: Add trailing slash to API_BASE
+const getApiBaseUrl = () => {
+  if (window.location.hostname.includes('.vercel.app')) {
+    return 'https://seal-freight.vercel.app/'; // Added trailing slash
+  }
+  return 'http://localhost:3001/'; // Added trailing slash
+};
 
-  const API_BASE = getApiBaseUrl();
+const API_BASE = getApiBaseUrl();
 
   // Get authentication token
   const getAuthToken = useCallback(async () => {
@@ -73,72 +75,74 @@ function App() {
   }, []);
 
   // Enhanced fetch with auth
-  const fetchWithAuth = useCallback(async (url, options = {}) => {
-    try {
-      const token = await getAuthToken();
-      
-      if (!token) {
-        throw new Error('No authentication token found. Please log in again.');
-      }
+  // Enhanced fetch with auth - FIXED VERSION
+const fetchWithAuth = useCallback(async (url, options = {}) => {
+  try {
+    const token = await getAuthToken();
 
-      let fullUrl = url;
-      if (!url.startsWith('http')) {
-        fullUrl = `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
-      }
+    if (!token) {
+      throw new Error('No authentication token found. Please log in again.');
+    }
 
-      const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...options.headers,
-      };
+    let fullUrl = url;
+    if (!url.startsWith('http')) {
+      // ✅ FIXED: Proper URL construction with correct slashes
+      const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+      fullUrl = `${base}/api${url.startsWith('/') ? '' : '/'}${url}`;
+    }
 
-      console.log('🔐 Making authenticated request to:', fullUrl);
-      
-      const response = await fetch(fullUrl, {
-        ...options,
-        headers,
-      });
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+      ...options.headers,
+    };
 
-      if (response.status === 401) {
-        try {
-          const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
-          if (refreshError || !session?.access_token) {
-            throw new Error('Authentication failed. Please log in again.');
-          }
-          
-          headers.Authorization = `Bearer ${session.access_token}`;
-          const retryResponse = await fetch(fullUrl, { ...options, headers });
-          
-          if (!retryResponse.ok) {
-            throw new Error(`HTTP error! status: ${retryResponse.status}`);
-          }
-          return retryResponse;
-        } catch (refreshErr) {
+    console.log('🔐 Making authenticated request to:', fullUrl);
+    
+    const response = await fetch(fullUrl, {
+      ...options,
+      headers,
+    });
+
+    if (response.status === 401) {
+      try {
+        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+        if (refreshError || !session?.access_token) {
           throw new Error('Authentication failed. Please log in again.');
         }
-      }
-
-      if (!response.ok) {
-        let errorDetails = `HTTP error! status: ${response.status}`;
-        try {
-          const errorData = await response.json();
-          errorDetails = errorData.error || errorData.message || errorDetails;
-          if (errorData.details) {
-            errorDetails += ` (${errorData.details})`;
-          }
-        } catch (e) {
-          errorDetails = response.statusText || errorDetails;
+        
+        headers.Authorization = `Bearer ${session.access_token}`;
+        const retryResponse = await fetch(fullUrl, { ...options, headers });
+        
+        if (!retryResponse.ok) {
+          throw new Error(`HTTP error! status: ${retryResponse.status}`);
         }
-        throw new Error(errorDetails);
+        return retryResponse;
+      } catch (refreshErr) {
+        throw new Error('Authentication failed. Please log in again.');
       }
-
-      return response;
-    } catch (error) {
-      console.error('❌ Fetch with auth failed:', error);
-      throw error;
     }
-  }, [getAuthToken, API_BASE]);
 
+    if (!response.ok) {
+      let errorDetails = `HTTP error! status: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorDetails = errorData.error || errorData.message || errorDetails;
+        if (errorData.details) {
+          errorDetails += ` (${errorData.details})`;
+        }
+      } catch (e) {
+        errorDetails = response.statusText || errorDetails;
+      }
+      throw new Error(errorDetails);
+    }
+
+    return response;
+  } catch (error) {
+    console.error('❌ Fetch with auth failed:', error);
+    throw error;
+  }
+}, [getAuthToken, API_BASE]);
   // ✅ Load full email content when user clicks on an email
   const loadEmailContent = useCallback(async (messageId) => {
     if (emailContent[messageId]) {
@@ -151,7 +155,7 @@ function App() {
     try {
       console.log(`📧 Loading full content for email: ${messageId}`);
       
-      const response = await fetchWithAuth(`/api/emails/${messageId}`);
+      const response = await fetchWithAuth(`/emails/${messageId}`);
       const data = await response.json();
       
       if (!data.success) {
@@ -204,7 +208,7 @@ function App() {
   const fetchUserAccounts = useCallback(async () => {
     try {
       console.log('👤 Fetching user accounts...');
-      const response = await fetchWithAuth('/api/user-accounts');
+      const response = await fetchWithAuth('/user-accounts');
       const data = await response.json();
       
       if (data.success && data.accounts) {
@@ -220,49 +224,51 @@ function App() {
     }
   }, [fetchWithAuth]);
 
-  // Test backend connection
-  const testBackendConnection = useCallback(async () => {
-    try {
-      setError(null);
-      console.log('🧪 Testing backend connection...');
-      
-      const testUrl = `${API_BASE}/api/health`;
-      console.log('Testing URL:', testUrl);
-      
-      const response = await fetch(testUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      console.log('🏥 Backend health:', data);
-      
-      if (data.status === 'healthy') {
-        setError('✅ Backend is healthy and running!');
-        setTimeout(() => setError(null), 3000);
-        return true;
-      } else {
-        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
-        return false;
-      }
-    } catch (err) {
-      console.error('❌ Backend connection failed:', err);
-      let errorMessage = `Cannot connect to backend: ${err.message}`;
-      
-      if (err.message.includes('Failed to fetch')) {
-        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
-      }
-      
-      setError(`❌ ${errorMessage}`);
+// Test backend connection - FIXED VERSION
+const testBackendConnection = useCallback(async () => {
+  try {
+    setError(null);
+    console.log('🧪 Testing backend connection...');
+    
+    // ✅ FIXED: Use proper URL construction
+    const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+    const testUrl = `${base}/api/health`;
+    console.log('Testing URL:', testUrl);
+    
+    const response = await fetch(testUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log('🏥 Backend health:', data);
+    
+    if (data.status === 'healthy') {
+      setError('✅ Backend is healthy and running!');
+      setTimeout(() => setError(null), 3000);
+      return true;
+    } else {
+      setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
       return false;
     }
-  }, [API_BASE]);
+  } catch (err) {
+    console.error('❌ Backend connection failed:', err);
+    let errorMessage = `Cannot connect to backend: ${err.message}`;
+    
+    if (err.message.includes('Failed to fetch')) {
+      errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
+    }
+    
+    setError(`❌ ${errorMessage}`);
+    return false;
+  }
+}, [API_BASE]);
 
   // ✅ Process attachment URLs
   const processAttachmentUrl = useCallback((attachment) => {
@@ -355,7 +361,7 @@ function App() {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
       console.log('🌐 Using API base:', API_BASE);
 
-      const healthResponse = await fetch(`${API_BASE}/api/health`);
+      const healthResponse = await fetch(`${API_BASE}api/health`);
       if (!healthResponse.ok) {
         throw new Error(`Backend health check failed: ${healthResponse.status}`);
       }
@@ -364,7 +370,7 @@ function App() {
 
       if (forceRefresh) {
         try {
-          await fetchWithAuth('/api/clear-cache', { method: 'POST' });
+          await fetchWithAuth('/clear-cache', { method: 'POST' });
           console.log('🗑️ Cache cleared');
         } catch (cacheErr) {
           console.log('⚠️ Cache clear failed, continuing...');
@@ -380,7 +386,7 @@ function App() {
         `t=${Date.now()}`
       ].join('&');
 
-      const response = await fetchWithAuth(`/api/emails?${queries}`);
+      const response = await fetchWithAuth(`/emails?${queries}`);
       const data = await response.json();
       
       console.log('📧 Backend response:', data);
@@ -468,7 +474,7 @@ function App() {
         setFetchProgress({ message: '🔄 FORCE FETCH: Getting latest emails (last 24 hours)...', stage: 'connect' });
       } else {
         // Use regular fetch with optimized parameters
-        endpoint = '/api/fetch-emails';
+        endpoint = '/fetch-emails';
         body = {
           mode: mode,
           count: 150, // Increased to get more emails
@@ -711,7 +717,7 @@ function App() {
 
     try {
       console.log('🗑️ Deleting email:', { emailId, messageId });
-      const response = await fetchWithAuth(`/api/emails/${messageId}`, {
+      const response = await fetchWithAuth(`/emails/${messageId}`, {
         method: 'DELETE',
       });
 
