@@ -471,7 +471,7 @@ function App() {
         endpoint = '/api/fetch-emails';
         body = {
           mode: mode,
-          count: 100, // Increased to get more emails
+          count: 150, // Increased to get more emails
           accountId: selectedAccount
         };
         setFetchProgress({ message: '🔄 Fetching latest emails from server...', stage: 'connect' });

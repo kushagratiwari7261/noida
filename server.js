@@ -1106,7 +1106,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
     } = req.body;
     
     const userEmail = req.user.email;
-    const validatedCount = Math.min(parseInt(count) || 50, 200);
+    const validatedCount = Math.min(parseInt(count) || 150, 200);
 
     let accountsToProcess = [];
     
