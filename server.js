@@ -1101,7 +1101,7 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   try {
     const { 
       mode = "latest", 
-      count = 50,
+      count = 150,
       accountId = "all"
     } = req.body;
     
