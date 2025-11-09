@@ -545,76 +545,6 @@ function App() {
   // ✅ UPDATED: Force fetch - uses regular force mode
   const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
-  // ✅ NEW: COMPLETE ALL EMAILS FETCH - Fetches ALL emails without any filtering
-  const fetchAllEmails = useCallback(async () => {
-    if (fetchEmailsInProgress.current || fetching) {
-      console.log('⚠️ Fetch already in progress, skipping...');
-      return;
-    }
-
-    fetchEmailsInProgress.current = true;
-    setFetching(true);
-    setFetchStatus('fetching');
-    setError(null);
-    setFetchProgress({ message: '🚀 Starting COMPLETE fetch of ALL emails...', stage: 'init' });
-
-    try {
-      console.log('🚀 Starting COMPLETE fetch of ALL emails...');
-      
-      setFetchProgress({ message: '📧 Connecting to email server for COMPLETE fetch...', stage: 'connect' });
-      
-      const response = await fetchWithAuth('/api/fetch-all-emails', {
-        method: 'POST',
-        body: JSON.stringify({
-          accountId: selectedAccount
-        })
-      });
-
-      setFetchProgress({ message: '🔄 Processing ALL emails from server...', stage: 'process' });
-
-      const result = await response.json();
-      console.log('📨 Complete fetch result:', result);
-      
-      if (response.ok && result.success) {
-        const totalProcessed = result.summary?.totalProcessed || 0;
-        
-        setFetchProgress({ 
-          message: `✅ COMPLETE FETCH: Processed ${totalProcessed} ALL emails successfully!`, 
-          stage: 'success' 
-        });
-        
-        setFetchStatus('success');
-        setLastFetchTime(new Date());
-        
-        // Reload emails with new data
-        setFetchProgress({ message: '🔄 Refreshing email list with ALL emails...', stage: 'reload' });
-        await loadEmails(false, true);
-        
-        setFetchProgress(null);
-      } else {
-        setFetchStatus('error');
-        setError(result.error || 'Failed to complete fetch all emails');
-        setFetchProgress(null);
-        console.error('❌ Complete fetch failed:', result.error);
-      }
-    } catch (err) {
-      setFetchStatus('error');
-      setError(err.message);
-      setFetchProgress(null);
-      console.error('❌ Complete fetch failed:', err);
-      
-      if (err.message.includes('Authentication failed')) {
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 2000);
-      }
-    } finally {
-      setFetching(false);
-      fetchEmailsInProgress.current = false;
-      setTimeout(() => setFetchProgress(null), 5000);
-    }
-  }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
-
   const forceRefreshEmails = useCallback(async () => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Refresh already in progress, skipping...');
@@ -1061,16 +991,6 @@ function App() {
               ⚡ Force Fetch
             </button>
 
-            {/* ✅ NEW: Complete All Emails Fetch */}
-            <button 
-              onClick={fetchAllEmails} 
-              disabled={fetching}
-              className="complete-fetch-button"
-              title="Fetch ALL emails without any filtering or duplicate checking"
-            >
-              🚀 Fetch ALL Emails
-            </button>
-
             <button 
               onClick={forceRefreshEmails} 
               disabled={fetching}
@@ -1156,9 +1076,6 @@ function App() {
                 <button onClick={forceFetchEmails} className="force-fetch-button">
                   ⚡ Force Fetch
                 </button>
-                <button onClick={fetchAllEmails} className="complete-fetch-button">
-                  🚀 Fetch ALL Emails
-                </button>
                 <button onClick={testBackendConnection} className="test-connection-btn">
                   🧪 Test Connection
                 </button>
@@ -1171,7 +1088,6 @@ function App() {
               <div className="email-list-hint">
                 <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
                 <p>🆕 <strong>Smart Fetch LATEST</strong> gets emails from last 24 hours (bypasses duplicates)</p>
-                <p>🚀 <strong>Fetch ALL Emails</strong> gets EVERY email without any filtering</p>
               </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1210,7 +1126,6 @@ function App() {
                   <li>✅ Lazy content loading (on expand)</li>
                   <li>✅ Smart caching</li>
                   <li>🆕 <strong>Force Latest Fetch</strong> (bypasses duplicates for recent emails)</li>
-                  <li>🚀 <strong>Complete All Fetch</strong> (gets ALL emails without any filtering)</li>
                 </ul>
               </div>
             </div>
