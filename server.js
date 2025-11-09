@@ -1375,20 +1375,20 @@ app.post("/api/fetch-emails", authenticateUser, authorizeEmailAccess(), async (r
   }
 });
 
-// ✅ NEW: Force fetch latest emails endpoint (bypasses duplicate check)
+// ✅ FIXED: Fetch latest emails endpoint with proper date-based sorting and duplicate detection
 app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), async (req, res) => {
   const startTime = Date.now();
-  
+
   try {
-    const { 
+    const {
       hours = 24, // Fetch emails from last X hours
       accountId = "all"
     } = req.body;
-    
+
     const userEmail = req.user.email;
 
     let accountsToProcess = [];
-    
+
     if (accountId === "all") {
       accountsToProcess = emailConfigManager.getAllowedAccounts(userEmail);
     } else {
@@ -1400,9 +1400,9 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
       }
       const config = emailConfigManager.getConfig(accountId);
       if (!config) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           success: false,
-          error: `Account ${accountId} not found` 
+          error: `Account ${accountId} not found`
         });
       }
       accountsToProcess = [config];
@@ -1415,16 +1415,16 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
       });
     }
 
-    console.log(`🚀 FORCE FETCH started for ${accountsToProcess.length} accounts (last ${hours} hours)`);
+    console.log(`🚀 FETCH LATEST started for ${accountsToProcess.length} accounts (last ${hours} hours)`);
     const allResults = [];
-    
+
     for (const account of accountsToProcess) {
       const accountStartTime = Date.now();
-      console.log(`📧 Force fetching latest emails for account ${account.id}: ${account.email}`);
-      
+      console.log(`📧 Fetching latest emails for account ${account.id}: ${account.email}`);
+
       try {
         const connection = await imapManager.getConnection(account.id);
-        
+
         const accountResult = await new Promise((resolve) => {
           connection.openInbox(async function (err, box) {
             if (err) {
@@ -1443,7 +1443,7 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
             sinceDate.setHours(sinceDate.getHours() - parseInt(hours));
             console.log(`📅 Fetching emails since: ${sinceDate.toISOString()}`);
 
-            // Search for recent emails
+            // Search for recent emails using SINCE date
             connection.connection.search([
               ['SINCE', sinceDate]
             ], async function (searchErr, results) {
@@ -1474,10 +1474,10 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
                 return;
               }
 
-              console.log(`📨 Found ${results.length} recent emails since ${sinceDate.toISOString()}`);
+              console.log(`📨 Found ${results.length} emails since ${sinceDate.toISOString()}`);
 
               // Fetch the found emails
-              const f = connection.connection.fetch(results, { 
+              const f = connection.connection.fetch(results, {
                 bodies: "",
                 struct: true,
                 markSeen: false
@@ -1512,13 +1512,13 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
 
               f.once("end", async function () {
                 const fetchTime = Date.now() - accountStartTime;
-                console.log(`⚡ Fetched ${emailBuffers.length} recent emails in ${fetchTime}ms`);
-                
+                console.log(`⚡ Fetched ${emailBuffers.length} emails in ${fetchTime}ms`);
+
                 try {
-                  // Process all fetched emails (no duplicate check in force mode)
-                  console.log(`🔄 Processing ${emailBuffers.length} emails...`);
+                  // Parse all emails in parallel
+                  console.log(`🔄 Parsing ${emailBuffers.length} emails...`);
                   const parseStartTime = Date.now();
-                  
+
                   const parsedEmailsPromises = emailBuffers.map(async ({ buffer, seqno }) => {
                     try {
                       const parsed = await simpleParser(buffer);
@@ -1529,29 +1529,81 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
                       return null;
                     }
                   });
-                  
+
                   const parsedEmails = (await Promise.all(parsedEmailsPromises)).filter(e => e !== null);
                   const parseTime = Date.now() - parseStartTime;
                   console.log(`✅ Parsed ${parsedEmails.length} emails in ${parseTime}ms`);
 
-                  // Process with attachments
-                  console.log(`🔄 Processing emails with attachments...`);
+                  // Sort by date descending to ensure truly latest emails first
+                  parsedEmails.sort((a, b) => new Date(b.parsed.date || 0) - new Date(a.parsed.date || 0));
+
+                  // Batch duplicate check with account isolation
+                  const duplicateCheckStartTime = Date.now();
+                  const messageIds = parsedEmails.map(e => e.messageId);
+                  const duplicateResults = await checkDuplicatesBatch(messageIds, account.id);
+
+                  const newEmails = parsedEmails.filter(e => !duplicateResults[e.messageId]);
+                  const duplicateCount = parsedEmails.length - newEmails.length;
+
+                  const duplicateCheckTime = Date.now() - duplicateCheckStartTime;
+                  console.log(`✅ Duplicate check in ${duplicateCheckTime}ms: ${newEmails.length} new, ${duplicateCount} duplicates`);
+
+                  if (newEmails.length === 0) {
+                    console.log(`ℹ️ No new emails to process`);
+                    resolve({
+                      accountId: account.id,
+                      accountEmail: account.email,
+                      success: true,
+                      message: `No new emails found (${duplicateCount} already exist)`,
+                      data: {
+                        processed: 0,
+                        duplicates: duplicateCount,
+                        total: parsedEmails.length
+                      },
+                      timing: {
+                        fetch: fetchTime,
+                        parse: parseTime,
+                        duplicateCheck: duplicateCheckTime,
+                        total: Date.now() - accountStartTime
+                      }
+                    });
+                    imapManager.closeConnection(account.id);
+                    return;
+                  }
+
+                  // Process emails with attachments (with error recovery)
+                  console.log(`🔄 Processing ${newEmails.length} emails with attachments...`);
                   const processStartTime = Date.now();
-                  
-                  const processedEmailsPromises = parsedEmails.map(async ({ parsed, messageId, seqno }) => {
+
+                  const processedEmailsPromises = newEmails.map(async ({ parsed, messageId, seqno }) => {
                     try {
-                      return await processEmailWithAttachmentsFast(parsed, messageId, account.id, seqno);
+                      // Add error recovery for attachment processing
+                      const emailData = await processEmailWithAttachmentsFast(parsed, messageId, account.id, seqno);
+                      return emailData;
                     } catch (processErr) {
                       console.error(`❌ Process error for ${messageId}:`, processErr.message);
-                      return null;
+                      // Return email data without attachments to prevent email loss
+                      return {
+                        messageId: messageId,
+                        accountId: account.id,
+                        subject: parsed.subject || '(No Subject)',
+                        from: parsed.from?.text || "",
+                        to: parsed.to?.text || "",
+                        date: parsed.date || new Date(),
+                        text: parsed.text || "",
+                        html: parsed.html || "",
+                        attachments: [],
+                        hasAttachments: false,
+                        attachmentsCount: 0
+                      };
                     }
                   });
-                  
+
                   const processedEmails = (await Promise.all(processedEmailsPromises)).filter(e => e !== null);
                   const processTime = Date.now() - processStartTime;
                   console.log(`✅ Processed ${processedEmails.length} emails in ${processTime}ms`);
 
-                  // Save all emails (force mode - upsert will handle duplicates)
+                  // Save emails using consistent upsert logic
                   const saveStartTime = Date.now();
                   const saveResults = await saveEmailsBatch(processedEmails, 10);
                   const saveTime = Date.now() - saveStartTime;
@@ -1560,20 +1612,22 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
 
                   const totalTime = Date.now() - accountStartTime;
                   console.log(`✅ Account ${account.email} completed in ${totalTime}ms`);
-                  
+
                   resolve({
                     accountId: account.id,
                     accountEmail: account.email,
                     success: true,
-                    message: `Force processed ${processedEmails.length} recent emails`,
+                    message: `Processed ${processedEmails.length} new emails`,
                     data: {
                       processed: processedEmails.length,
-                      total: processedEmails.length,
+                      duplicates: duplicateCount,
+                      total: processedEmails.length + duplicateCount,
                       saved: successfulSaves
                     },
                     timing: {
                       fetch: fetchTime,
                       parse: parseTime,
+                      duplicateCheck: duplicateCheckTime,
                       process: processTime,
                       save: saveTime,
                       total: totalTime
@@ -1615,11 +1669,11 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
     const totalProcessed = successfulAccounts.reduce((sum, r) => sum + (r.data?.processed || 0), 0);
     const totalTime = Date.now() - startTime;
 
-    console.log(`🎉 Force fetch completed in ${totalTime}ms - Processed ${totalProcessed} emails`);
+    console.log(`🎉 Fetch latest completed in ${totalTime}ms - Processed ${totalProcessed} emails`);
 
     res.json({
       success: true,
-      message: `Force fetched ${accountsToProcess.length} accounts in ${totalTime}ms`,
+      message: `Fetched latest emails from ${accountsToProcess.length} accounts in ${totalTime}ms`,
       summary: {
         totalAccounts: accountsToProcess.length,
         successfulAccounts: successfulAccounts.length,
@@ -1634,10 +1688,10 @@ app.post("/api/fetch-latest-emails", authenticateUser, authorizeEmailAccess(), a
     });
 
   } catch (error) {
-    console.error("❌ Force fetch emails API error:", error);
-    res.status(500).json({ 
+    console.error("❌ Fetch latest emails API error:", error);
+    res.status(500).json({
       success: false,
-      error: error.message 
+      error: error.message
     });
   }
 });
