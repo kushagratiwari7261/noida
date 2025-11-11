@@ -1,3 +1,13 @@
+// Diagnostic logs for main.jsx
+console.log('main.jsx loaded at:', new Date().toISOString());
+
+window.addEventListener('beforeunload', (event) => {
+  console.log('Main.jsx beforeunload at:', new Date().toISOString());
+});
+
+window.addEventListener('unload', (event) => {
+  console.log('Main.jsx unload at:', new Date().toISOString());
+});
 // main.jsx - Fixed version
 import React from 'react'
 import ReactDOM from 'react-dom/client'

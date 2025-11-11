@@ -1,3 +1,5 @@
+// Diagnostic logs for vite.config.js
+console.log('vite.config.js loaded at:', new Date().toISOString());
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 

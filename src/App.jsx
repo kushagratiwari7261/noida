@@ -1,3 +1,28 @@
+// Diagnostic logs for page reloads
+console.log('App.jsx loaded at:', new Date().toISOString());
+
+window.addEventListener('beforeunload', (event) => {
+  console.log('Page beforeunload event triggered at:', new Date().toISOString());
+});
+
+window.addEventListener('unload', (event) => {
+  console.log('Page unload event triggered at:', new Date().toISOString());
+});
+
+window.addEventListener('visibilitychange', (event) => {
+  console.log('Visibility change:', document.visibilityState, 'at:', new Date().toISOString());
+});
+
+window.addEventListener('focus', (event) => {
+  console.log('Window focus event at:', new Date().toISOString());
+});
+
+window.addEventListener('blur', (event) => {
+  console.log('Window blur event at:', new Date().toISOString());
+});
+
+// Log React component lifecycle
+console.log('App component rendering at:', new Date().toISOString());
 // src/App.jsx
 import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, useNavigate, Navigate } from 'react-router-dom'
