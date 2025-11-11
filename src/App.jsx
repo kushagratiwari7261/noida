@@ -1,3 +1,91 @@
+window.refreshDebug = {
+  logs: [],
+  addLog: function(msg) {
+    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    const logEntry = `[${timestamp}] ${msg}`;
+    console.log(logEntry);
+    this.logs.push(logEntry);
+  }
+};
+
+// Detect hard refreshes
+const perfData = window.performance.getEntriesByType("navigation")[0];
+if (perfData) {
+  if (perfData.type === 'navigate') {
+    window.refreshDebug.addLog('❌ HARD REFRESH DETECTED (type: navigate)');
+  } else if (perfData.type === 'reload') {
+    window.refreshDebug.addLog('❌ HARD REFRESH DETECTED (type: reload)');
+  } else if (perfData.type === 'back_forward') {
+    window.refreshDebug.addLog('⏮️ Browser back/forward navigation');
+  }
+}
+
+// Track all navigation events
+window.addEventListener('beforeunload', () => {
+  window.refreshDebug.addLog('🔴 BEFOREUNLOAD triggered - Page is reloading!');
+});
+
+window.addEventListener('unload', () => {
+  window.refreshDebug.addLog('🔴 UNLOAD triggered - Page refresh in progress');
+});
+
+// Catch console errors that might trigger reloads
+window.addEventListener('error', (event) => {
+  window.refreshDebug.addLog(`❌ JS ERROR: ${event.message} at ${event.filename}:${event.lineno}`);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  window.refreshDebug.addLog(`❌ UNHANDLED PROMISE REJECTION: ${event.reason}`);
+});
+
+// Track history changes
+const originalPushState = window.history.pushState;
+const originalReplaceState = window.history.replaceState;
+
+window.history.pushState = function(...args) {
+  window.refreshDebug.addLog(`📍 pushState: ${args[2]}`);
+  return originalPushState.apply(this, args);
+};
+
+window.history.replaceState = function(...args) {
+  window.refreshDebug.addLog(`📍 replaceState: ${args[2]}`);
+  return originalReplaceState.apply(this, args);
+};
+
+// Log when you switch tabs
+document.addEventListener('visibilitychange', () => {
+  window.refreshDebug.addLog(`👁️ Visibility: ${document.visibilityState}`);
+});
+
+window.addEventListener('focus', () => {
+  window.refreshDebug.addLog('👁️ Window focused');
+});
+
+window.addEventListener('blur', () => {
+  window.refreshDebug.addLog('👁️ Window blurred');
+});
+
+// ============= END DIAGNOSTICS =============
+
+// Now add this useEffect inside your App() function, right after the useState declarations:
+
+useEffect(() => {
+  window.refreshDebug.addLog('✅ App component mounted/updated');
+  
+  // Log auth state changes
+  window.refreshDebug.addLog(`Auth State: isAuthenticated=${isAuthenticated}, isLoading=${isLoading}`);
+}, [isAuthenticated, isLoading]);
+
+// Add this in your navigation functions
+const navigate = useNavigate();
+const originalNavigate = navigate;
+const wrappedNavigate = useCallback((path, options) => {
+  window.refreshDebug.addLog(`🔗 Navigating to: ${path}`);
+  return originalNavigate(path, options);
+}, [navigate]);
+
+
+
 // Diagnostic logs for page reloads
 console.log('App.jsx loaded at:', new Date().toISOString());
 
