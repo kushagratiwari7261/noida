@@ -1,3 +1,4 @@
+// ============= DEBUG CODE - AT VERY TOP, BEFORE IMPORTS =============
 window.refreshDebug = {
   logs: [],
   addLog: function(msg) {
@@ -8,7 +9,6 @@ window.refreshDebug = {
   }
 };
 
-// Detect hard refreshes
 const perfData = window.performance.getEntriesByType("navigation")[0];
 if (perfData) {
   if (perfData.type === 'navigate') {
@@ -20,7 +20,6 @@ if (perfData) {
   }
 }
 
-// Track all navigation events
 window.addEventListener('beforeunload', () => {
   window.refreshDebug.addLog('🔴 BEFOREUNLOAD triggered - Page is reloading!');
 });
@@ -29,7 +28,6 @@ window.addEventListener('unload', () => {
   window.refreshDebug.addLog('🔴 UNLOAD triggered - Page refresh in progress');
 });
 
-// Catch console errors that might trigger reloads
 window.addEventListener('error', (event) => {
   window.refreshDebug.addLog(`❌ JS ERROR: ${event.message} at ${event.filename}:${event.lineno}`);
 });
@@ -38,7 +36,6 @@ window.addEventListener('unhandledrejection', (event) => {
   window.refreshDebug.addLog(`❌ UNHANDLED PROMISE REJECTION: ${event.reason}`);
 });
 
-// Track history changes
 const originalPushState = window.history.pushState;
 const originalReplaceState = window.history.replaceState;
 
@@ -52,7 +49,6 @@ window.history.replaceState = function(...args) {
   return originalReplaceState.apply(this, args);
 };
 
-// Log when you switch tabs
 document.addEventListener('visibilitychange', () => {
   window.refreshDebug.addLog(`👁️ Visibility: ${document.visibilityState}`);
 });
@@ -65,54 +61,7 @@ window.addEventListener('blur', () => {
   window.refreshDebug.addLog('👁️ Window blurred');
 });
 
-// ============= END DIAGNOSTICS =============
-
-// Now add this useEffect inside your App() function, right after the useState declarations:
-
-useEffect(() => {
-  window.refreshDebug.addLog('✅ App component mounted/updated');
-  
-  // Log auth state changes
-  window.refreshDebug.addLog(`Auth State: isAuthenticated=${isAuthenticated}, isLoading=${isLoading}`);
-}, [isAuthenticated, isLoading]);
-
-// Add this in your navigation functions
-const navigate = useNavigate();
-const originalNavigate = navigate;
-const wrappedNavigate = useCallback((path, options) => {
-  window.refreshDebug.addLog(`🔗 Navigating to: ${path}`);
-  return originalNavigate(path, options);
-}, [navigate]);
-
-
-
-// Diagnostic logs for page reloads
-console.log('App.jsx loaded at:', new Date().toISOString());
-
-window.addEventListener('beforeunload', (event) => {
-  console.log('Page beforeunload event triggered at:', new Date().toISOString());
-});
-
-window.addEventListener('unload', (event) => {
-  console.log('Page unload event triggered at:', new Date().toISOString());
-});
-
-window.addEventListener('visibilitychange', (event) => {
-  console.log('Visibility change:', document.visibilityState, 'at:', new Date().toISOString());
-});
-
-window.addEventListener('focus', (event) => {
-  console.log('Window focus event at:', new Date().toISOString());
-});
-
-window.addEventListener('blur', (event) => {
-  console.log('Window blur event at:', new Date().toISOString());
-});
-
-// Log React component lifecycle
-console.log('App component rendering at:', new Date().toISOString());
-
-// src/App.jsx
+// =============
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, Navigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
