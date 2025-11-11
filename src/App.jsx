@@ -23,8 +23,9 @@ window.addEventListener('blur', (event) => {
 
 // Log React component lifecycle
 console.log('App component rendering at:', new Date().toISOString());
+
 // src/App.jsx
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, Navigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
@@ -54,7 +55,24 @@ function App() {
   const [isJobsLoading, setIsJobsLoading] = useState(false)
   const [isShipmentsLoading, setIsShipmentsLoading] = useState(false)
   
+  // Refs to prevent duplicate redirects
+  const redirectTimeoutRef = useRef(null)
+  const lastRedirectRef = useRef(null)
+  const authInitializedRef = useRef(false)
+  
   const navigate = useNavigate()
+
+  // Helper function to prevent rapid redirects
+  const shouldRedirect = useCallback((targetPath) => {
+    const now = Date.now();
+    if (lastRedirectRef.current && now - lastRedirectRef.current < 500) {
+      console.log('Redirect blocked - too soon after last redirect');
+      return false;
+    }
+    lastRedirectRef.current = now;
+    console.log('Redirect allowed to:', targetPath);
+    return true;
+  }, []);
 
   // Enhanced local cleanup function
   const performLocalCleanup = useCallback(async () => {
@@ -97,11 +115,12 @@ function App() {
           console.error('Session error:', sessionError);
           await performLocalCleanup();
           setIsAuthenticated(false);
-          // Don't redirect from reset-password page
           if (!window.location.pathname.includes('/login') && 
               !window.location.pathname.includes('/forgot-password') &&
               !window.location.pathname.includes('/reset-password')) {
-            navigate('/login', { replace: true });
+            if (shouldRedirect('/login')) {
+              navigate('/login', { replace: true });
+            }
           }
           return;
         }
@@ -114,19 +133,22 @@ function App() {
             console.log('Session expired, clearing...');
             await performLocalCleanup();
             setIsAuthenticated(false);
-            // Don't redirect from reset-password page
             if (!window.location.pathname.includes('/reset-password')) {
-              navigate('/login', { replace: true });
+              if (shouldRedirect('/login')) {
+                navigate('/login', { replace: true });
+              }
             }
           } else {
             setIsAuthenticated(true);
             setUser(session.user);
-            // Redirect from auth pages to dashboard, but NOT from reset-password
-            if (window.location.pathname === '/login' || 
-                window.location.pathname === '/forgot-password') {
+            authInitializedRef.current = true;
+            
+            // Only redirect if we're on an auth page
+            if ((window.location.pathname === '/login' || 
+                 window.location.pathname === '/forgot-password') &&
+                shouldRedirect('/dashboard')) {
               navigate('/dashboard', { replace: true });
             }
-            // reset-password page handles its own redirect logic
           }
         } else {
           setIsAuthenticated(false);
@@ -135,7 +157,9 @@ function App() {
           if (!window.location.pathname.includes('/login') && 
               !window.location.pathname.includes('/forgot-password') &&
               !window.location.pathname.includes('/reset-password')) {
-            navigate('/login', { replace: true });
+            if (shouldRedirect('/login')) {
+              navigate('/login', { replace: true });
+            }
           }
         }
       } catch (error) {
@@ -143,9 +167,10 @@ function App() {
         if (mounted) {
           await performLocalCleanup();
           setIsAuthenticated(false);
-          // Don't redirect from reset-password page
           if (!window.location.pathname.includes('/reset-password')) {
-            navigate('/login', { replace: true });
+            if (shouldRedirect('/login')) {
+              navigate('/login', { replace: true });
+            }
           }
         }
       } finally {
@@ -157,10 +182,10 @@ function App() {
 
     getInitialSession();
 
-    // Enhanced auth state change listener
+    // Enhanced auth state change listener - FIXED to prevent unnecessary redirects
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log('Auth state change:', event, session);
+        console.log('Auth state change:', event, 'Session exists:', !!session);
         
         if (!mounted) return;
         
@@ -168,30 +193,37 @@ function App() {
           switch (event) {
             case 'SIGNED_IN':
               if (session?.user) {
+                console.log('User signed in');
                 setIsAuthenticated(true);
                 setUser(session.user);
-                // Don't redirect from reset-password page during password reset flow
-                if (window.location.pathname === '/login' || 
-                    window.location.pathname === '/forgot-password') {
+                authInitializedRef.current = true;
+                
+                // Only redirect from auth pages, and only if enough time has passed
+                const currentPath = window.location.pathname;
+                if ((currentPath === '/login' || currentPath === '/forgot-password') &&
+                    shouldRedirect('/dashboard')) {
                   navigate('/dashboard', { replace: true });
                 }
-                // Allow reset-password page to handle its own redirect
               }
               break;
               
             case 'SIGNED_OUT':
+              console.log('User signed out');
               await performLocalCleanup();
               setIsAuthenticated(false);
               setUser(null);
-              // Don't redirect from reset-password page
-              if (!window.location.pathname.includes('/login') && 
-                  !window.location.pathname.includes('/forgot-password') &&
-                  !window.location.pathname.includes('/reset-password')) {
+              const signOutPath = window.location.pathname;
+              
+              if (!signOutPath.includes('/login') && 
+                  !signOutPath.includes('/forgot-password') &&
+                  !signOutPath.includes('/reset-password') &&
+                  shouldRedirect('/login')) {
                 navigate('/login', { replace: true });
               }
               break;
               
             case 'TOKEN_REFRESHED':
+              console.log('Token refreshed');
               if (session?.user) {
                 setIsAuthenticated(true);
                 setUser(session.user);
@@ -199,13 +231,13 @@ function App() {
               break;
               
             case 'USER_UPDATED':
+              console.log('User updated');
               if (session?.user) {
                 setUser(session.user);
               }
               break;
               
             case 'PASSWORD_RECOVERY':
-              // Handle password recovery specifically
               console.log('Password recovery flow initiated');
               break;
               
@@ -214,13 +246,12 @@ function App() {
           }
         } catch (error) {
           console.error('Auth state change error:', error);
-          // Fallback to safe state
           if (mounted) {
             await performLocalCleanup();
             setIsAuthenticated(false);
             setUser(null);
-            // Don't redirect from reset-password page on error
-            if (!window.location.pathname.includes('/reset-password')) {
+            if (!window.location.pathname.includes('/reset-password') &&
+                shouldRedirect('/login')) {
               navigate('/login', { replace: true });
             }
           }
@@ -234,9 +265,12 @@ function App() {
 
     return () => {
       mounted = false;
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+      }
       subscription.unsubscribe();
     };
-  }, [navigate, performLocalCleanup]);
+  }, [navigate, performLocalCleanup, shouldRedirect]);
 
   // Fetch data when authenticated
   useEffect(() => {
@@ -371,18 +405,15 @@ function App() {
       
       if (sessionError) {
         console.log('Session check error:', sessionError);
-        // Continue with cleanup anyway
       }
       
       if (!session) {
         console.log('No active session found, performing local cleanup');
       } else {
         console.log('Active session found, attempting Supabase logout');
-        // Attempt Supabase logout
         const { error } = await supabase.auth.signOut();
         if (error) {
           console.warn('Supabase logout failed:', error);
-          // Continue with cleanup anyway
         } else {
           console.log('Supabase logout successful');
         }
@@ -396,47 +427,45 @@ function App() {
       setUser(null);
       
       // Navigate to login page
-      navigate('/login', { replace: true });
+      if (shouldRedirect('/login')) {
+        navigate('/login', { replace: true });
+      }
       
       console.log('Logout process completed');
       
     } catch (error) {
       console.error('Unexpected error during logout:', error);
-      // Fallback: ensure user is logged out locally
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
-      navigate('/login', { replace: true });
+      if (shouldRedirect('/login')) {
+        navigate('/login', { replace: true });
+      }
     }
-  }, [navigate, performLocalCleanup]);
+  }, [navigate, performLocalCleanup, shouldRedirect]);
 
   // Fetch stats data from Supabase
   const fetchStatsData = async () => {
     setIsStatsLoading(true);
     try {
-      // Get total shipments count
       const { count: totalShipments, error: shipmentsError } = await supabase
         .from('shipments')
         .select('*', { count: 'exact', head: true });
       
-      // Get jobs count
       const { count: jobsCount, error: jobsError } = await supabase
         .from('jobs')
         .select('*', { count: 'exact', head: true });
       
-      // Get invoices count (assuming you have an invoices table)
       const { count: invoicesCount, error: invoicesError } = await supabase
         .from('invoices')
         .select('*', { count: 'exact', head: true });
       
-      // Get messages count (assuming you have a messages table)
       const { count: messagesCount, error: messagesError } = await supabase
         .from('messages')
         .select('*', { count: 'exact', head: true });
       
       if (shipmentsError || jobsError || invoicesError || messagesError) {
         console.error('Error fetching stats:', { shipmentsError, jobsError, invoicesError, messagesError });
-        // Fallback to default data
         setStatsData([
           { label: 'Total Shipments', value: '1,250', icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
           { label: 'Jobs', value: '320', icon: 'teal', id: 'Jobs', path: '/job-orders' },
@@ -446,7 +475,6 @@ function App() {
         return;
       }
       
-      // Format numbers with commas
       const formatNumber = (num) => num ? num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "0";
       
       setStatsData([
@@ -475,7 +503,6 @@ function App() {
       
       if (error) {
         console.error('Error fetching jobs:', error);
-        // Fallback to sample data
         setDashboardJobsData([
           { id: 'JOB-001', customer: 'Acme Corp', status: 'In Progress', date: '2024-07-26' },
           { id: 'JOB-002', customer: 'Global Imports', status: 'Completed', date: '2024-07-25' },
@@ -486,7 +513,6 @@ function App() {
       
       console.log('Jobs data from Supabase:', data);
       
-      // More flexible mapping to handle different column names
       const fetchJobs = data.map(job => ({
         id:  job.job_no || 'N/A',
         customer: job.client || 'Unknown Customer',
@@ -515,7 +541,6 @@ function App() {
       
       if (error) {
         console.error('Error fetching shipments:', error);
-        // Fallback to sample data
         setDashboardShipmentsData([
           { id: 'SHIP-12345', destination: 'New York', status: 'In Transit', date: '2024-07-26' },
           { id: 'SHIP-67890', destination: 'Los Angeles', status: 'Delivered', date: '2024-07-25' },
@@ -526,7 +551,6 @@ function App() {
       
       console.log('Shipments data from Supabase:', data);
       
-      // More flexible mapping to handle different column names
       const formattedData = data.map(shipment => ({
         id: shipment.id || shipment.shipment_id || shipment.tracking_number || 'N/A',
         destination: shipment.destination || shipment.to_address || shipment.delivery_address || 'Unknown Destination',
@@ -680,7 +704,6 @@ function App() {
       );
     }
     
-    // Allow access to auth pages without authentication
     const authPages = ['/login', '/forgot-password', '/reset-password'];
     const currentPath = window.location.pathname;
     
@@ -783,7 +806,7 @@ function App() {
             }
           />
 
-          {/* Reset Password Route - FIXED: Always accessible */}
+          {/* Reset Password Route - Always accessible */}
           <Route
             path="/reset-password"
             element={<ResetPassword onUpdatePassword={handleResetPassword} />}
