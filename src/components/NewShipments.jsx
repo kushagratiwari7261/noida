@@ -123,7 +123,6 @@ const INITIAL_ORG_FORM_DATA = {
 };
 
 const NewShipments = () => {
-  
   const [showShipmentForm, setShowShipmentForm] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [shipmentType, setShipmentType] = useState('');
@@ -149,6 +148,88 @@ const NewShipments = () => {
   }, []);
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [orgFormData, setOrgFormData] = useState(INITIAL_ORG_FORM_DATA);
+
+  // ============ FIX 1: RESTORE STATE ON MOUNT ============
+  useEffect(() => {
+    // Restore editing state if exists
+    const savedEditingState = sessionStorage.getItem('editing_shipment');
+    const savedCreatingState = sessionStorage.getItem('creating_shipment');
+    
+    if (savedEditingState) {
+      try {
+        const state = JSON.parse(savedEditingState);
+        setEditingShipment(state.shipment);
+        setFormData(state.formData);
+        setShipmentType(state.shipmentType);
+        setActiveStep(state.activeStep);
+        setShowShipmentForm(true);
+        console.log('Restored editing shipment state from sessionStorage');
+      } catch (e) {
+        console.error('Error restoring editing shipment state:', e);
+        sessionStorage.removeItem('editing_shipment');
+      }
+    } else if (savedCreatingState) {
+      try {
+        const state = JSON.parse(savedCreatingState);
+        setFormData(state.formData);
+        setShipmentType(state.shipmentType);
+        setActiveStep(state.activeStep);
+        setShowShipmentForm(true);
+        console.log('Restored creating shipment state from sessionStorage');
+      } catch (e) {
+        console.error('Error restoring creating shipment state:', e);
+        sessionStorage.removeItem('creating_shipment');
+      }
+    }
+  }, []); // Empty dependency array - run only once on mount
+
+  // ============ FIX 2: AUTO-SAVE STATE TO SESSIONSTORAGE ============
+  useEffect(() => {
+    if (showShipmentForm && editingShipment) {
+      // Save editing state to sessionStorage
+      sessionStorage.setItem('editing_shipment', JSON.stringify({
+        shipment: editingShipment,
+        formData: formData,
+        shipmentType: shipmentType,
+        activeStep: activeStep
+      }));
+    } else if (showShipmentForm) {
+      // Save creating state
+      sessionStorage.setItem('creating_shipment', JSON.stringify({
+        formData: formData,
+        shipmentType: shipmentType,
+        activeStep: activeStep
+      }));
+    } else {
+      // Clear saved state when modal is closed
+      sessionStorage.removeItem('editing_shipment');
+      sessionStorage.removeItem('creating_shipment');
+    }
+  }, [showShipmentForm, editingShipment, formData, shipmentType, activeStep]);
+
+  // ============ FIX 3: PREVENT TAB DISCARD ============
+  useEffect(() => {
+    if (!showShipmentForm) return;
+
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+
+    // Add warning before leaving page
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Keep page active to prevent Chrome tab discarding
+    const keepAlive = setInterval(() => {
+      document.title = document.title; // Dummy operation
+    }, 30000); // Every 30 seconds
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      clearInterval(keepAlive);
+    };
+  }, [showShipmentForm]);
 
   // Define required fields for each step
   const requiredFields = useMemo(() => ({
@@ -186,7 +267,7 @@ const NewShipments = () => {
         consignee: job.consignee || '',
         address: job.address || '',
         por: job.por || '',
-         lcl_fcl: job.lcl_fcl || '',
+        lcl_fcl: job.lcl_fcl || '',
         poi: job.poi || '',
         pod: job.pod || '',
         pof: job.pof || '',
@@ -302,14 +383,14 @@ const NewShipments = () => {
   }, []);
 
   useEffect(() => {
-  // When shipment type changes, clear the job selection if it doesn't match
-  if (shipmentType && formData.jobNo) {
-    const selectedJob = jobs.find(job => job.job_no === formData.jobNo);
-    if (selectedJob && selectedJob.job_type !== shipmentType) {
-      setFormData(prev => ({ ...prev, jobNo: '' }));
+    // When shipment type changes, clear the job selection if it doesn't match
+    if (shipmentType && formData.jobNo) {
+      const selectedJob = jobs.find(job => job.job_no === formData.jobNo);
+      if (selectedJob && selectedJob.job_type !== shipmentType) {
+        setFormData(prev => ({ ...prev, jobNo: '' }));
+      }
     }
-  }
-}, [shipmentType, jobs, formData.jobNo]);
+  }, [shipmentType, jobs, formData.jobNo]);
 
   // Load jobs and shipments on component mount
   useEffect(() => {
@@ -325,118 +406,119 @@ const NewShipments = () => {
       setMaxHeight(`${calculatedMaxHeight}px`);
     }
   }, [shipments]);
-const handleJobSelect = async (e) => {
-  const selectedJobNo = e.target.value;
-  setFormData((prev) => ({ ...prev, jobNo: selectedJobNo }));
 
-  if (!selectedJobNo) return;
+  const handleJobSelect = async (e) => {
+    const selectedJobNo = e.target.value;
+    setFormData((prev) => ({ ...prev, jobNo: selectedJobNo }));
 
-  try {
-    const { data, error } = await supabase
-      .from("jobs")
-      .select("*")
-      .eq("job_no", selectedJobNo)
-      .single();
+    if (!selectedJobNo) return;
 
-    if (error) {
-      console.error("Error fetching job:", error.message);
-      return;
-    }
+    try {
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("*")
+        .eq("job_no", selectedJobNo)
+        .single();
 
-    if (data) {
-      // Helper function to format date only (without time)
-      const formatDateOnly = (dateString) => {
-        if (!dateString) return '';
-        const date = new Date(dateString);
-        return date.toISOString().split('T')[0];
-      };
-
-      // Update the form with all job fields, mapping database fields to form fields
-      setFormData((prev) => ({
-        ...prev,
-        // Common job fields
-        branch: data.branch || prev.branch,
-        department: data.department || prev.department,
-        shipmentDate: formatDateOnly(data.job_date) || prev.shipmentDate,
-        client: data.client || prev.client,
-        shipper: data.shipper || prev.shipper,
-        consignee: data.consignee || prev.consignee,
-        address: data.address || prev.address,
-        por: data.por || prev.por,
-        pol: data.pol || prev.pol,
-        pod: data.pod || prev.pod,
-        pof: data.pof || prev.pof,
-        hblNo: data.hbl_no || prev.hblNo,
-         lclFcl: data.lcl_fcl || prev.lclFcl,
-        // Use date-only formatting for ETD/ETA
-        etd: formatDateOnly(data.etd) || prev.etd,
-        eta: formatDateOnly(data.eta) || prev.eta,
-        incoterms: data.incoterms || prev.incoterms,
-        serviceType: data.service_type || prev.serviceType,
-        freight: data.freight || prev.freight,
-        payableAt: data.payable_at || prev.payableAt,
-        dispatchAt: data.dispatch_at || prev.dispatchAt,
-        tradeDirection: data.trade_direction || prev.tradeDirection,
-        volume: data.volume || prev.volume,
-        grossWeight: data.gross_weight || prev.grossWeight,
-        description: data.description || prev.description,
-        remarks: data.remarks || prev.remarks,
-        hs_code: data.hs_code || prev.hs_code,
-
-        // Air Freight-specific fields
-        airport_of_departure: data.airport_of_departure || prev.airport_of_departure,
-        airport_of_destination: data.airport_of_destination || prev.airport_of_destination,
-        no_of_packages: data.no_of_packages || prev.no_of_packages,
-        dimension_cms: data.dimension_cms || prev.dimension_cms,
-        chargeable_weight: data.chargeable_weight || prev.chargeable_weight,
-        client_no: data.client_no || prev.client_no,
-        name_of_airline: data.name_of_airline || prev.name_of_airline,
-        awb: data.awb || prev.awb,
-        flight_from: data.flight_from || prev.flight_from,
-        flight_to: data.flight_to || prev.flight_to,
-        flight_eta: formatDateOnly(data.flight_eta) || prev.flight_eta,
-        invoiceNo: data.invoice_no || prev.invoiceNo,
-        invoiceDate: formatDateOnly(data.invoice_date) || prev.invoiceDate,
-        notify_party: data.notify_party || prev.notify_party,
-
-        // Sea Freight-specific fields
-        exporter: data.exporter || prev.exporter,
-        importer: data.importer || prev.importer,
-        stuffingDate: formatDateOnly(data.stuffing_date) || prev.stuffingDate,
-        hoDate: formatDateOnly(data.ho_date) || prev.hoDate,
-        terms: data.terms || prev.terms,
-        sbNo: data.sb_no || prev.sbNo,
-        sbDate: formatDateOnly(data.sb_date) || prev.sbDate,
-        destination: data.destination || prev.destination,
-        commodity: data.commodity || prev.commodity,
-        fob: data.fob || prev.fob,
-        grWeight: data.gr_weight || prev.grWeight,
-        netWeight: data.net_weight || prev.netWeight,
-        railOutDate: formatDateOnly(data.rail_out_date) || prev.railOutDate,
-        containerNo: data.container_no || prev.containerNo,
-        noOfCntr: data.no_of_cntr || prev.noOfCntr,
-        sLine: data.s_line || prev.sLine,
-        mblNo: data.mbl_no || prev.mblNo,
-        mblDate: formatDateOnly(data.mbl_date) || prev.mblDate,
-        hblDt: formatDateOnly(data.hbl_dt) || prev.hblDt,
-        vessel: data.vessel || prev.vessel,
-        voy: data.voy || prev.voy,
-        sob: data.sob || prev.sob,
-        ac: data.ac || prev.ac,
-        billNo: data.bill_no || prev.billNo,
-        billDate: formatDateOnly(data.bill_date) || prev.billDate,
-        ccPort: data.cc_port || prev.ccPort,
-      }));
-      
-      // Set the shipment type based on the job type if not already set
-      if (data.job_type && !shipmentType) {
-        setShipmentType(data.job_type);
+      if (error) {
+        console.error("Error fetching job:", error.message);
+        return;
       }
+
+      if (data) {
+        // Helper function to format date only (without time)
+        const formatDateOnly = (dateString) => {
+          if (!dateString) return '';
+          const date = new Date(dateString);
+          return date.toISOString().split('T')[0];
+        };
+
+        // Update the form with all job fields, mapping database fields to form fields
+        setFormData((prev) => ({
+          ...prev,
+          // Common job fields
+          branch: data.branch || prev.branch,
+          department: data.department || prev.department,
+          shipmentDate: formatDateOnly(data.job_date) || prev.shipmentDate,
+          client: data.client || prev.client,
+          shipper: data.shipper || prev.shipper,
+          consignee: data.consignee || prev.consignee,
+          address: data.address || prev.address,
+          por: data.por || prev.por,
+          pol: data.pol || prev.pol,
+          pod: data.pod || prev.pod,
+          pof: data.pof || prev.pof,
+          hblNo: data.hbl_no || prev.hblNo,
+          lclFcl: data.lcl_fcl || prev.lclFcl,
+          // Use date-only formatting for ETD/ETA
+          etd: formatDateOnly(data.etd) || prev.etd,
+          eta: formatDateOnly(data.eta) || prev.eta,
+          incoterms: data.incoterms || prev.incoterms,
+          serviceType: data.service_type || prev.serviceType,
+          freight: data.freight || prev.freight,
+          payableAt: data.payable_at || prev.payableAt,
+          dispatchAt: data.dispatch_at || prev.dispatchAt,
+          tradeDirection: data.trade_direction || prev.tradeDirection,
+          volume: data.volume || prev.volume,
+          grossWeight: data.gross_weight || prev.grossWeight,
+          description: data.description || prev.description,
+          remarks: data.remarks || prev.remarks,
+          hs_code: data.hs_code || prev.hs_code,
+
+          // Air Freight-specific fields
+          airport_of_departure: data.airport_of_departure || prev.airport_of_departure,
+          airport_of_destination: data.airport_of_destination || prev.airport_of_destination,
+          no_of_packages: data.no_of_packages || prev.no_of_packages,
+          dimension_cms: data.dimension_cms || prev.dimension_cms,
+          chargeable_weight: data.chargeable_weight || prev.chargeable_weight,
+          client_no: data.client_no || prev.client_no,
+          name_of_airline: data.name_of_airline || prev.name_of_airline,
+          awb: data.awb || prev.awb,
+          flight_from: data.flight_from || prev.flight_from,
+          flight_to: data.flight_to || prev.flight_to,
+          flight_eta: formatDateOnly(data.flight_eta) || prev.flight_eta,
+          invoiceNo: data.invoice_no || prev.invoiceNo,
+          invoiceDate: formatDateOnly(data.invoice_date) || prev.invoiceDate,
+          notify_party: data.notify_party || prev.notify_party,
+
+          // Sea Freight-specific fields
+          exporter: data.exporter || prev.exporter,
+          importer: data.importer || prev.importer,
+          stuffingDate: formatDateOnly(data.stuffing_date) || prev.stuffingDate,
+          hoDate: formatDateOnly(data.ho_date) || prev.hoDate,
+          terms: data.terms || prev.terms,
+          sbNo: data.sb_no || prev.sbNo,
+          sbDate: formatDateOnly(data.sb_date) || prev.sbDate,
+          destination: data.destination || prev.destination,
+          commodity: data.commodity || prev.commodity,
+          fob: data.fob || prev.fob,
+          grWeight: data.gr_weight || prev.grWeight,
+          netWeight: data.net_weight || prev.netWeight,
+          railOutDate: formatDateOnly(data.rail_out_date) || prev.railOutDate,
+          containerNo: data.container_no || prev.containerNo,
+          noOfCntr: data.no_of_cntr || prev.noOfCntr,
+          sLine: data.s_line || prev.sLine,
+          mblNo: data.mbl_no || prev.mblNo,
+          mblDate: formatDateOnly(data.mbl_date) || prev.mblDate,
+          hblDt: formatDateOnly(data.hbl_dt) || prev.hblDt,
+          vessel: data.vessel || prev.vessel,
+          voy: data.voy || prev.voy,
+          sob: data.sob || prev.sob,
+          ac: data.ac || prev.ac,
+          billNo: data.bill_no || prev.billNo,
+          billDate: formatDateOnly(data.bill_date) || prev.billDate,
+          ccPort: data.cc_port || prev.ccPort,
+        }));
+        
+        // Set the shipment type based on the job type if not already set
+        if (data.job_type && !shipmentType) {
+          setShipmentType(data.job_type);
+        }
+      }
+    } catch (err) {
+      console.error("Unexpected error fetching job:", err);
     }
-  } catch (err) {
-    console.error("Unexpected error fetching job:", err);
-  }
-};
+  };
 
   // Validate current step before proceeding
   const validateStep = useCallback((step) => {
@@ -456,7 +538,7 @@ const handleJobSelect = async (e) => {
     }
     
     setValidationErrors(errors);
-    return true;
+    return Object.keys(errors).length === 0;
   }, [shipmentType, formData, requiredFields]);
 
   const handleNext = useCallback(() => {
@@ -473,6 +555,7 @@ const handleJobSelect = async (e) => {
     }
   }, [activeStep]);
 
+  // ============ FIX 4: CLEAR STORAGE ON CANCEL ============
   const handleCancel = useCallback(() => {
     setActiveStep(1);
     setShipmentType('');
@@ -480,6 +563,10 @@ const handleJobSelect = async (e) => {
     setEditingShipment(null);
     setValidationErrors({});
     setFormData(INITIAL_FORM_DATA);
+    
+    // Clear sessionStorage
+    sessionStorage.removeItem('editing_shipment');
+    sessionStorage.removeItem('creating_shipment');
   }, []);
 
   const handleInputChange = useCallback((e) => {
@@ -552,160 +639,166 @@ const handleJobSelect = async (e) => {
     }
   }, [orgFormData, validationErrors]);
 
-const handleConfirmShipment = useCallback(async () => {
-  if (validateStep(activeStep)) {
-    try {
-      setLoading(true);
-      
-      // Helper function to handle empty date values
-      const formatDateForDB = (dateValue) => {
-        if (!dateValue || dateValue.toString().trim() === '') {
-          return null;
-        }
-        return dateValue;
-      };
+  const handleConfirmShipment = useCallback(async () => {
+    if (validateStep(activeStep)) {
+      try {
+        setLoading(true);
+        
+        // Helper function to handle empty date values
+        const formatDateForDB = (dateValue) => {
+          if (!dateValue || dateValue.toString().trim() === '') {
+            return null;
+          }
+          return dateValue;
+        };
 
-      // Helper function to handle empty numeric values
-      const formatNumericForDB = (numericValue) => {
-        if (!numericValue || numericValue.toString().trim() === '') {
-          return null;
-        }
-        // Convert to number
-        const num = parseFloat(numericValue);
-        return isNaN(num) ? null : num;
-      };
+        // Helper function to handle empty numeric values
+        const formatNumericForDB = (numericValue) => {
+          if (!numericValue || numericValue.toString().trim() === '') {
+            return null;
+          }
+          // Convert to number
+          const num = parseFloat(numericValue);
+          return isNaN(num) ? null : num;
+        };
 
-      // Helper function to handle empty string values
-      const formatStringForDB = (stringValue) => {
-        if (!stringValue || stringValue.toString().trim() === '') {
-          return null;
-        }
-        return stringValue;
-      };
+        // Helper function to handle empty string values
+        const formatStringForDB = (stringValue) => {
+          if (!stringValue || stringValue.toString().trim() === '') {
+            return null;
+          }
+          return stringValue;
+        };
 
-      const shipmentData = {
-        branch: formatStringForDB(formData.branch),
-        department: formatStringForDB(formData.department),
-        shipment_date: formatDateForDB(formData.shipmentDate),
-        client: formatStringForDB(formData.client),
-        shipper: formatStringForDB(formData.shipper),
-        consignee: formatStringForDB(formData.consignee),
-        address: formatStringForDB(formData.address),
-        por: formatStringForDB(formData.por),
-        poi: formatStringForDB(formData.poi),
-        pod: formatStringForDB(formData.pod),
-        pof: formatStringForDB(formData.pof),
-        hbl_no: formatStringForDB(formData.hblNo),
-        job_no: formatStringForDB(formData.jobNo),
-        etd: formatDateForDB(formData.etd),
-        eta: formatDateForDB(formData.eta),
-         lcl_fcl: formatStringForDB(formData.lclFcl),
-        incoterms: formatStringForDB(formData.incoterms),
-        service_type: formatStringForDB(formData.serviceType),
-        freight: formatStringForDB(formData.freight),
-        payable_at: formatStringForDB(formData.payableAt),
-        dispatch_at: formatStringForDB(formData.dispatchAt),
-        hs_code: formatStringForDB(formData.HSCode),
-        pol: formatStringForDB(formData.pol),
-        pdf: formatStringForDB(formData.pdf),
-        carrier: formatStringForDB(formData.carrier),
-        vessel_name_summary: formatStringForDB(formData.vesselNameSummary),
-        no_of_res: formatNumericForDB(formData.noOfRes),
-        volume: formatNumericForDB(formData.volume),
-        gross_weight: formatNumericForDB(formData.grossWeight),
-        description: formatStringForDB(formData.description),
-        remarks: formatStringForDB(formData.remarks),
-        shipment_type: shipmentType,
-        trade_direction: formatStringForDB(formData.tradeDirection),
-        updated_at: new Date().toISOString(),
+        const shipmentData = {
+          branch: formatStringForDB(formData.branch),
+          department: formatStringForDB(formData.department),
+          shipment_date: formatDateForDB(formData.shipmentDate),
+          client: formatStringForDB(formData.client),
+          shipper: formatStringForDB(formData.shipper),
+          consignee: formatStringForDB(formData.consignee),
+          address: formatStringForDB(formData.address),
+          por: formatStringForDB(formData.por),
+          poi: formatStringForDB(formData.poi),
+          pod: formatStringForDB(formData.pod),
+          pof: formatStringForDB(formData.pof),
+          hbl_no: formatStringForDB(formData.hblNo),
+          job_no: formatStringForDB(formData.jobNo),
+          etd: formatDateForDB(formData.etd),
+          eta: formatDateForDB(formData.eta),
+          lcl_fcl: formatStringForDB(formData.lclFcl),
+          incoterms: formatStringForDB(formData.incoterms),
+          service_type: formatStringForDB(formData.serviceType),
+          freight: formatStringForDB(formData.freight),
+          payable_at: formatStringForDB(formData.payableAt),
+          dispatch_at: formatStringForDB(formData.dispatchAt),
+          hs_code: formatStringForDB(formData.HSCode),
+          pol: formatStringForDB(formData.pol),
+          pdf: formatStringForDB(formData.pdf),
+          carrier: formatStringForDB(formData.carrier),
+          vessel_name_summary: formatStringForDB(formData.vesselNameSummary),
+          no_of_res: formatNumericForDB(formData.noOfRes),
+          volume: formatNumericForDB(formData.volume),
+          gross_weight: formatNumericForDB(formData.grossWeight),
+          description: formatStringForDB(formData.description),
+          remarks: formatStringForDB(formData.remarks),
+          shipment_type: shipmentType,
+          trade_direction: formatStringForDB(formData.tradeDirection),
+          updated_at: new Date().toISOString(),
+          
+          // Air Freight fields - handle dates and numbers
+          airport_of_departure: formatStringForDB(formData.airport_of_departure),
+          airport_of_destination: formatStringForDB(formData.airport_of_destination),
+          no_of_packages: formatNumericForDB(formData.no_of_packages),
+          dimension_cms: formatStringForDB(formData.dimension_cms),
+          chargeable_weight: formatNumericForDB(formData.chargeable_weight),
+          client_no: formatStringForDB(formData.client_no),
+          name_of_airline: formatStringForDB(formData.name_of_airline),
+          awb: formatStringForDB(formData.awb),
+          flight_from: formatStringForDB(formData.flight_from),
+          flight_to: formatStringForDB(formData.flight_to),
+          flight_eta: formatDateForDB(formData.flight_eta),
+          invoiceNo: formatStringForDB(formData.invoiceNo),
+          invoiceDate: formatDateForDB(formData.invoiceDate),
+          notify_party: formatStringForDB(formData.notify_party),
+          
+          // Sea Freight fields - handle dates and numbers
+          exporter: formatStringForDB(formData.exporter),
+          importer: formatStringForDB(formData.importer),
+          stuffingDate: formatDateForDB(formData.stuffingDate),
+          hoDate: formatDateForDB(formData.hoDate),
+          terms: formatStringForDB(formData.terms),
+          sbNo: formatStringForDB(formData.sbNo),
+          sbDate: formatDateForDB(formData.sbDate),
+          destination: formatStringForDB(formData.destination),
+          commodity: formatStringForDB(formData.commodity),
+          fob: formatStringForDB(formData.fob),
+          grWeight: formatNumericForDB(formData.grWeight),
+          netWeight: formatNumericForDB(formData.netWeight),
+          railOutDate: formatDateForDB(formData.railOutDate),
+          containerNo: formatStringForDB(formData.containerNo),
+          noOfCntr: formatNumericForDB(formData.noOfCntr),
+          sLine: formatStringForDB(formData.sLine),
+          mblNo: formatStringForDB(formData.mblNo),
+          mblDate: formatDateForDB(formData.mblDate),
+          hblDt: formatDateForDB(formData.hblDt),
+          vessel: formatStringForDB(formData.vessel),
+          voy: formatStringForDB(formData.voy),
+          sob: formatStringForDB(formData.sob),
+          ac: formatStringForDB(formData.ac),
+          billNo: formatStringForDB(formData.billNo),
+          billDate: formatDateForDB(formData.billDate),
+          ccPort: formatStringForDB(formData.ccPort),
+        };
         
-        // Air Freight fields - handle dates and numbers
-        airport_of_departure: formatStringForDB(formData.airport_of_departure),
-        airport_of_destination: formatStringForDB(formData.airport_of_destination),
-        no_of_packages: formatNumericForDB(formData.no_of_packages),
-        dimension_cms: formatStringForDB(formData.dimension_cms),
-        chargeable_weight: formatNumericForDB(formData.chargeable_weight),
-        client_no: formatStringForDB(formData.client_no),
-        name_of_airline: formatStringForDB(formData.name_of_airline),
-        awb: formatStringForDB(formData.awb),
-        flight_from: formatStringForDB(formData.flight_from),
-        flight_to: formatStringForDB(formData.flight_to),
-        flight_eta: formatDateForDB(formData.flight_eta),
-        invoiceNo: formatStringForDB(formData.invoiceNo),
-        invoiceDate: formatDateForDB(formData.invoiceDate),
-        notify_party: formatStringForDB(formData.notify_party),
+        // Remove null values to avoid sending empty fields
+        const cleanShipmentData = Object.fromEntries(
+          Object.entries(shipmentData).filter(([_, value]) => value !== null && value !== undefined)
+        );
         
-        // Sea Freight fields - handle dates and numbers
-        exporter: formatStringForDB(formData.exporter),
-        importer: formatStringForDB(formData.importer),
-        stuffingDate: formatDateForDB(formData.stuffingDate),
-        hoDate: formatDateForDB(formData.hoDate),
-        terms: formatStringForDB(formData.terms),
-        sbNo: formatStringForDB(formData.sbNo),
-        sbDate: formatDateForDB(formData.sbDate),
-        destination: formatStringForDB(formData.destination),
-        commodity: formatStringForDB(formData.commodity),
-        fob: formatStringForDB(formData.fob),
-        grWeight: formatNumericForDB(formData.grWeight),
-        netWeight: formatNumericForDB(formData.netWeight),
-        railOutDate: formatDateForDB(formData.railOutDate),
-        containerNo: formatStringForDB(formData.containerNo),
-        noOfCntr: formatNumericForDB(formData.noOfCntr),
-        sLine: formatStringForDB(formData.sLine),
-        mblNo: formatStringForDB(formData.mblNo),
-        mblDate: formatDateForDB(formData.mblDate),
-        hblDt: formatDateForDB(formData.hblDt),
-        vessel: formatStringForDB(formData.vessel),
-        voy: formatStringForDB(formData.voy),
-        sob: formatStringForDB(formData.sob),
-        ac: formatStringForDB(formData.ac),
-        billNo: formatStringForDB(formData.billNo),
-        billDate: formatDateForDB(formData.billDate),
-        ccPort: formatStringForDB(formData.ccPort),
-      };
-      
-      // Remove null values to avoid sending empty fields
-      const cleanShipmentData = Object.fromEntries(
-        Object.entries(shipmentData).filter(([_, value]) => value !== null && value !== undefined)
-      );
-      
-      let result;
-      if (editingShipment) {
-        const { data: updatedShipment, error } = await supabase
-          .from('shipments')
-          .update(cleanShipmentData)
-          .eq('id', editingShipment.id)
-          .select();
+        let result;
+        if (editingShipment) {
+          const { data: updatedShipment, error } = await supabase
+            .from('shipments')
+            .update(cleanShipmentData)
+            .eq('id', editingShipment.id)
+            .select();
+          
+          if (error) throw error;
+          result = updatedShipment;
+        } else {
+          const { data: newShipment, error } = await supabase
+            .from('shipments')
+            .insert([cleanShipmentData])
+            .select();
+          
+          if (error) throw error;
+          result = newShipment;
+        }
         
-        if (error) throw error;
-        result = updatedShipment;
-      } else {
-        const { data: newShipment, error } = await supabase
-          .from('shipments')
-          .insert([cleanShipmentData])
-          .select();
+        setPdfShipmentData({
+          ...cleanShipmentData,
+          shipmentNo: editingShipment ? editingShipment.shipmentNo : `MTD-${result?.[0]?.id?.toString().padStart(6, '0') || 'DOCUMENT'}`,
+        });
         
-        if (error) throw error;
-        result = newShipment;
+        setGeneratePDF(true);
+        
+        // ============ FIX 5: CLEAR STORAGE AFTER SAVE ============
+        handleCancel();
+        sessionStorage.removeItem('editing_shipment');
+        sessionStorage.removeItem('creating_shipment');
+        
+        setSuccess(editingShipment ? 'Shipment updated successfully!' : 'Shipment created successfully!');
+        fetchShipments();
+      } catch (error) {
+        console.error('Error saving shipment:', error);
+        setError(error.message);
+      } finally {
+        setLoading(false);
       }
-      
-      setPdfShipmentData({
-        ...cleanShipmentData,
-        shipmentNo: editingShipment ? editingShipment.shipmentNo : `MTD-${result?.[0]?.id?.toString().padStart(6, '0') || 'DOCUMENT'}`,
-      });
-      
-      setGeneratePDF(true);
-      handleCancel();
-      setSuccess(editingShipment ? 'Shipment updated successfully!' : 'Shipment created successfully!');
-      fetchShipments();
-    } catch (error) {
-      console.error('Error saving shipment:', error);
-      setError(error.message);
-    } finally {
-      setLoading(false);
     }
-  }
-}, [formData, shipmentType, editingShipment, activeStep, validateStep, handleCancel, fetchShipments]);
+  }, [formData, shipmentType, editingShipment, activeStep, validateStep, handleCancel, fetchShipments]);
+
   // Handle edit shipment
   const handleEditShipment = useCallback((shipment) => {
     setEditingShipment(shipment);
@@ -717,7 +810,7 @@ const handleConfirmShipment = useCallback(async () => {
       shipmentDate: shipment.shipment_date,
       client: shipment.client,
       shipper: shipment.shipper,
-       lclFcl: shipment.lcl_fcl,
+      lclFcl: shipment.lcl_fcl,
       consignee: shipment.consignee,
       address: shipment.address,
       por: shipment.por,
@@ -863,29 +956,29 @@ const handleConfirmShipment = useCallback(async () => {
         </div>
       );
     }
-    // In the renderSpecificFields function, add this condition
-if (shipmentType === 'TRANSPORT') {
-  return (
-    <div className="specific-fields-section">
-      <h3>Land Freight Details - {formData.tradeDirection}</h3>
-      <div className="form-grid-two-column">
-        <div className="form-group">
-          <label>LCL/FCL <span className="required">*</span></label>
-          <select 
-            name="lclFcl"
-            value={formData.lclFcl}
-            onChange={handleInputChange}
-          >
-            <option value="">Select Option</option>
-            <option value="LCL">LCL (Less than Container Load)</option>
-            <option value="FCL">FCL (Full Container Load)</option>
-          </select>
+
+    if (shipmentType === 'TRANSPORT') {
+      return (
+        <div className="specific-fields-section">
+          <h3>Land Freight Details - {formData.tradeDirection}</h3>
+          <div className="form-grid-two-column">
+            <div className="form-group">
+              <label>LCL/FCL <span className="required">*</span></label>
+              <select 
+                name="lclFcl"
+                value={formData.lclFcl}
+                onChange={handleInputChange}
+              >
+                <option value="">Select Option</option>
+                <option value="LCL">LCL (Less than Container Load)</option>
+                <option value="FCL">FCL (Full Container Load)</option>
+              </select>
+            </div>
+            {/* Add other land-specific fields as needed */}
+          </div>
         </div>
-        {/* Add other land-specific fields as needed */}
-      </div>
-    </div>
-  );
-}
+      );
+    }
     
     if (shipmentType === 'SEA FREIGHT') {
       return (
@@ -989,78 +1082,79 @@ if (shipmentType === 'TRANSPORT') {
       )}
       
       {/* Shipment List View */}
-     <div className="card expandable-card">
-  <div className="table-header">
-    <h2>Current Shipments</h2>
-    <button className="add-shipment-btn" onClick={() => setShowShipmentForm(true)}>
-      <span className="plus-icon">+</span>
-      Add Shipment
-    </button>
-  </div>
-  <div
-    className="table-container"
-    ref={tableContainerRef}
-    style={{ maxHeight: maxHeight, overflowY: 'auto' }}
-  >
-    <table className="activity-table">
-      <thead>
-        <tr>
-          <th>Shipment No.</th>
-          <th>Client</th>
-          <th>Job No.</th>
-          <th>POR</th>
-          <th>POF</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {shipments.length > 0 ? (
-          shipments.map((shipment, index) => (
-            <tr key={index}>
-              <td>{shipment.shipmentNo}</td>
-              <td>{shipment.client}</td>
-              <td>{shipment.jobNo}</td>
-              <td>{shipment.por}</td>
-              <td>{shipment.pof}</td>
-              <td className="actions-cell">
-                <button 
-                  className="edit-btn"
-                  onClick={() => handleEditShipment(shipment)}
-                  title="Edit Shipment"
-                >
-                  Edit
-                </button>
-                <button 
-                  className="delete-btn"
-                  onClick={() => confirmDelete(shipment)}
-                  title="Delete Shipment"
-                >
-                  Delete
-                </button>
-                <Suspense fallback={<span>Loading PDF...</span>}>
-                  <PDFDownloadLink
-                    document={<PDFGenerator shipmentData={shipment} />}
-                    fileName={`${shipment.shipmentNo}.pdf`}
-                    className="pdf-download-btn"
-                    title="Download PDF"
-                  >
-                    {({ loading }) => loading ? 'Generating...' : 'PDF'}
-                  </PDFDownloadLink>
-                </Suspense>
-              </td>
-            </tr>
-          ))
-        ) : (
-          <tr>
-            <td colSpan="6" style={{textAlign: 'center', padding: '20px'}}>
-              No shipments found
-            </td>
-          </tr>
-        )}
-      </tbody>
-    </table>
-  </div>
-</div>
+      <div className="card expandable-card">
+        <div className="table-header">
+          <h2>Current Shipments</h2>
+          <button className="add-shipment-btn" onClick={() => setShowShipmentForm(true)}>
+            <span className="plus-icon">+</span>
+            Add Shipment
+          </button>
+        </div>
+        <div
+          className="table-container"
+          ref={tableContainerRef}
+          style={{ maxHeight: maxHeight, overflowY: 'auto' }}
+        >
+          <table className="activity-table">
+            <thead>
+              <tr>
+                <th>Shipment No.</th>
+                <th>Client</th>
+                <th>Job No.</th>
+                <th>POR</th>
+                <th>POF</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shipments.length > 0 ? (
+                shipments.map((shipment, index) => (
+                  <tr key={index}>
+                    <td>{shipment.shipmentNo}</td>
+                    <td>{shipment.client}</td>
+                    <td>{shipment.jobNo}</td>
+                    <td>{shipment.por}</td>
+                    <td>{shipment.pof}</td>
+                    <td className="actions-cell">
+                      <button 
+                        className="edit-btn"
+                        onClick={() => handleEditShipment(shipment)}
+                        title="Edit Shipment"
+                      >
+                        Edit
+                      </button>
+                      <button 
+                        className="delete-btn"
+                        onClick={() => confirmDelete(shipment)}
+                        title="Delete Shipment"
+                      >
+                        Delete
+                      </button>
+                      <Suspense fallback={<span>Loading PDF...</span>}>
+                        <PDFDownloadLink
+                          document={<PDFGenerator shipmentData={shipment} />}
+                          fileName={`${shipment.shipmentNo}.pdf`}
+                          className="pdf-download-btn"
+                          title="Download PDF"
+                        >
+                          {({ loading }) => loading ? 'Generating...' : 'PDF'}
+                        </PDFDownloadLink>
+                      </Suspense>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="6" style={{textAlign: 'center', padding: '20px'}}>
+                    No shipments found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {/* Shipment Creation/Edit Form Modal */}
       {showShipmentForm && (
         <div className="modal-overlay">
@@ -1271,29 +1365,29 @@ if (shipmentType === 'TRANSPORT') {
                         {validationErrors.hblNo && <span className="field-error">{validationErrors.hblNo}</span>}
                       </div>
                       <div className="form-group">
-  <label>Job No. <span className="required">*</span></label>
-  <select 
-    name="jobNo"
-    value={formData.jobNo}
-    onChange={handleJobSelect}
-    className={validationErrors.jobNo ? 'error' : ''}
-  >
-    <option value="">Select a Job</option>
-    {isLoadingJobs ? (
-      <option value="" disabled>Loading jobs...</option>
-    ) : (
-      // Filter jobs by selected shipment type
-      jobs
-        .filter(job => !shipmentType || job.job_type === shipmentType)
-        .map((job) => (
-          <option key={job.id} value={job.job_no}>
-            {job.job_no} - {job.client || 'No Client'} ({job.job_type || 'No Type'})
-          </option>
-        ))
-    )}
-  </select>
-  {validationErrors.jobNo && <span className="field-error">{validationErrors.jobNo}</span>}
-</div>
+                        <label>Job No. <span className="required">*</span></label>
+                        <select 
+                          name="jobNo"
+                          value={formData.jobNo}
+                          onChange={handleJobSelect}
+                          className={validationErrors.jobNo ? 'error' : ''}
+                        >
+                          <option value="">Select a Job</option>
+                          {isLoadingJobs ? (
+                            <option value="" disabled>Loading jobs...</option>
+                          ) : (
+                            // Filter jobs by selected shipment type
+                            jobs
+                              .filter(job => !shipmentType || job.job_type === shipmentType)
+                              .map((job) => (
+                                <option key={job.id} value={job.job_no}>
+                                  {job.job_no} - {job.client || 'No Client'} ({job.job_type || 'No Type'})
+                                </option>
+                              ))
+                          )}
+                        </select>
+                        {validationErrors.jobNo && <span className="field-error">{validationErrors.jobNo}</span>}
+                      </div>
                       <div className="form-group">
                         <label>ETD <span className="required">*</span></label>
                         <input 
@@ -1383,336 +1477,334 @@ if (shipmentType === 'TRANSPORT') {
                 )}
 
                 {activeStep === 3 && (
-  <div className="summary-step">
-    <h2>Summary</h2>
-    
-    <div className="client-branch-section">
-      <div className="client-info">
-        <span className="label">Client</span>
-        <span className="value">{formData.client}</span>
-      </div>
-      <div className="branch-info">
-        <span className="label">Branch</span>
-        <span className="value">{formData.branch}</span>
-      </div>
-      <div className="department-info">
-        <span className="label">Department</span>
-        <span className="value">{formData.department}</span>
-      </div>
-      <div className="shipment-type-info">
-        <span className="label">Shipment Type</span>
-        <span className="value">{shipmentType}</span>
-      </div>
-      <div className="trade-direction-info">
-        <span className="label">Trade Direction</span>
-        <span className="value">{formData.tradeDirection}</span>
-      </div>
-    </div>
+                  <div className="summary-step">
+                    <h2>Summary</h2>
+                    
+                    <div className="client-branch-section">
+                      <div className="client-info">
+                        <span className="label">Client</span>
+                        <span className="value">{formData.client}</span>
+                      </div>
+                      <div className="branch-info">
+                        <span className="label">Branch</span>
+                        <span className="value">{formData.branch}</span>
+                      </div>
+                      <div className="department-info">
+                        <span className="label">Department</span>
+                        <span className="value">{formData.department}</span>
+                      </div>
+                      <div className="shipment-type-info">
+                        <span className="label">Shipment Type</span>
+                        <span className="value">{shipmentType}</span>
+                      </div>
+                      <div className="trade-direction-info">
+                        <span className="label">Trade Direction</span>
+                        <span className="value">{formData.tradeDirection}</span>
+                      </div>
+                    </div>
 
-    <div className="divider"></div>
+                    <div className="divider"></div>
 
-    <div className="parties-section">
-      <h3>Parties Information</h3>
-      <div className="summary-grid">
-        <div className="summary-row">
-          <span className="label">Shipper:</span>
-          <span className="value">{formData.shipper}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Consignee:</span>
-          <span className="value">{formData.consignee}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Notify Party:</span>
-          <span className="value">{formData.notify_party}</span>
-        </div>
-        <div className="summary-row full-width">
-          <span className="label">Address:</span>
-          <span className="value">{formData.address}</span>
-        </div>
-      </div>
-    </div>
+                    <div className="parties-section">
+                      <h3>Parties Information</h3>
+                      <div className="summary-grid">
+                        <div className="summary-row">
+                          <span className="label">Shipper:</span>
+                          <span className="value">{formData.shipper}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Consignee:</span>
+                          <span className="value">{formData.consignee}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Notify Party:</span>
+                          <span className="value">{formData.notify_party}</span>
+                        </div>
+                        <div className="summary-row full-width">
+                          <span className="label">Address:</span>
+                          <span className="value">{formData.address}</span>
+                        </div>
+                      </div>
+                    </div>
 
-    <div className="divider"></div>
+                    <div className="divider"></div>
 
-    <div className="booking-info-section">
-      <h3>Booking Information</h3>
-      <div className="summary-grid">
-        <div className="summary-row">
-          <span className="label">POR:</span>
-          <span className="value">{formData.por}</span>
-          <span className="label">POL:</span>
-          <span className="value">{formData.pol}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">POD:</span>
-          <span className="value">{formData.pod}</span>
-          <span className="label">POF:</span>
-          <span className="value">{formData.pof}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">POI:</span>
-          <span className="value">{formData.poi}</span>
-          <span className="label">PDF:</span>
-          <span className="value">{formData.pdf}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">ETD:</span>
-          <span className="value">{formData.etd}</span>
-          <span className="label">ETA:</span>
-          <span className="value">{formData.eta}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Shipment Date:</span>
-          <span className="value">{formData.shipmentDate}</span>
-          <span className="label">INCO Terms:</span>
-          <span className="value">{formData.incoterms}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Service Type:</span>
-          <span className="value">{formData.serviceType}</span>
-          <span className="label">Freight:</span>
-          <span className="value">{formData.freight}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Payable At:</span>
-          <span className="value">{formData.payableAt}</span>
-          <span className="label">Dispatch At:</span>
-          <span className="value">{formData.dispatchAt}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Job No:</span>
-          <span className="value">{formData.jobNo}</span>
-          <span className="label">HBL No:</span>
-          <span className="value">{formData.hblNo}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Carrier:</span>
-          <span className="value">{formData.carrier}</span>
-          <span className="label">HS Code:</span>
-          <span className="value">{formData.HSCode}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">No of Res:</span>
-          <span className="value">{formData.noOfRes}</span>
-          <span className="label">Volume:</span>
-          <span className="value">{formData.volume}</span>
-        </div>
-        <div className="summary-row">
-          <span className="label">Gross Weight:</span>
-          <span className="value">{formData.grossWeight}</span>
-        </div>
-        <div className="summary-row full-width">
-          <span className="label">Description:</span>
-          <span className="value">{formData.description}</span>
-        </div>
-        <div className="summary-row full-width">
-          <span className="label">Remarks:</span>
-          <span className="value">{formData.remarks}</span>
-        </div>
-      </div>
-    </div>
+                    <div className="booking-info-section">
+                      <h3>Booking Information</h3>
+                      <div className="summary-grid">
+                        <div className="summary-row">
+                          <span className="label">POR:</span>
+                          <span className="value">{formData.por}</span>
+                          <span className="label">POL:</span>
+                          <span className="value">{formData.pol}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">POD:</span>
+                          <span className="value">{formData.pod}</span>
+                          <span className="label">POF:</span>
+                          <span className="value">{formData.pof}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">POI:</span>
+                          <span className="value">{formData.poi}</span>
+                          <span className="label">PDF:</span>
+                          <span className="value">{formData.pdf}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">ETD:</span>
+                          <span className="value">{formData.etd}</span>
+                          <span className="label">ETA:</span>
+                          <span className="value">{formData.eta}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Shipment Date:</span>
+                          <span className="value">{formData.shipmentDate}</span>
+                          <span className="label">INCO Terms:</span>
+                          <span className="value">{formData.incoterms}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Service Type:</span>
+                          <span className="value">{formData.serviceType}</span>
+                          <span className="label">Freight:</span>
+                          <span className="value">{formData.freight}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Payable At:</span>
+                          <span className="value">{formData.payableAt}</span>
+                          <span className="label">Dispatch At:</span>
+                          <span className="value">{formData.dispatchAt}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Job No:</span>
+                          <span className="value">{formData.jobNo}</span>
+                          <span className="label">HBL No:</span>
+                          <span className="value">{formData.hblNo}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Carrier:</span>
+                          <span className="value">{formData.carrier}</span>
+                          <span className="label">HS Code:</span>
+                          <span className="value">{formData.HSCode}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">No of Res:</span>
+                          <span className="value">{formData.noOfRes}</span>
+                          <span className="label">Volume:</span>
+                          <span className="value">{formData.volume}</span>
+                        </div>
+                        <div className="summary-row">
+                          <span className="label">Gross Weight:</span>
+                          <span className="value">{formData.grossWeight}</span>
+                        </div>
+                        <div className="summary-row full-width">
+                          <span className="label">Description:</span>
+                          <span className="value">{formData.description}</span>
+                        </div>
+                        <div className="summary-row full-width">
+                          <span className="label">Remarks:</span>
+                          <span className="value">{formData.remarks}</span>
+                        </div>
+                      </div>
+                    </div>
 
-    {/* Air Freight Specific Fields */}
-    {shipmentType === 'AIR FREIGHT' && (
-      <>
-        <div className="divider"></div>
-        <div className="air-freight-section">
-          <h3>Air Freight Details</h3>
-          <div className="summary-grid">
-            <div className="summary-row">
-              <span className="label">Airport of Departure:</span>
-              <span className="value">{formData.airport_of_departure}</span>
-              <span className="label">Airport of Destination:</span>
-              <span className="value">{formData.airport_of_destination}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">No of Packages:</span>
-              <span className="value">{formData.no_of_packages}</span>
-              <span className="label">Dimension (CMS):</span>
-              <span className="value">{formData.dimension_cms}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Chargeable Weight:</span>
-              <span className="value">{formData.chargeable_weight}</span>
-              <span className="label">Client No:</span>
-              <span className="value">{formData.client_no}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Name of Airline:</span>
-              <span className="value">{formData.name_of_airline}</span>
-              <span className="label">AWB:</span>
-              <span className="value">{formData.awb}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Flight From:</span>
-              <span className="value">{formData.flight_from}</span>
-              <span className="label">Flight To:</span>
-              <span className="value">{formData.flight_to}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Flight ETA:</span>
-              <span className="value">{formData.flight_eta}</span>
-              <span className="label">Invoice No:</span>
-              <span className="value">{formData.invoiceNo}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Invoice Date:</span>
-              <span className="value">{formData.invoiceDate}</span>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-    // In the summary step, add this section after the sea freight section
-{shipmentType === 'TRANSPORT' && (
-  <>
-    <div className="divider"></div>
-    <div className="land-freight-section">
-      <h3>Land Freight Details</h3>
-      <div className="summary-grid">
-        <div className="summary-row">
-          <span className="label">LCL/FCL:</span>
-          <span className="value">{formData.lclFcl}</span>
-        </div>
-        {/* Add other land-specific summary fields as needed */}
-      </div>
-    </div>
-  </>
-)}
+                    {/* Air Freight Specific Fields */}
+                    {shipmentType === 'AIR FREIGHT' && (
+                      <>
+                        <div className="divider"></div>
+                        <div className="air-freight-section">
+                          <h3>Air Freight Details</h3>
+                          <div className="summary-grid">
+                            <div className="summary-row">
+                              <span className="label">Airport of Departure:</span>
+                              <span className="value">{formData.airport_of_departure}</span>
+                              <span className="label">Airport of Destination:</span>
+                              <span className="value">{formData.airport_of_destination}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">No of Packages:</span>
+                              <span className="value">{formData.no_of_packages}</span>
+                              <span className="label">Dimension (CMS):</span>
+                              <span className="value">{formData.dimension_cms}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Chargeable Weight:</span>
+                              <span className="value">{formData.chargeable_weight}</span>
+                              <span className="label">Client No:</span>
+                              <span className="value">{formData.client_no}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Name of Airline:</span>
+                              <span className="value">{formData.name_of_airline}</span>
+                              <span className="label">AWB:</span>
+                              <span className="value">{formData.awb}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Flight From:</span>
+                              <span className="value">{formData.flight_from}</span>
+                              <span className="label">Flight To:</span>
+                              <span className="value">{formData.flight_to}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Flight ETA:</span>
+                              <span className="value">{formData.flight_eta}</span>
+                              <span className="label">Invoice No:</span>
+                              <span className="value">{formData.invoiceNo}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Invoice Date:</span>
+                              <span className="value">{formData.invoiceDate}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
 
-    {/* Sea Freight Specific Fields */}
-    {shipmentType === 'SEA FREIGHT' && (
-      <>
-        <div className="divider"></div>
-        <div className="sea-freight-section">
-          <h3>Sea Freight Details</h3>
-          <div className="summary-grid">
-            {formData.tradeDirection === 'EXPORT' && (
-              <div className="summary-row">
-                <span className="label">Exporter:</span>
-                <span className="value">{formData.exporter}</span>
+                    {/* Land/Transport Freight Specific Fields */}
+                    {shipmentType === 'TRANSPORT' && (
+                      <>
+                        <div className="divider"></div>
+                        <div className="land-freight-section">
+                          <h3>Land Freight Details</h3>
+                          <div className="summary-grid">
+                            <div className="summary-row">
+                              <span className="label">LCL/FCL:</span>
+                              <span className="value">{formData.lclFcl}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Sea Freight Specific Fields */}
+                    {shipmentType === 'SEA FREIGHT' && (
+                      <>
+                        <div className="divider"></div>
+                        <div className="sea-freight-section">
+                          <h3>Sea Freight Details</h3>
+                          <div className="summary-grid">
+                            {formData.tradeDirection === 'EXPORT' && (
+                              <div className="summary-row">
+                                <span className="label">Exporter:</span>
+                                <span className="value">{formData.exporter}</span>
+                              </div>
+                            )}
+                            {formData.tradeDirection === 'IMPORT' && (
+                              <div className="summary-row">
+                                <span className="label">Importer:</span>
+                                <span className="value">{formData.importer}</span>
+                              </div>
+                            )}
+                            <div className="summary-row">
+                              <span className="label">Invoice No:</span>
+                              <span className="value">{formData.invoiceNo}</span>
+                              <span className="label">Invoice Date:</span>
+                              <span className="value">{formData.invoiceDate}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Stuffing Date:</span>
+                              <span className="value">{formData.stuffingDate}</span>
+                              <span className="label">H/O Date:</span>
+                              <span className="value">{formData.hoDate}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Terms:</span>
+                              <span className="value">{formData.terms}</span>
+                              <span className="label">S/B No:</span>
+                              <span className="value">{formData.sbNo}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">S/B Date:</span>
+                              <span className="value">{formData.sbDate}</span>
+                              <span className="label">Destination:</span>
+                              <span className="value">{formData.destination}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Commodity:</span>
+                              <span className="value">{formData.commodity}</span>
+                              <span className="label">FOB:</span>
+                              <span className="value">{formData.fob}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">GR Weight:</span>
+                              <span className="value">{formData.grWeight}</span>
+                              <span className="label">Net Weight:</span>
+                              <span className="value">{formData.netWeight}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">RAIL Out Date:</span>
+                              <span className="value">{formData.railOutDate}</span>
+                              <span className="label">Container No:</span>
+                              <span className="value">{formData.containerNo}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">No of CNTR:</span>
+                              <span className="value">{formData.noOfCntr}</span>
+                              <span className="label">S/Line:</span>
+                              <span className="value">{formData.sLine}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">MBL No:</span>
+                              <span className="value">{formData.mblNo}</span>
+                              <span className="label">MBL Date:</span>
+                              <span className="value">{formData.mblDate}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">HBL DT:</span>
+                              <span className="value">{formData.hblDt}</span>
+                              <span className="label">VESSEL:</span>
+                              <span className="value">{formData.vessel}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">VOY:</span>
+                              <span className="value">{formData.voy}</span>
+                              <span className="label">SOB:</span>
+                              <span className="value">{formData.sob}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">A/C:</span>
+                              <span className="value">{formData.ac}</span>
+                              <span className="label">Bill No:</span>
+                              <span className="value">{formData.billNo}</span>
+                            </div>
+                            <div className="summary-row">
+                              <span className="label">Bill Date:</span>
+                              <span className="value">{formData.billDate}</span>
+                              <span className="label">C/C Port:</span>
+                              <span className="value">{formData.ccPort}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Checkbox Section */}
+                    <div className="confirmation-checkboxes">
+                      <div className="checkbox-item">
+                        <input type="checkbox" id="confirm1" required />
+                        <label htmlFor="confirm1">I confirm the accuracy of all information</label>
+                      </div>
+                      <div className="checkbox-item">
+                        <input type="checkbox" id="confirm2" required />
+                        <label htmlFor="confirm2">I agree to the terms and conditions</label>
+                      </div>
+                      <div className="checkbox-item">
+                        <input type="checkbox" id="confirm3" required />
+                        <label htmlFor="confirm3">I authorize this shipment</label>
+                      </div>
+                    </div>
+
+                    <div className="confirmation-prompt">
+                      <p>Are you sure you want to {editingShipment ? 'update' : 'create'} the shipment?</p>
+                      <div className="confirmation-buttons">
+                        <button className="cancel-btn" onClick={handleCancel}>Cancel</button>
+                        <button className="confirm-btn" onClick={handleConfirmShipment}>
+                          {editingShipment ? 'Update' : 'Create'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-            {formData.tradeDirection === 'IMPORT' && (
-              <div className="summary-row">
-                <span className="label">Importer:</span>
-                <span className="value">{formData.importer}</span>
-              </div>
-            )}
-            <div className="summary-row">
-              <span className="label">Invoice No:</span>
-              <span className="value">{formData.invoiceNo}</span>
-              <span className="label">Invoice Date:</span>
-              <span className="value">{formData.invoiceDate}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Stuffing Date:</span>
-              <span className="value">{formData.stuffingDate}</span>
-              <span className="label">H/O Date:</span>
-              <span className="value">{formData.hoDate}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Terms:</span>
-              <span className="value">{formData.terms}</span>
-              <span className="label">S/B No:</span>
-              <span className="value">{formData.sbNo}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">S/B Date:</span>
-              <span className="value">{formData.sbDate}</span>
-              <span className="label">Destination:</span>
-              <span className="value">{formData.destination}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Commodity:</span>
-              <span className="value">{formData.commodity}</span>
-              <span className="label">FOB:</span>
-              <span className="value">{formData.fob}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">GR Weight:</span>
-              <span className="value">{formData.grWeight}</span>
-              <span className="label">Net Weight:</span>
-              <span className="value">{formData.netWeight}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">RAIL Out Date:</span>
-              <span className="value">{formData.railOutDate}</span>
-              <span className="label">Container No:</span>
-              <span className="value">{formData.containerNo}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">No of CNTR:</span>
-              <span className="value">{formData.noOfCntr}</span>
-              <span className="label">S/Line:</span>
-              <span className="value">{formData.sLine}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">MBL No:</span>
-              <span className="value">{formData.mblNo}</span>
-              <span className="label">MBL Date:</span>
-              <span className="value">{formData.mblDate}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">HBL DT:</span>
-              <span className="value">{formData.hblDt}</span>
-              <span className="label">VESSEL:</span>
-              <span className="value">{formData.vessel}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">VOY:</span>
-              <span className="value">{formData.voy}</span>
-              <span className="label">SOB:</span>
-              <span className="value">{formData.sob}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">A/C:</span>
-              <span className="value">{formData.ac}</span>
-              <span className="label">Bill No:</span>
-              <span className="value">{formData.billNo}</span>
-            </div>
-            <div className="summary-row">
-              <span className="label">Bill Date:</span>
-              <span className="value">{formData.billDate}</span>
-              <span className="label">C/C Port:</span>
-              <span className="value">{formData.ccPort}</span>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-
-    {/* Checkbox Section */}
-    <div className="confirmation-checkboxes">
-      <div className="checkbox-item">
-        <input type="checkbox" id="confirm1" required />
-        <label htmlFor="confirm1">I confirm the accuracy of all information</label>
-      </div>
-      <div className="checkbox-item">
-        <input type="checkbox" id="confirm2" required />
-        <label htmlFor="confirm2">I agree to the terms and conditions</label>
-      </div>
-      <div className="checkbox-item">
-        <input type="checkbox" id="confirm3" required />
-        <label htmlFor="confirm3">I authorize this shipment</label>
-      </div>
-    </div>
-
-    <div className="confirmation-prompt">
-      <p>Are you sure you want to {editingShipment ? 'update' : 'create'} the shipment?</p>
-      <div className="confirmation-buttons">
-        <button className="cancel-btn" onClick={handleCancel}>Cancel</button>
-        <button className="confirm-btn" onClick={handleConfirmShipment}>
-          {editingShipment ? 'Update' : 'Create'}
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-                
-              </div>
-              
 
               {/* Navigation Buttons */}
               <div className="navigation-buttons">

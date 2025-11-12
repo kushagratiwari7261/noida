@@ -18,29 +18,83 @@ function App() {
   const [userAccounts, setUserAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('all');
   
-  // ✅ Track which email is expanded and its content
+  // Track which email is expanded and its content
   const [expandedEmailId, setExpandedEmailId] = useState(null);
   const [emailContent, setEmailContent] = useState({});
   const [loadingContent, setLoadingContent] = useState({});
 
-  // ✅ NEW: Fetch progress tracking
+  // Fetch progress tracking
   const [fetchProgress, setFetchProgress] = useState(null);
 
-  // ✅ Prevent duplicate requests
+  // Prevent duplicate requests
   const loadEmailsInProgress = useRef(false);
   const fetchEmailsInProgress = useRef(false);
 
-  // ✅ Dynamic API base URL
-// ✅ FIXED: Dynamic API base URL
-// ✅ SIMPLE FIX: Add trailing slash to API_BASE
-const getApiBaseUrl = () => {
-  if (window.location.hostname.includes('.vercel.app')) {
-    return 'https://seal-freight.vercel.app/'; // Added trailing slash
-  }
-  return 'http://localhost:3001/'; // Added trailing slash
-};
+  // ============ FIX 1: RESTORE STATE ON MOUNT ============
+  useEffect(() => {
+    // Restore expanded email state if exists
+    const savedExpandedEmail = sessionStorage.getItem('expanded_email');
+    
+    if (savedExpandedEmail) {
+      try {
+        const state = JSON.parse(savedExpandedEmail);
+        setExpandedEmailId(state.emailId);
+        setEmailContent(state.emailContent || {});
+        console.log('✅ Restored expanded email state from sessionStorage');
+      } catch (e) {
+        console.error('❌ Error restoring expanded email state:', e);
+        sessionStorage.removeItem('expanded_email');
+      }
+    }
+  }, []); // Empty dependency array - run only once on mount
 
-const API_BASE = getApiBaseUrl();
+  // ============ FIX 2: AUTO-SAVE STATE TO SESSIONSTORAGE ============
+  useEffect(() => {
+    if (expandedEmailId) {
+      // Save expanded email state to sessionStorage
+      sessionStorage.setItem('expanded_email', JSON.stringify({
+        emailId: expandedEmailId,
+        emailContent: emailContent
+      }));
+    } else {
+      // Clear saved state when no email is expanded
+      sessionStorage.removeItem('expanded_email');
+    }
+  }, [expandedEmailId, emailContent]);
+
+  // ============ FIX 3: PREVENT TAB DISCARD ============
+  useEffect(() => {
+    if (!expandedEmailId) return;
+
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+
+    // Add warning before leaving page
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Keep page active to prevent Chrome tab discarding
+    const keepAlive = setInterval(() => {
+      document.title = document.title; // Dummy operation
+    }, 30000); // Every 30 seconds
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      clearInterval(keepAlive);
+    };
+  }, [expandedEmailId]);
+
+  // Dynamic API base URL
+  const getApiBaseUrl = () => {
+    if (window.location.hostname.includes('.vercel.app')) {
+      return 'https://seal-freight.vercel.app/';
+    }
+    return 'http://localhost:3001/';
+  };
+
+  const API_BASE = getApiBaseUrl();
 
   // Get authentication token
   const getAuthToken = useCallback(async () => {
@@ -75,75 +129,74 @@ const API_BASE = getApiBaseUrl();
   }, []);
 
   // Enhanced fetch with auth
-  // Enhanced fetch with auth - FIXED VERSION
-const fetchWithAuth = useCallback(async (url, options = {}) => {
-  try {
-    const token = await getAuthToken();
+  const fetchWithAuth = useCallback(async (url, options = {}) => {
+    try {
+      const token = await getAuthToken();
 
-    if (!token) {
-      throw new Error('No authentication token found. Please log in again.');
-    }
+      if (!token) {
+        throw new Error('No authentication token found. Please log in again.');
+      }
 
-    let fullUrl = url;
-    if (!url.startsWith('http')) {
-      // ✅ FIXED: Proper URL construction with correct slashes
-      const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
-      fullUrl = `${base}/api${url.startsWith('/') ? '' : '/'}${url}`;
-    }
+      let fullUrl = url;
+      if (!url.startsWith('http')) {
+        const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+        fullUrl = `${base}/api${url.startsWith('/') ? '' : '/'}${url}`;
+      }
 
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...options.headers,
-    };
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...options.headers,
+      };
 
-    console.log('🔐 Making authenticated request to:', fullUrl);
-    
-    const response = await fetch(fullUrl, {
-      ...options,
-      headers,
-    });
+      console.log('🔐 Making authenticated request to:', fullUrl);
+      
+      const response = await fetch(fullUrl, {
+        ...options,
+        headers,
+      });
 
-    if (response.status === 401) {
-      try {
-        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
-        if (refreshError || !session?.access_token) {
+      if (response.status === 401) {
+        try {
+          const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+          if (refreshError || !session?.access_token) {
+            throw new Error('Authentication failed. Please log in again.');
+          }
+          
+          headers.Authorization = `Bearer ${session.access_token}`;
+          const retryResponse = await fetch(fullUrl, { ...options, headers });
+          
+          if (!retryResponse.ok) {
+            throw new Error(`HTTP error! status: ${retryResponse.status}`);
+          }
+          return retryResponse;
+        } catch (refreshErr) {
           throw new Error('Authentication failed. Please log in again.');
         }
-        
-        headers.Authorization = `Bearer ${session.access_token}`;
-        const retryResponse = await fetch(fullUrl, { ...options, headers });
-        
-        if (!retryResponse.ok) {
-          throw new Error(`HTTP error! status: ${retryResponse.status}`);
-        }
-        return retryResponse;
-      } catch (refreshErr) {
-        throw new Error('Authentication failed. Please log in again.');
       }
-    }
 
-    if (!response.ok) {
-      let errorDetails = `HTTP error! status: ${response.status}`;
-      try {
-        const errorData = await response.json();
-        errorDetails = errorData.error || errorData.message || errorDetails;
-        if (errorData.details) {
-          errorDetails += ` (${errorData.details})`;
+      if (!response.ok) {
+        let errorDetails = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          errorDetails = errorData.error || errorData.message || errorDetails;
+          if (errorData.details) {
+            errorDetails += ` (${errorData.details})`;
+          }
+        } catch (e) {
+          errorDetails = response.statusText || errorDetails;
         }
-      } catch (e) {
-        errorDetails = response.statusText || errorDetails;
+        throw new Error(errorDetails);
       }
-      throw new Error(errorDetails);
-    }
 
-    return response;
-  } catch (error) {
-    console.error('❌ Fetch with auth failed:', error);
-    throw error;
-  }
-}, [getAuthToken, API_BASE]);
-  // ✅ Load full email content when user clicks on an email
+      return response;
+    } catch (error) {
+      console.error('❌ Fetch with auth failed:', error);
+      throw error;
+    }
+  }, [getAuthToken, API_BASE]);
+
+  // Load full email content when user clicks on an email
   const loadEmailContent = useCallback(async (messageId) => {
     if (emailContent[messageId]) {
       console.log('✅ Email content already loaded from cache');
@@ -186,13 +239,14 @@ const fetchWithAuth = useCallback(async (url, options = {}) => {
     }
   }, [fetchWithAuth, emailContent]);
 
-  // ✅ Toggle email expansion and load content
+  // Toggle email expansion and load content
   const toggleEmailExpansion = useCallback(async (email) => {
     const emailId = email.id || email.messageId;
     
     if (expandedEmailId === emailId) {
-      // Collapse
+      // ============ FIX 4: CLEAR STORAGE ON COLLAPSE ============
       setExpandedEmailId(null);
+      sessionStorage.removeItem('expanded_email');
     } else {
       // Expand and load content
       setExpandedEmailId(emailId);
@@ -204,7 +258,7 @@ const fetchWithAuth = useCallback(async (url, options = {}) => {
     }
   }, [expandedEmailId, emailContent, loadEmailContent]);
 
-  // ✅ Fetch user accounts
+  // Fetch user accounts
   const fetchUserAccounts = useCallback(async () => {
     try {
       console.log('👤 Fetching user accounts...');
@@ -224,53 +278,52 @@ const fetchWithAuth = useCallback(async (url, options = {}) => {
     }
   }, [fetchWithAuth]);
 
-// Test backend connection - FIXED VERSION
-const testBackendConnection = useCallback(async () => {
-  try {
-    setError(null);
-    console.log('🧪 Testing backend connection...');
-    
-    // ✅ FIXED: Use proper URL construction
-    const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
-    const testUrl = `${base}/api/health`;
-    console.log('Testing URL:', testUrl);
-    
-    const response = await fetch(testUrl, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log('🏥 Backend health:', data);
-    
-    if (data.status === 'healthy') {
-      setError('✅ Backend is healthy and running!');
-      setTimeout(() => setError(null), 3000);
-      return true;
-    } else {
-      setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+  // Test backend connection
+  const testBackendConnection = useCallback(async () => {
+    try {
+      setError(null);
+      console.log('🧪 Testing backend connection...');
+      
+      const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+      const testUrl = `${base}/api/health`;
+      console.log('Testing URL:', testUrl);
+      
+      const response = await fetch(testUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      console.log('🏥 Backend health:', data);
+      
+      if (data.status === 'healthy') {
+        setError('✅ Backend is healthy and running!');
+        setTimeout(() => setError(null), 3000);
+        return true;
+      } else {
+        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+        return false;
+      }
+    } catch (err) {
+      console.error('❌ Backend connection failed:', err);
+      let errorMessage = `Cannot connect to backend: ${err.message}`;
+      
+      if (err.message.includes('Failed to fetch')) {
+        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
+      }
+      
+      setError(`❌ ${errorMessage}`);
       return false;
     }
-  } catch (err) {
-    console.error('❌ Backend connection failed:', err);
-    let errorMessage = `Cannot connect to backend: ${err.message}`;
-    
-    if (err.message.includes('Failed to fetch')) {
-      errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
-    }
-    
-    setError(`❌ ${errorMessage}`);
-    return false;
-  }
-}, [API_BASE]);
+  }, [API_BASE]);
 
-  // ✅ Process attachment URLs
+  // Process attachment URLs
   const processAttachmentUrl = useCallback((attachment) => {
     if (attachment.url && attachment.url.startsWith('http')) {
       return attachment.url;
@@ -290,7 +343,7 @@ const testBackendConnection = useCallback(async () => {
     return null;
   }, []);
 
-  // ✅ Process email data - WITHOUT content
+  // Process email data - WITHOUT content
   const processEmailData = useCallback((email) => {
     const processedEmail = {
       id: email._id || email.id || email.messageId || email.message_id,
@@ -345,7 +398,7 @@ const testBackendConnection = useCallback(async () => {
     return processedEmail;
   }, [processAttachmentUrl]);
 
-  // ✅ Load emails function - loads list without content
+  // Load emails function - loads list without content
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
     if (loadEmailsInProgress.current) {
       console.log('⚠️ Load emails already in progress, skipping...');
@@ -443,7 +496,7 @@ const testBackendConnection = useCallback(async () => {
     }
   }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
 
-  // ✅ FIXED: Enhanced fetch emails function with LATEST email fetching
+  // Enhanced fetch emails function with LATEST email fetching
   const fetchEmails = useCallback(async (mode = 'latest') => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
@@ -461,23 +514,20 @@ const testBackendConnection = useCallback(async () => {
       
       setFetchProgress({ message: 'Connecting to email server...', stage: 'connect' });
       
-      // ✅ CRITICAL FIX: Use the correct endpoint and parameters for latest emails
       let endpoint, body;
       
       if (mode === 'force-latest') {
-        // Use the new force fetch endpoint for latest emails
         endpoint = '/api/fetch-latest-emails';
         body = {
           accountId: selectedAccount,
-          hours: 24 // Fetch emails from last 24 hours
+          hours: 24
         };
         setFetchProgress({ message: '🔄 FORCE FETCH: Getting latest emails (last 24 hours)...', stage: 'connect' });
       } else {
-        // Use regular fetch with optimized parameters
         endpoint = '/fetch-emails';
         body = {
           mode: mode,
-          count: 150, // Increased to get more emails
+          count: 150,
           accountId: selectedAccount
         };
         setFetchProgress({ message: '🔄 Fetching latest emails from server...', stage: 'connect' });
@@ -494,7 +544,6 @@ const testBackendConnection = useCallback(async () => {
       console.log(`📨 ${mode} fetch result:`, result);
       
       if (response.ok && result.success) {
-        // ✅ Display detailed timing information
         if (result.summary) {
           const { totalProcessed, totalTimeMs } = result.summary;
           const emailsPerSecond = totalTimeMs > 0 ? (totalProcessed / (totalTimeMs / 1000)).toFixed(2) : 0;
@@ -504,7 +553,6 @@ const testBackendConnection = useCallback(async () => {
             stage: 'success' 
           });
         } else if (result.accounts) {
-          // Handle account-based results
           const totalProcessed = result.accounts.reduce((sum, acc) => sum + (acc.data?.processed || 0), 0);
           setFetchProgress({ 
             message: `✅ Processed ${totalProcessed} emails across ${result.accounts.length} accounts`, 
@@ -515,7 +563,6 @@ const testBackendConnection = useCallback(async () => {
         setFetchStatus('success');
         setLastFetchTime(new Date());
         
-        // Reload emails with new data
         setFetchProgress({ message: 'Refreshing email list...', stage: 'reload' });
         await loadEmails(false, true);
         
@@ -540,15 +587,11 @@ const testBackendConnection = useCallback(async () => {
     } finally {
       setFetching(false);
       fetchEmailsInProgress.current = false;
-      // Clear progress after 3 seconds if successful
       setTimeout(() => setFetchProgress(null), 3000);
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
 
-  // ✅ UPDATED: Smart fetch - uses force-latest mode
   const fetchNewEmails = useCallback(() => fetchEmails('force-latest'), [fetchEmails]);
-  
-  // ✅ UPDATED: Force fetch - uses regular force mode
   const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
   const forceRefreshEmails = useCallback(async () => {
@@ -640,7 +683,7 @@ const testBackendConnection = useCallback(async () => {
     }));
   }, []);
 
-  // ✅ Render attachment
+  // Render attachment
   const renderAttachment = useCallback((attachment, index, emailIndex) => {
     const mimeType = attachment.mimeType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
@@ -728,6 +771,13 @@ const testBackendConnection = useCallback(async () => {
         setEmails(prevEmails => prevEmails.filter(email => email.id !== emailId));
         console.log('✅ Email deleted successfully');
         setFetchStatus('success');
+        
+        // ============ FIX 5: CLEAR STORAGE IF DELETED EMAIL WAS EXPANDED ============
+        if (expandedEmailId === emailId) {
+          setExpandedEmailId(null);
+          sessionStorage.removeItem('expanded_email');
+        }
+        
         setTimeout(() => setFetchStatus('idle'), 3000);
       } else {
         throw new Error(result.error || 'Failed to delete email');
@@ -738,9 +788,9 @@ const testBackendConnection = useCallback(async () => {
     } finally {
       setDeletingEmails(prev => ({ ...prev, [emailId]: false }));
     }
-  }, [fetchWithAuth]);
+  }, [fetchWithAuth, expandedEmailId]);
 
-  // ✅ EmailCard component with expandable content
+  // EmailCard component with expandable content
   const EmailCard = React.memo(({ email, index }) => {
     const isExpanded = expandedEmailId === email.id;
     const content = emailContent[email.messageId];
@@ -759,7 +809,6 @@ const testBackendConnection = useCallback(async () => {
           </button>
         </div>
 
-        {/* ✅ Clickable header to expand/collapse */}
         <div 
           className="email-header clickable" 
           onClick={() => toggleEmailExpansion(email)}
@@ -785,7 +834,6 @@ const testBackendConnection = useCallback(async () => {
           <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
         </div>
 
-        {/* ✅ Only show content when expanded */}
         {isExpanded && (
           <div className="email-content-section">
             {isLoadingContent ? (
@@ -845,7 +893,7 @@ const testBackendConnection = useCallback(async () => {
     getUser();
   }, [fetchUserAccounts]);
 
-  // ✅ Load emails once when component mounts
+  // Load emails once when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
@@ -856,7 +904,7 @@ const testBackendConnection = useCallback(async () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Debounce search and sort changes
+  // Debounce search and sort changes
   useEffect(() => {
     const timer = setTimeout(() => {
       if (loadEmailsInProgress.current) {
@@ -978,7 +1026,6 @@ const testBackendConnection = useCallback(async () => {
 
           {/* Compact Controls */}
           <div className="compact-controls">
-            {/* ✅ UPDATED: Smart Fetch now uses force-latest mode */}
             <button 
               onClick={fetchNewEmails} 
               disabled={fetching}
@@ -1031,7 +1078,7 @@ const testBackendConnection = useCallback(async () => {
           </div>
         )}
 
-        {/* ✅ NEW: Fetch Progress Banner */}
+        {/* Fetch Progress Banner */}
         {fetchProgress && (
           <div className={`progress-banner ${fetchProgress.stage}`}>
             <div className="progress-content">
@@ -1094,6 +1141,7 @@ const testBackendConnection = useCallback(async () => {
               <div className="email-list-hint">
                 <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
                 <p>🆕 <strong>Smart Fetch LATEST</strong> gets emails from last 24 hours (bypasses duplicates)</p>
+                <p>🔄 Your expanded email state is preserved when switching tabs</p>
               </div>
               {emails.map((email, index) => (
                 <EmailCard key={email.id} email={email} index={index} />
@@ -1132,6 +1180,15 @@ const testBackendConnection = useCallback(async () => {
                   <li>✅ Lazy content loading (on expand)</li>
                   <li>✅ Smart caching</li>
                   <li>🆕 <strong>Force Latest Fetch</strong> (bypasses duplicates for recent emails)</li>
+                  <li>🔄 <strong>Tab Switch Recovery</strong> (preserves expanded email state)</li>
+                </ul>
+              </div>
+              
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
+                <p><strong>Session Storage:</strong></p>
+                <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
+                  <li>Expanded Email: {sessionStorage.getItem('expanded_email') ? 'Saved ✅' : 'None'}</li>
+                  <li>Storage Size: {new Blob([sessionStorage.getItem('expanded_email') || '']).size} bytes</li>
                 </ul>
               </div>
             </div>
@@ -1141,4 +1198,5 @@ const testBackendConnection = useCallback(async () => {
     </div>
   );
 }
+
 export default App;
