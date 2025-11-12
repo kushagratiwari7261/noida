@@ -785,7 +785,7 @@ function App() {
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
-      loadEmails(true, true);
+      loadEmails(true, false); // Changed from true to false - don't force refresh on mount
     }, 100);
     
     return () => clearTimeout(timer);
