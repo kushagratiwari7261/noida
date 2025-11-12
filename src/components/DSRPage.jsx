@@ -285,8 +285,8 @@ const DSRHondaReport = () => {
     }));
     
     const ws = XLSX.utils.json_to_sheet(excelData);
-    XLSX.utils.book_append_sheet(wb, ws, "DSR Honda Report");
-    XLSX.writeFile(wb, "DSR_Honda_Report_Selected.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "DSR Report");
+    XLSX.writeFile(wb, "DSR_Report_Selected.xlsx");
   };
 
   const exportAllToExcel = () => {
