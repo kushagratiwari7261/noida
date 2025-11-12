@@ -30,9 +30,8 @@ function App() {
   const loadEmailsInProgress = useRef(false);
   const fetchEmailsInProgress = useRef(false);
 
-  // ============ FIX 1: RESTORE STATE ON MOUNT ============
+  // ============ STATE PERSISTENCE ============
   useEffect(() => {
-    // Restore expanded email state if exists
     const savedExpandedEmail = sessionStorage.getItem('expanded_email');
     
     if (savedExpandedEmail) {
@@ -40,29 +39,25 @@ function App() {
         const state = JSON.parse(savedExpandedEmail);
         setExpandedEmailId(state.emailId);
         setEmailContent(state.emailContent || {});
-        console.log('✅ Restored expanded email state from sessionStorage');
+        console.log('✅ Restored expanded email state');
       } catch (e) {
-        console.error('❌ Error restoring expanded email state:', e);
+        console.error('❌ Error restoring state:', e);
         sessionStorage.removeItem('expanded_email');
       }
     }
-  }, []); // Empty dependency array - run only once on mount
+  }, []);
 
-  // ============ FIX 2: AUTO-SAVE STATE TO SESSIONSTORAGE ============
   useEffect(() => {
     if (expandedEmailId) {
-      // Save expanded email state to sessionStorage
       sessionStorage.setItem('expanded_email', JSON.stringify({
         emailId: expandedEmailId,
         emailContent: emailContent
       }));
     } else {
-      // Clear saved state when no email is expanded
       sessionStorage.removeItem('expanded_email');
     }
   }, [expandedEmailId, emailContent]);
 
-  // ============ FIX 3: PREVENT TAB DISCARD ============
   useEffect(() => {
     if (!expandedEmailId) return;
 
@@ -72,13 +67,10 @@ function App() {
       return '';
     };
 
-    // Add warning before leaving page
     window.addEventListener('beforeunload', handleBeforeUnload);
-
-    // Keep page active to prevent Chrome tab discarding
     const keepAlive = setInterval(() => {
-      document.title = document.title; // Dummy operation
-    }, 30000); // Every 30 seconds
+      document.title = document.title;
+    }, 30000);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
@@ -86,7 +78,7 @@ function App() {
     };
   }, [expandedEmailId]);
 
-  // Dynamic API base URL
+  // ============ API CONFIGURATION ============
   const getApiBaseUrl = () => {
     if (window.location.hostname.includes('.vercel.app')) {
       return 'https://seal-freight.vercel.app/';
@@ -96,7 +88,7 @@ function App() {
 
   const API_BASE = getApiBaseUrl();
 
-  // Get authentication token
+  // ============ AUTHENTICATION ============
   const getAuthToken = useCallback(async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
@@ -128,7 +120,6 @@ function App() {
     }
   }, []);
 
-  // Enhanced fetch with auth
   const fetchWithAuth = useCallback(async (url, options = {}) => {
     try {
       const token = await getAuthToken();
@@ -196,17 +187,17 @@ function App() {
     }
   }, [getAuthToken, API_BASE]);
 
-  // Load full email content when user clicks on an email
+  // ============ LOAD EMAIL CONTENT (LAZY) ============
   const loadEmailContent = useCallback(async (messageId) => {
     if (emailContent[messageId]) {
-      console.log('✅ Email content already loaded from cache');
+      console.log('✅ Email content already cached');
       return emailContent[messageId];
     }
 
     setLoadingContent(prev => ({ ...prev, [messageId]: true }));
 
     try {
-      console.log(`📧 Loading full content for email: ${messageId}`);
+      console.log(`📧 Loading full content for: ${messageId}`);
       
       const response = await fetchWithAuth(`/emails/${messageId}`);
       const data = await response.json();
@@ -218,11 +209,11 @@ function App() {
       console.log('✅ Email content loaded successfully');
       
       const content = {
-        text: data.email.text || data.email.text_content,
-        html: data.email.html || data.email.html_content
+        text: data.email.text,
+        html: data.email.html,
+        attachments: data.email.attachments || []
       };
       
-      // Cache the content
       setEmailContent(prev => ({
         ...prev,
         [messageId]: content
@@ -239,26 +230,23 @@ function App() {
     }
   }, [fetchWithAuth, emailContent]);
 
-  // Toggle email expansion and load content
+  // ============ TOGGLE EMAIL EXPANSION ============
   const toggleEmailExpansion = useCallback(async (email) => {
     const emailId = email.id || email.messageId;
     
     if (expandedEmailId === emailId) {
-      // ============ FIX 4: CLEAR STORAGE ON COLLAPSE ============
       setExpandedEmailId(null);
       sessionStorage.removeItem('expanded_email');
     } else {
-      // Expand and load content
       setExpandedEmailId(emailId);
       
-      // Load content if not already loaded
       if (!emailContent[email.messageId]) {
         await loadEmailContent(email.messageId);
       }
     }
   }, [expandedEmailId, emailContent, loadEmailContent]);
 
-  // Fetch user accounts
+  // ============ FETCH USER ACCOUNTS ============
   const fetchUserAccounts = useCallback(async () => {
     try {
       console.log('👤 Fetching user accounts...');
@@ -278,7 +266,7 @@ function App() {
     }
   }, [fetchWithAuth]);
 
-  // Test backend connection
+  // ============ TEST BACKEND CONNECTION ============
   const testBackendConnection = useCallback(async () => {
     try {
       setError(null);
@@ -302,12 +290,12 @@ function App() {
       const data = await response.json();
       console.log('🏥 Backend health:', data);
       
-      if (data.status === 'healthy') {
-        setError('✅ Backend is healthy and running!');
+      if (data.status === 'healthy' || data.status === 'degraded') {
+        setError(`✅ Backend is ${data.status}! Cache: ${data.cache?.size || 0} items`);
         setTimeout(() => setError(null), 3000);
         return true;
       } else {
-        setError(`⚠️ Backend status: ${data.status}. Check server logs.`);
+        setError(`⚠️ Backend status: ${data.status}`);
         return false;
       }
     } catch (err) {
@@ -315,7 +303,7 @@ function App() {
       let errorMessage = `Cannot connect to backend: ${err.message}`;
       
       if (err.message.includes('Failed to fetch')) {
-        errorMessage = `Network error: Cannot reach backend at ${API_BASE}. Check if the backend is deployed and CORS is configured.`;
+        errorMessage = `Network error: Cannot reach backend at ${API_BASE}`;
       }
       
       setError(`❌ ${errorMessage}`);
@@ -323,7 +311,7 @@ function App() {
     }
   }, [API_BASE]);
 
-  // Process attachment URLs
+  // ============ PROCESS ATTACHMENT URL ============
   const processAttachmentUrl = useCallback((attachment) => {
     if (attachment.url && attachment.url.startsWith('http')) {
       return attachment.url;
@@ -336,69 +324,10 @@ function App() {
       }
     }
 
-    if (attachment.publicUrl) {
-      return attachment.publicUrl;
-    }
-
     return null;
   }, []);
 
-  // Process email data - WITHOUT content
-  const processEmailData = useCallback((email) => {
-    const processedEmail = {
-      id: email._id || email.id || email.messageId || email.message_id,
-      _id: email._id || email.id || email.messageId || email.message_id,
-      messageId: email.messageId || email.message_id,
-      subject: email.subject || '(No Subject)',
-      from: email.from || email.from_text,
-      from_text: email.from_text || email.from,
-      to: email.to || email.to_text,
-      to_text: email.to_text || email.to,
-      date: email.date,
-      text: null,
-      text_content: null,
-      html: null,
-      html_content: null,
-      attachments: [],
-      hasAttachments: email.hasAttachments || false,
-      attachmentsCount: email.attachmentsCount || 0,
-      account_id: email.account_id
-    };
-
-    // Process attachments
-    if (Array.isArray(email.attachments) && email.attachments.length > 0) {
-      processedEmail.attachments = email.attachments.map((att, index) => {
-        const attachmentUrl = processAttachmentUrl(att);
-        const mimeType = att.type || att.contentType || att.mimeType || 'application/octet-stream';
-        const filename = att.filename || att.name || att.originalFilename || `attachment-${index}`;
-        const isImage = att.isImage || mimeType.startsWith('image/');
-        const isPDF = att.isPdf || mimeType === 'application/pdf';
-
-        return {
-          id: att.id || `att-${processedEmail.id}-${index}`,
-          filename: filename,
-          url: attachmentUrl,
-          type: mimeType,
-          contentType: mimeType,
-          mimeType: mimeType,
-          size: att.size || 0,
-          isImage: isImage,
-          isPdf: isPDF,
-          isCSV: filename.toLowerCase().endsWith('.csv'),
-          isExcel: filename.toLowerCase().match(/\.(xlsx|xls)$/),
-          isWord: filename.toLowerCase().match(/\.(docx|doc)$/),
-          path: att.path
-        };
-      }).filter(att => att.filename && att.url);
-
-      processedEmail.hasAttachments = processedEmail.attachments.length > 0;
-      processedEmail.attachmentsCount = processedEmail.attachments.length;
-    }
-
-    return processedEmail;
-  }, [processAttachmentUrl]);
-
-  // Load emails function - loads list without content
+  // ============ LOAD EMAILS (LIST ONLY) ============
   const loadEmails = useCallback(async (showLoading = true, forceRefresh = false) => {
     if (loadEmailsInProgress.current) {
       console.log('⚠️ Load emails already in progress, skipping...');
@@ -412,14 +341,6 @@ function App() {
 
     try {
       console.log('🔄 Loading emails from backend...', forceRefresh ? '(FORCE REFRESH)' : '');
-      console.log('🌐 Using API base:', API_BASE);
-
-      const healthResponse = await fetch(`${API_BASE}api/health`);
-      if (!healthResponse.ok) {
-        throw new Error(`Backend health check failed: ${healthResponse.status}`);
-      }
-      const healthData = await healthResponse.json();
-      console.log('🏥 Backend health:', healthData.status);
 
       if (forceRefresh) {
         try {
@@ -434,7 +355,7 @@ function App() {
         `search=${encodeURIComponent(search)}`,
         `sort=${sort}`,
         `page=1`,
-        `limit=50`,
+        `limit=100`,
         `accountId=${selectedAccount}`,
         `t=${Date.now()}`
       ].join('&');
@@ -448,30 +369,24 @@ function App() {
         throw new Error(data.error || 'Failed to load emails from server');
       }
       
-      let emailsToProcess = [];
-      
-      if (data.emails && Array.isArray(data.emails)) {
-        emailsToProcess = data.emails;
-      } else if (Array.isArray(data)) {
-        emailsToProcess = data;
-      } else {
-        console.log('ℹ️ No emails found in response');
-        setEmails([]);
-        return;
-      }
-      
+      const emailsToProcess = data.emails || [];
       console.log('📧 Loaded emails:', emailsToProcess.length);
       
-      const processedEmails = emailsToProcess.map(processEmailData);
+      // Process emails - keep minimal data for list view
+      const processedEmails = emailsToProcess.map(email => ({
+        id: email.messageId,
+        messageId: email.messageId,
+        subject: email.subject || '(No Subject)',
+        from: email.from,
+        to: email.to,
+        date: email.date,
+        hasAttachments: email.hasAttachments || false,
+        attachmentsCount: email.attachmentsCount || 0,
+        account_id: email.account_id
+      }));
       
-      const sortedEmails = processedEmails.sort((a, b) => {
-        const dateA = new Date(a.date || 0);
-        const dateB = new Date(b.date || 0);
-        return dateB - dateA;
-      });
-      
-      setEmails(sortedEmails);
-      console.log('✅ Emails set in state:', sortedEmails.length);
+      setEmails(processedEmails);
+      console.log('✅ Emails set in state:', processedEmails.length);
       
     } catch (err) {
       console.error('❌ Load emails error:', err);
@@ -484,8 +399,6 @@ function App() {
         setTimeout(() => {
           window.location.href = '/login';
         }, 2000);
-      } else if (err.message.includes('Backend server is not responding')) {
-        errorMessage = `Backend server is not responding at ${API_BASE}. Please check if the server is deployed.`;
       }
       
       setError(errorMessage);
@@ -494,10 +407,10 @@ function App() {
       if (showLoading) setLoading(false);
       loadEmailsInProgress.current = false;
     }
-  }, [API_BASE, fetchWithAuth, search, sort, selectedAccount, processEmailData]);
+  }, [fetchWithAuth, search, sort, selectedAccount]);
 
-  // Enhanced fetch emails function with LATEST email fetching
-  const fetchEmails = useCallback(async (mode = 'latest') => {
+  // ============ FETCH EMAILS FROM IMAP ============
+  const fetchEmails = useCallback(async (count = 50) => {
     if (fetchEmailsInProgress.current || fetching) {
       console.log('⚠️ Fetch emails already in progress, skipping...');
       return;
@@ -510,30 +423,17 @@ function App() {
     setFetchProgress({ message: 'Starting email fetch...', stage: 'init' });
 
     try {
-      console.log(`🚀 Starting ${mode} fetch...`);
+      console.log(`🚀 Starting fetch of ${count} emails...`);
       
       setFetchProgress({ message: 'Connecting to email server...', stage: 'connect' });
       
-      let endpoint, body;
-      
-      if (mode === 'force-latest') {
-        endpoint = '/api/fetch-latest-emails';
-        body = {
-          accountId: selectedAccount,
-          hours: 24
-        };
-        setFetchProgress({ message: '🔄 FORCE FETCH: Getting latest emails (last 24 hours)...', stage: 'connect' });
-      } else {
-        endpoint = '/fetch-emails';
-        body = {
-          mode: mode,
-          count: 150,
-          accountId: selectedAccount
-        };
-        setFetchProgress({ message: '🔄 Fetching latest emails from server...', stage: 'connect' });
-      }
+      const body = {
+        count: parseInt(count),
+        accountId: selectedAccount,
+        mode: 'latest'
+      };
 
-      const response = await fetchWithAuth(endpoint, {
+      const response = await fetchWithAuth('/fetch-emails', {
         method: 'POST',
         body: JSON.stringify(body)
       });
@@ -541,24 +441,18 @@ function App() {
       setFetchProgress({ message: 'Processing server response...', stage: 'process' });
 
       const result = await response.json();
-      console.log(`📨 ${mode} fetch result:`, result);
+      console.log(`📨 Fetch result:`, result);
       
       if (response.ok && result.success) {
-        if (result.summary) {
-          const { totalProcessed, totalTimeMs } = result.summary;
-          const emailsPerSecond = totalTimeMs > 0 ? (totalProcessed / (totalTimeMs / 1000)).toFixed(2) : 0;
-          
-          setFetchProgress({ 
-            message: `✅ Processed ${totalProcessed} emails in ${(totalTimeMs / 1000).toFixed(2)}s (${emailsPerSecond} emails/s)`, 
-            stage: 'success' 
-          });
-        } else if (result.accounts) {
-          const totalProcessed = result.accounts.reduce((sum, acc) => sum + (acc.data?.processed || 0), 0);
-          setFetchProgress({ 
-            message: `✅ Processed ${totalProcessed} emails across ${result.accounts.length} accounts`, 
-            stage: 'success' 
-          });
-        }
+        const { summary } = result;
+        const totalProcessed = summary?.totalProcessed || 0;
+        const totalTime = summary?.totalTimeMs || 0;
+        const emailsPerSecond = totalTime > 0 ? (totalProcessed / (totalTime / 1000)).toFixed(2) : 0;
+        
+        setFetchProgress({ 
+          message: `✅ Processed ${totalProcessed} emails in ${(totalTime / 1000).toFixed(2)}s (${emailsPerSecond} emails/s)`, 
+          stage: 'success' 
+        });
         
         setFetchStatus('success');
         setLastFetchTime(new Date());
@@ -569,15 +463,15 @@ function App() {
         setFetchProgress(null);
       } else {
         setFetchStatus('error');
-        setError(result.error || `Failed to ${mode} fetch emails`);
+        setError(result.error || 'Failed to fetch emails');
         setFetchProgress(null);
-        console.error(`❌ ${mode} fetch failed:`, result.error);
+        console.error('❌ Fetch failed:', result.error);
       }
     } catch (err) {
       setFetchStatus('error');
       setError(err.message);
       setFetchProgress(null);
-      console.error(`❌ ${mode} fetch failed:`, err);
+      console.error('❌ Fetch failed:', err);
       
       if (err.message.includes('Authentication failed')) {
         setTimeout(() => {
@@ -590,9 +484,6 @@ function App() {
       setTimeout(() => setFetchProgress(null), 3000);
     }
   }, [fetchWithAuth, fetching, selectedAccount, loadEmails]);
-
-  const fetchNewEmails = useCallback(() => fetchEmails('force-latest'), [fetchEmails]);
-  const forceFetchEmails = useCallback(() => fetchEmails('force'), [fetchEmails]);
 
   const forceRefreshEmails = useCallback(async () => {
     if (fetchEmailsInProgress.current || fetching) {
@@ -621,7 +512,7 @@ function App() {
     }
   }, [fetching, loadEmails]);
 
-  // File icon helper
+  // ============ FILE HELPERS ============
   const getFileIcon = useCallback((mimeType, filename) => {
     if (!mimeType && !filename) return '📎';
     
@@ -637,7 +528,6 @@ function App() {
     return '📎';
   }, []);
 
-  // File size helper
   const getFileSize = useCallback((bytes) => {
     if (!bytes || bytes === 0) return 'Unknown size';
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -645,7 +535,6 @@ function App() {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   }, []);
 
-  // Download file
   const downloadFile = useCallback(async (attachment, filename) => {
     try {
       console.log('⬇️ Downloading attachment:', { filename, url: attachment.url });
@@ -674,7 +563,6 @@ function App() {
     }
   }, []);
 
-  // Toggle image expand
   const toggleImageExpand = useCallback((emailIndex, attachmentIndex) => {
     const key = `${emailIndex}-${attachmentIndex}`;
     setExpandedImages(prev => ({
@@ -683,19 +571,19 @@ function App() {
     }));
   }, []);
 
-  // Render attachment
+  // ============ RENDER ATTACHMENT ============
   const renderAttachment = useCallback((attachment, index, emailIndex) => {
-    const mimeType = attachment.mimeType || attachment.type;
+    const mimeType = attachment.mimeType || attachment.contentType || attachment.type;
     const filename = attachment.filename || `attachment_${index}`;
     const fileSize = getFileSize(attachment.size);
     const fileIcon = getFileIcon(mimeType, filename);
-    const isImage = attachment.isImage || mimeType?.startsWith('image/');
-    const isPDF = attachment.isPdf || mimeType === 'application/pdf';
+    const isImage = mimeType?.startsWith('image/');
+    const isPDF = mimeType === 'application/pdf';
     const isExpanded = expandedImages[`${emailIndex}-${index}`];
-    const safeUrl = attachment.url;
+    const safeUrl = processAttachmentUrl(attachment);
 
     return (
-      <div key={attachment.id} className="attachment-item">
+      <div key={attachment.id || index} className="attachment-item">
         <div className="attachment-header">
           <span className="file-icon">{fileIcon}</span>
           <div className="file-info">
@@ -740,9 +628,9 @@ function App() {
         )}
       </div>
     );
-  }, [downloadFile, expandedImages, getFileIcon, getFileSize, toggleImageExpand]);
+  }, [downloadFile, expandedImages, getFileIcon, getFileSize, toggleImageExpand, processAttachmentUrl]);
 
-  // Delete email
+  // ============ DELETE EMAIL ============
   const deleteEmail = useCallback(async (emailId, messageId) => {
     if (!emailId && !messageId) {
       console.error('❌ No email ID or message ID provided for deletion');
@@ -751,7 +639,7 @@ function App() {
     }
 
     const confirmed = window.confirm(
-      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments from the database. This action cannot be undone.'
+      'Are you sure you want to delete this email?\n\nThis will permanently remove the email and all its attachments. This action cannot be undone.'
     );
 
     if (!confirmed) return;
@@ -772,7 +660,6 @@ function App() {
         console.log('✅ Email deleted successfully');
         setFetchStatus('success');
         
-        // ============ FIX 5: CLEAR STORAGE IF DELETED EMAIL WAS EXPANDED ============
         if (expandedEmailId === emailId) {
           setExpandedEmailId(null);
           sessionStorage.removeItem('expanded_email');
@@ -790,7 +677,7 @@ function App() {
     }
   }, [fetchWithAuth, expandedEmailId]);
 
-  // EmailCard component with expandable content
+  // ============ EMAIL CARD COMPONENT ============
   const EmailCard = React.memo(({ email, index }) => {
     const isExpanded = expandedEmailId === email.id;
     const content = emailContent[email.messageId];
@@ -831,7 +718,7 @@ function App() {
 
         <div className="email-from">
           <strong>From:</strong> 
-          <span className="sender-email">{email.from_text || email.from || 'Unknown'}</span>
+          <span className="sender-email">{email.from || 'Unknown'}</span>
         </div>
 
         {isExpanded && (
@@ -842,31 +729,33 @@ function App() {
                 <p>Loading email content...</p>
               </div>
             ) : content ? (
-              <div
-                className="email-body"
-                dangerouslySetInnerHTML={{
-                  __html:
-                    content.html ||
-                    content.text?.replace(/\n/g, '<br/>') ||
-                    '<p className="no-content">(No Content)</p>',
-                }}
-              />
+              <>
+                <div
+                  className="email-body"
+                  dangerouslySetInnerHTML={{
+                    __html:
+                      content.html ||
+                      content.text?.replace(/\n/g, '<br/>') ||
+                      '<p className="no-content">(No Content)</p>',
+                  }}
+                />
+
+                {content.attachments && content.attachments.length > 0 && (
+                  <div className="attachments-section">
+                    <div className="attachments-header">
+                      <h4>📎 Attachments ({content.attachments.length})</h4>
+                    </div>
+                    <div className="attachments-grid">
+                      {content.attachments.map((attachment, attachmentIndex) =>
+                        renderAttachment(attachment, attachmentIndex, index)
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="no-content">
                 <p>(No Content Available)</p>
-              </div>
-            )}
-
-            {email.hasAttachments && (
-              <div className="attachments-section">
-                <div className="attachments-header">
-                  <h4>📎 Attachments ({email.attachmentsCount})</h4>
-                </div>
-                <div className="attachments-grid">
-                  {email.attachments.map((attachment, attachmentIndex) =>
-                    renderAttachment(attachment, attachmentIndex, index)
-                  )}
-                </div>
               </div>
             )}
           </div>
@@ -875,7 +764,7 @@ function App() {
     );
   });
 
-  // Get current user on component mount
+  // ============ EFFECTS ============
   useEffect(() => {
     const getUser = async () => {
       try {
@@ -893,7 +782,6 @@ function App() {
     getUser();
   }, [fetchUserAccounts]);
 
-  // Load emails once when component mounts
   useEffect(() => {
     console.log('🎯 Component mounted, loading emails...');
     const timer = setTimeout(() => {
@@ -904,7 +792,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounce search and sort changes
   useEffect(() => {
     const timer = setTimeout(() => {
       if (loadEmailsInProgress.current) {
@@ -918,7 +805,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, sort, selectedAccount]);
 
-  // Reset fetch status after 5 seconds
   useEffect(() => {
     if (fetchStatus === 'success' || fetchStatus === 'error') {
       const timer = setTimeout(() => {
@@ -943,7 +829,6 @@ function App() {
 
   const statusMessage = getStatusMessage();
 
-  // Add error boundary fallback
   if (error && error.includes('Authentication failed')) {
     return (
       <div className="error-container">
@@ -1027,21 +912,21 @@ function App() {
           {/* Compact Controls */}
           <div className="compact-controls">
             <button 
-              onClick={fetchNewEmails} 
+              onClick={() => fetchEmails(50)} 
               disabled={fetching}
               className={`fetch-button ${fetching ? 'fetching' : ''}`}
-              title="Fetch latest emails from last 24 hours (bypasses duplicate check)"
+              title="Fetch 50 latest emails from IMAP"
             >
-              {fetching ? '🔄' : '📥'} Smart Fetch LATEST
+              {fetching ? '🔄' : '📥'} Fetch 50 Latest
             </button>
 
             <button 
-              onClick={forceFetchEmails} 
+              onClick={() => fetchEmails(100)} 
               disabled={fetching}
               className="force-fetch-button"
-              title="Force fetch emails with duplicate checking"
+              title="Fetch 100 latest emails from IMAP"
             >
-              ⚡ Force Fetch
+              ⚡ Fetch 100 Latest
             </button>
 
             <button 
@@ -1073,7 +958,7 @@ function App() {
         {/* Error Display */}
         {error && (
           <div className="error-banner">
-            ❌ {error}
+            {error}
             <button onClick={() => setError(null)} className="close-error">✕</button>
           </div>
         )}
@@ -1123,11 +1008,11 @@ function App() {
               )}
               <p>Try fetching emails from your inbox</p>
               <div className="empty-actions">
-                <button onClick={fetchNewEmails} className="fetch-button">
-                  📥 Smart Fetch LATEST
+                <button onClick={() => fetchEmails(50)} className="fetch-button">
+                  📥 Fetch 50 Latest
                 </button>
-                <button onClick={forceFetchEmails} className="force-fetch-button">
-                  ⚡ Force Fetch
+                <button onClick={() => fetchEmails(100)} className="force-fetch-button">
+                  ⚡ Fetch 100 Latest
                 </button>
                 <button onClick={testBackendConnection} className="test-connection-btn">
                   🧪 Test Connection
@@ -1139,8 +1024,8 @@ function App() {
           {!loading && emails.length > 0 && (
             <div className="email-list">
               <div className="email-list-hint">
-                <p>💡 Click on email headers to expand and view content • ⚡ Optimized for fast fetching</p>
-                <p>🆕 <strong>Smart Fetch LATEST</strong> gets emails from last 24 hours (bypasses duplicates)</p>
+                <p>💡 Click on email headers to expand and view content</p>
+                <p>⚡ Content and attachments load on-demand for better performance</p>
                 <p>🔄 Your expanded email state is preserved when switching tabs</p>
               </div>
               {emails.map((email, index) => (
@@ -1171,16 +1056,28 @@ function App() {
               {error && <p style={{color: 'red'}}><strong>Error:</strong> {error}</p>}
               
               <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
-                <p><strong>Performance Features:</strong></p>
+                <p><strong>Backend Features:</strong></p>
                 <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
-                  <li>✅ Parallel email parsing</li>
+                  <li>✅ Parallel email parsing (10 concurrent)</li>
                   <li>✅ Batch duplicate checking</li>
                   <li>✅ Concurrent attachment uploads (3 at a time)</li>
-                  <li>✅ Batch database saves (10 at a time)</li>
-                  <li>✅ Lazy content loading (on expand)</li>
-                  <li>✅ Smart caching</li>
-                  <li>🆕 <strong>Force Latest Fetch</strong> (bypasses duplicates for recent emails)</li>
-                  <li>🔄 <strong>Tab Switch Recovery</strong> (preserves expanded email state)</li>
+                  <li>✅ Batch database saves (15 at a time)</li>
+                  <li>✅ LRU cache with TTL (2000 items, 5min)</li>
+                  <li>✅ IMAP connection pooling</li>
+                  <li>✅ User-based account access control</li>
+                </ul>
+              </div>
+
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
+                <p><strong>Frontend Features:</strong></p>
+                <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
+                  <li>✅ Lazy content loading (loads on expand)</li>
+                  <li>✅ Smart caching with sessionStorage</li>
+                  <li>✅ Tab switch state recovery</li>
+                  <li>📎 On-demand attachment loading</li>
+                  <li>🔐 Automatic token refresh</li>
+                  <li>⚡ Debounced search/sort</li>
+                  <li>🛡️ Duplicate request prevention</li>
                 </ul>
               </div>
               
@@ -1189,7 +1086,30 @@ function App() {
                 <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
                   <li>Expanded Email: {sessionStorage.getItem('expanded_email') ? 'Saved ✅' : 'None'}</li>
                   <li>Storage Size: {new Blob([sessionStorage.getItem('expanded_email') || '']).size} bytes</li>
+                  <li>Content Items: {Object.keys(emailContent).length}</li>
                 </ul>
+              </div>
+
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
+                <p><strong>Performance Metrics:</strong></p>
+                <ul style={{ fontSize: '12px', marginLeft: '20px' }}>
+                  <li>Emails in state: {emails.length}</li>
+                  <li>Content cached: {Object.keys(emailContent).length}</li>
+                  <li>Images expanded: {Object.keys(expandedImages).length}</li>
+                  <li>Loading content: {Object.values(loadingContent).filter(Boolean).length}</li>
+                  <li>Deleting emails: {Object.values(deletingEmails).filter(Boolean).length}</li>
+                </ul>
+              </div>
+
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ccc' }}>
+                <p><strong>How It Works:</strong></p>
+                <ol style={{ fontSize: '11px', marginLeft: '20px', lineHeight: '1.6' }}>
+                  <li><strong>Initial Load:</strong> Fetches email list (metadata only) from <code>/api/emails</code> - fast!</li>
+                  <li><strong>Expand Email:</strong> Click header → loads full content + attachments from <code>/api/emails/:messageId</code></li>
+                  <li><strong>View Attachments:</strong> Downloads or previews from Supabase storage</li>
+                  <li><strong>Fetch New:</strong> Button fetches latest from IMAP via <code>/api/fetch-emails</code> → auto-refreshes list</li>
+                  <li><strong>Switch Tabs:</strong> State preserved in sessionStorage, content cached in memory</li>
+                </ol>
               </div>
             </div>
           </details>
