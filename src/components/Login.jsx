@@ -10,7 +10,7 @@ import loadingImage from './image.png';
 // import sealLogo from '../assets/seal.png';
 // import loadingImage from '../assets/image.png';
 
-const Login = () => {
+const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -70,16 +70,31 @@ const Login = () => {
 
       if (validUsers.includes(email.toLowerCase()) && password.length >= 6) {
         setMessage('Login successful! Redirecting to dashboard...');
+        
         if (rememberMe) {
           localStorage.setItem('rememberMe', 'true');
         }
-        setTimeout(() => {
-          alert('Login successful! Dashboard would load here.');
-        }, 1000);
+        
+        // Call the onLogin callback if provided
+        if (onLogin) {
+          const result = await onLogin(email, password);
+          if (result && result.success) {
+            // Redirect will be handled by App.jsx through authentication state
+            setTimeout(() => {
+              // Additional redirect logic can go here if needed
+            }, 1000);
+          }
+        } else {
+          // Fallback if no onLogin callback is provided
+          setTimeout(() => {
+            alert('Login successful! Dashboard would load here.');
+          }, 1000);
+        }
       } else {
         setMessage('Invalid email or password. Please try again.');
       }
     } catch (error) {
+      console.error('Login error:', error);
       setMessage('An unexpected error occurred. Please try again.');
     } finally {
       setIsLoggingIn(false);
@@ -790,7 +805,7 @@ const Login = () => {
       <header className="header">
         <div className="container">
           <div className="logo-header">
-            <img src={sealLogo}  alt="Seal Freight Logo" className="logo-image" />
+            <img src={sealLogo} alt="Seal Freight Logo" className="logo-image" />
           </div>
         </div>
       </header>
