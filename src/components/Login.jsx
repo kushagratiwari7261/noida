@@ -73,19 +73,14 @@ const Login = ({ onLogin }) => {
         
         if (rememberMe) {
           localStorage.setItem('rememberMe', 'true');
+          localStorage.setItem('userEmail', email);
         }
         
-        // Call the onLogin callback if provided
         if (onLogin) {
-          const result = await onLogin(email, password);
-          if (result && result.success) {
-            // Redirect will be handled by App.jsx through authentication state
-            setTimeout(() => {
-              // Additional redirect logic can go here if needed
-            }, 1000);
-          }
+          setTimeout(() => {
+            onLogin(email, password);
+          }, 1000);
         } else {
-          // Fallback if no onLogin callback is provided
           setTimeout(() => {
             alert('Login successful! Dashboard would load here.');
           }, 1000);
@@ -154,7 +149,9 @@ const Login = ({ onLogin }) => {
         .loading-container {
           text-align: center;
           color: white;
-          padding: 40px;
+          padding: 20px;
+          width: 100%;
+          max-width: 400px;
         }
 
         .loading-content {
@@ -170,7 +167,8 @@ const Login = ({ onLogin }) => {
         }
 
         .loading-main-image {
-          width: 320px;
+          width: 280px;
+          max-width: 90vw;
           height: auto;
           border-radius: 20px;
           box-shadow: 
@@ -180,7 +178,7 @@ const Login = ({ onLogin }) => {
         }
 
         .loading-text-large {
-          font-size: 22px;
+          font-size: 20px;
           font-weight: 600;
           color: white;
           text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
@@ -188,7 +186,8 @@ const Login = ({ onLogin }) => {
         }
 
         .loading-progress {
-          width: 200px;
+          width: 100%;
+          max-width: 200px;
           height: 4px;
           background: rgba(255, 255, 255, 0.2);
           border-radius: 2px;
@@ -212,17 +211,6 @@ const Login = ({ onLogin }) => {
           100% { transform: rotate(360deg); }
         }
 
-        @keyframes pulse {
-          0%, 100% {
-            border-top-color: white;
-            box-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
-          }
-          50% {
-            border-top-color: #e3f2fd;
-            box-shadow: 0 0 30px rgba(255, 255, 255, 0.4);
-          }
-        }
-
         @keyframes progress {
           0% { width: 0%; }
           100% { width: 100%; }
@@ -242,7 +230,7 @@ const Login = ({ onLogin }) => {
           background-color: rgba(255, 255, 255, 0.98);
           backdrop-filter: blur(10px);
           border-bottom: 1px solid rgba(222, 226, 230, 0.8);
-          padding: 20px 0;
+          padding: 16px 0;
           box-shadow: 0 2px 20px rgba(0, 0, 0, 0.08);
         }
 
@@ -262,6 +250,7 @@ const Login = ({ onLogin }) => {
         .logo-image {
           height: 50px;
           width: auto;
+          max-width: 200px;
         }
 
         .main-section {
@@ -269,7 +258,7 @@ const Login = ({ onLogin }) => {
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 60px 0;
+          padding: 40px 0;
           position: relative;
           overflow: hidden;
         }
@@ -289,7 +278,7 @@ const Login = ({ onLogin }) => {
         .login-wrapper {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 60px;
+          gap: 40px;
           width: 100%;
           max-width: 1100px;
           align-items: center;
@@ -304,7 +293,7 @@ const Login = ({ onLogin }) => {
             0 20px 60px rgba(0, 0, 0, 0.12),
             0 0 0 1px rgba(255, 255, 255, 0.2);
           border: none;
-          border-radius: 24px;
+          border-radius: 20px;
           max-width: 480px;
           width: 100%;
           justify-self: end;
@@ -318,39 +307,39 @@ const Login = ({ onLogin }) => {
           top: 0;
           left: 0;
           right: 0;
-          height: 5px;
+          height: 4px;
           background: linear-gradient(90deg, #0d6efd, #21808d);
         }
 
         .card-body {
-          padding: 48px 40px;
+          padding: 40px 32px;
         }
 
         .login-header {
           text-align: center;
-          margin-bottom: 40px;
+          margin-bottom: 32px;
         }
 
         .login-header h2 {
           color: #212529;
           margin-bottom: 8px;
           font-weight: 700;
-          font-size: 32px;
+          font-size: 28px;
           letter-spacing: -0.5px;
         }
 
         .login-subtitle {
           color: #6c757d;
           margin: 0;
-          font-size: 15px;
+          font-size: 14px;
           font-weight: 400;
         }
 
         .success-message,
         .error-message {
-          padding: 14px 18px;
-          border-radius: 12px;
-          margin-bottom: 24px;
+          padding: 12px 16px;
+          border-radius: 10px;
+          margin-bottom: 20px;
           text-align: center;
           font-size: 14px;
           font-weight: 500;
@@ -382,17 +371,17 @@ const Login = ({ onLogin }) => {
         }
 
         .login-form {
-          margin-bottom: 32px;
+          margin-bottom: 28px;
         }
 
         .form-group {
-          margin-bottom: 24px;
+          margin-bottom: 20px;
           position: relative;
         }
 
         .form-label {
           display: block;
-          margin-bottom: 10px;
+          margin-bottom: 8px;
           font-weight: 600;
           font-size: 14px;
           color: #212529;
@@ -402,13 +391,13 @@ const Login = ({ onLogin }) => {
         .form-control {
           display: block;
           width: 100%;
-          padding: 14px 16px;
+          padding: 12px 14px;
           font-size: 15px;
           line-height: 1.5;
           color: #212529;
           background-color: #ffffff;
           border: 2px solid #e9ecef;
-          border-radius: 12px;
+          border-radius: 10px;
           transition: all 0.2s ease;
           font-weight: 400;
         }
@@ -439,12 +428,12 @@ const Login = ({ onLogin }) => {
         }
 
         .password-input-wrapper .form-control {
-          padding-right: 50px;
+          padding-right: 48px;
         }
 
         .password-toggle {
           position: absolute;
-          right: 12px;
+          right: 10px;
           top: 50%;
           transform: translateY(-50%);
           background: none;
@@ -456,7 +445,7 @@ const Login = ({ onLogin }) => {
           justify-content: center;
           color: #6c757d;
           transition: all 0.2s ease;
-          border-radius: 8px;
+          border-radius: 6px;
           z-index: 2;
         }
 
@@ -494,7 +483,8 @@ const Login = ({ onLogin }) => {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 28px;
+          margin-bottom: 24px;
+          gap: 12px;
         }
 
         .checkbox-container {
@@ -519,8 +509,8 @@ const Login = ({ onLogin }) => {
           width: 20px;
           height: 20px;
           border: 2px solid #dee2e6;
-          border-radius: 6px;
-          margin-right: 10px;
+          border-radius: 5px;
+          margin-right: 8px;
           position: relative;
           transition: all 0.3s ease;
           background: #ffffff;
@@ -554,6 +544,7 @@ const Login = ({ onLogin }) => {
           text-decoration: none;
           transition: all 0.2s ease;
           font-weight: 500;
+          white-space: nowrap;
         }
 
         .forgot-password:hover {
@@ -573,8 +564,8 @@ const Login = ({ onLogin }) => {
           font-size: 16px;
           color: white;
           transition: all 0.3s ease;
-          border-radius: 12px;
-          padding: 16px;
+          border-radius: 10px;
+          padding: 14px;
           overflow: hidden;
           cursor: pointer;
           letter-spacing: 0.3px;
@@ -619,8 +610,8 @@ const Login = ({ onLogin }) => {
         }
 
         .btn-spinner {
-          width: 20px;
-          height: 20px;
+          width: 18px;
+          height: 18px;
           border: 2px solid rgba(255, 255, 255, 0.3);
           border-top: 2px solid white;
           border-radius: 50%;
@@ -631,7 +622,7 @@ const Login = ({ onLogin }) => {
           text-align: center;
           color: #6c757d;
           font-size: 14px;
-          padding-top: 24px;
+          padding-top: 20px;
           border-top: 1px solid rgba(222, 226, 230, 0.6);
         }
 
@@ -649,10 +640,10 @@ const Login = ({ onLogin }) => {
 
         .login-info {
           justify-self: start;
-          padding: 40px;
+          padding: 32px;
           background: rgba(255, 255, 255, 0.95);
           backdrop-filter: blur(10px);
-          border-radius: 24px;
+          border-radius: 20px;
           box-shadow: 
             0 10px 40px rgba(0, 0, 0, 0.1),
             0 0 0 1px rgba(255, 255, 255, 0.2);
@@ -660,31 +651,31 @@ const Login = ({ onLogin }) => {
 
         .login-info h3 {
           color: #212529;
-          margin-bottom: 20px;
-          font-size: 28px;
+          margin-bottom: 16px;
+          font-size: 24px;
           font-weight: 700;
           letter-spacing: -0.5px;
         }
 
         .login-info p {
           color: #6c757d;
-          margin-bottom: 28px;
+          margin-bottom: 24px;
           line-height: 1.6;
-          font-size: 15px;
+          font-size: 14px;
         }
 
         .feature-list {
           list-style: none;
           padding: 0;
-          margin: 0 0 32px 0;
+          margin: 0 0 28px 0;
         }
 
         .feature-list li {
           color: #495057;
-          margin-bottom: 14px;
+          margin-bottom: 12px;
           position: relative;
-          padding-left: 32px;
-          font-size: 15px;
+          padding-left: 28px;
+          font-size: 14px;
           font-weight: 500;
         }
 
@@ -695,42 +686,43 @@ const Login = ({ onLogin }) => {
           color: #0d6efd;
           font-weight: bold;
           background: rgba(13, 110, 253, 0.12);
-          width: 24px;
-          height: 24px;
+          width: 22px;
+          height: 22px;
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 12px;
+          font-size: 11px;
         }
 
         .user-accounts-info {
           background: linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(33, 128, 141, 0.12));
-          padding: 20px;
-          border-radius: 14px;
-          border-left: 4px solid #0d6efd;
+          padding: 16px;
+          border-radius: 12px;
+          border-left: 3px solid #0d6efd;
         }
 
         .user-accounts-info h4 {
           color: #212529;
-          margin-bottom: 12px;
-          font-size: 15px;
+          margin-bottom: 10px;
+          font-size: 14px;
           font-weight: 700;
         }
 
         .user-accounts-info p {
           color: #495057;
-          margin-bottom: 6px;
-          font-size: 13px;
+          margin-bottom: 5px;
+          font-size: 12px;
           font-family: 'Courier New', monospace;
           font-weight: 500;
+          word-break: break-all;
         }
 
         .footer {
           background-color: rgba(255, 255, 255, 0.98);
           backdrop-filter: blur(10px);
           border-top: 1px solid rgba(222, 226, 230, 0.8);
-          padding: 24px 0;
+          padding: 20px 0;
           margin-top: auto;
         }
 
@@ -744,7 +736,7 @@ const Login = ({ onLogin }) => {
 
         .footer-links {
           display: flex;
-          gap: 24px;
+          gap: 20px;
         }
 
         .footer-links a {
@@ -758,46 +750,203 @@ const Login = ({ onLogin }) => {
           color: #0d6efd;
         }
 
+        /* Tablet and below */
         @media (max-width: 968px) {
           .login-wrapper {
             grid-template-columns: 1fr;
-            gap: 40px;
-            max-width: 480px;
+            gap: 32px;
+            max-width: 520px;
           }
 
           .login-card {
             justify-self: center;
+            max-width: 100%;
           }
 
           .login-info {
             justify-self: center;
             order: -1;
+            max-width: 100%;
+          }
+
+          .main-section {
+            padding: 32px 0;
           }
         }
 
+        /* Mobile devices */
         @media (max-width: 640px) {
+          .container {
+            padding: 0 16px;
+          }
+
+          .header {
+            padding: 12px 0;
+          }
+
+          .logo-image {
+            height: 40px;
+          }
+
+          .main-section {
+            padding: 24px 0;
+          }
+
           .card-body {
-            padding: 32px 24px;
+            padding: 28px 20px;
           }
 
           .login-info {
-            padding: 28px 24px;
+            padding: 24px 20px;
           }
 
           .login-header h2 {
-            font-size: 26px;
+            font-size: 24px;
+          }
+
+          .login-subtitle {
+            font-size: 13px;
+          }
+
+          .login-info h3 {
+            font-size: 20px;
+          }
+
+          .login-info p {
+            font-size: 13px;
+          }
+
+          .feature-list li {
+            font-size: 13px;
+            padding-left: 26px;
+          }
+
+          .form-control {
+            padding: 11px 12px;
+            font-size: 14px;
+          }
+
+          .form-label {
+            font-size: 13px;
           }
 
           .form-options {
             flex-direction: column;
-            gap: 16px;
+            gap: 12px;
             align-items: flex-start;
+            margin-bottom: 20px;
+          }
+
+          .checkbox-container {
+            font-size: 13px;
+          }
+
+          .forgot-password {
+            font-size: 13px;
+          }
+
+          .login-btn {
+            padding: 12px;
+            font-size: 15px;
           }
 
           .footer-content {
             flex-direction: column;
-            gap: 16px;
+            gap: 12px;
             text-align: center;
+            font-size: 13px;
+          }
+
+          .footer-links {
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+          }
+
+          .user-accounts-info {
+            padding: 14px;
+          }
+
+          .user-accounts-info h4 {
+            font-size: 13px;
+          }
+
+          .user-accounts-info p {
+            font-size: 11px;
+          }
+
+          .success-message,
+          .error-message {
+            font-size: 13px;
+            padding: 10px 14px;
+          }
+
+          .loading-text-large {
+            font-size: 18px;
+          }
+
+          .loading-main-image {
+            width: 200px;
+          }
+        }
+
+        /* Extra small devices */
+        @media (max-width: 380px) {
+          .card-body {
+            padding: 24px 16px;
+          }
+
+          .login-info {
+            padding: 20px 16px;
+          }
+
+          .login-header h2 {
+            font-size: 22px;
+          }
+
+          .form-control {
+            padding: 10px;
+            font-size: 14px;
+          }
+
+          .password-input-wrapper .form-control {
+            padding-right: 44px;
+          }
+
+          .login-btn {
+            padding: 11px;
+            font-size: 14px;
+          }
+        }
+
+        /* Landscape mode for mobile */
+        @media (max-width: 968px) and (max-height: 600px) {
+          .main-section {
+            padding: 20px 0;
+          }
+
+          .login-wrapper {
+            gap: 20px;
+          }
+
+          .card-body {
+            padding: 24px 20px;
+          }
+
+          .login-header {
+            margin-bottom: 20px;
+          }
+
+          .form-group {
+            margin-bottom: 16px;
+          }
+
+          .form-options {
+            margin-bottom: 16px;
+          }
+
+          .login-form {
+            margin-bottom: 20px;
           }
         }
       `}</style>
@@ -827,7 +976,7 @@ const Login = ({ onLogin }) => {
                   </div>
                 )}
 
-                <div className="login-form">
+                <form className="login-form" onSubmit={handleSubmit}>
                   <div className="form-group">
                     <label htmlFor="email" className="form-label">Email Address</label>
                     <input 
@@ -863,7 +1012,7 @@ const Login = ({ onLogin }) => {
                         disabled={isLoggingIn}
                         aria-label={showPassword ? "Hide password" : "Show password"}
                       >
-                        {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                       </button>
                     </div>
                     {errors.password && <div className="field-error">{errors.password}</div>}
@@ -888,9 +1037,8 @@ const Login = ({ onLogin }) => {
                   </div>
 
                   <button 
-                    type="button"
+                    type="submit"
                     className="login-btn"
-                    onClick={handleSubmit}
                     disabled={isLoggingIn}
                   >
                     {isLoggingIn ? (
@@ -902,7 +1050,7 @@ const Login = ({ onLogin }) => {
                       <span>Sign In</span>
                     )}
                   </button>
-                </div>
+                </form>
 
                 <div className="login-footer">
                   <p>Don't have an account?{' '}
