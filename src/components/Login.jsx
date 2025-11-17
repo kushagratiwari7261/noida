@@ -1118,22 +1118,7 @@ const Login = ({ onLogin }) => {
                 <li>24/7 customer support</li>
               </ul>
               
-              <div className="info-note">
-                <h4>🔧 Environment Setup</h4>
-                <p><strong>Required:</strong> Create a <code>.env</code> file in your project root</p>
-                <p style={{ fontSize: '12px', fontFamily: 'monospace', marginTop: '8px' }}>
-                  VITE_SUPABASE_URL=your_url<br/>
-                  VITE_SUPABASE_ANON_KEY=your_key
-                </p>
-                <p style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(13, 110, 253, 0.2)' }}>
-                  <strong>Connection Status:</strong> {supabase ? '✅ Connected' : '❌ Not configured'}
-                </p>
-                {!supabase && (
-                  <p style={{ marginTop: '8px', color: '#dc3545', fontSize: '12px' }}>
-                    ⚠️ Environment variables not found. Please check your .env file.
-                  </p>
-                )}
-              </div>
+              
             </div>
           </div>
         </div>
