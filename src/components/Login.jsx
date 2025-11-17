@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
 // Import images - adjust the path based on your folder structure
 // If images are in the same folder as this component:
@@ -9,6 +10,27 @@ import loadingImage from './image.png';
 // OR if they're in a different folder, adjust the path:
 // import sealLogo from '../assets/seal.png';
 // import loadingImage from '../assets/image.png';
+
+// ===== SUPABASE CONFIGURATION FROM ENVIRONMENT VARIABLES =====
+// Make sure you have these variables in your .env file:
+// VITE_SUPABASE_URL=https://your-project.supabase.co
+// VITE_SUPABASE_ANON_KEY=your-anon-key-here
+// 
+// For Create React App, use:
+// REACT_APP_SUPABASE_URL=https://your-project.supabase.co
+// REACT_APP_SUPABASE_ANON_KEY=your-anon-key-here
+// ================================================================
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY;
+
+// Only create client if valid credentials are provided
+let supabase = null;
+if (supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith('https://')) {
+  supabase = createClient(supabaseUrl, supabaseAnonKey);
+}
+
+// Placeholder images - replace with your actual image imports
 
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
@@ -24,8 +46,20 @@ const Login = ({ onLogin }) => {
     const timer = setTimeout(() => {
       setIsLoading(false);
     }, 3000);
+    
+    // Check if user is already logged in
+    checkUser();
+    
     return () => clearTimeout(timer);
   }, []);
+
+  const checkUser = async () => {
+    if (!supabase) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session && onLogin) {
+      onLogin(session.user.email, null);
+    }
+  };
 
   const isValidEmail = (email) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -56,19 +90,26 @@ const Login = ({ onLogin }) => {
       return;
     }
 
+    // Check if Supabase is configured
+    if (!supabase) {
+      setMessage('⚠️ Supabase is not configured. Please add your Supabase credentials in the code.');
+      return;
+    }
+
     setIsLoggingIn(true);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      const validUsers = [
-        'info@seal.co.in',
-        'pankaj.singh@seal.co.in',
-        'anshuman.singh@seal.co.in',
-        'transport@seal.co.in'
-      ];
+      // Authenticate with Supabase
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
+      });
 
-      if (validUsers.includes(email.toLowerCase()) && password.length >= 6) {
+      if (error) {
+        throw error;
+      }
+
+      if (data.session) {
         setMessage('Login successful! Redirecting to dashboard...');
         
         if (rememberMe) {
@@ -78,19 +119,27 @@ const Login = ({ onLogin }) => {
         
         if (onLogin) {
           setTimeout(() => {
-            onLogin(email, password);
+            onLogin(data.user.email, data.session.access_token);
           }, 1000);
         } else {
           setTimeout(() => {
             alert('Login successful! Dashboard would load here.');
           }, 1000);
         }
-      } else {
-        setMessage('Invalid email or password. Please try again.');
       }
     } catch (error) {
       console.error('Login error:', error);
-      setMessage('An unexpected error occurred. Please try again.');
+      
+      // Handle specific error messages
+      if (error.message.includes('Invalid login credentials')) {
+        setMessage('Invalid email or password. Please try again.');
+      } else if (error.message.includes('Email not confirmed')) {
+        setMessage('Please verify your email address before logging in.');
+      } else if (error.message.includes('User not found')) {
+        setMessage('No account found with this email address.');
+      } else {
+        setMessage('An error occurred during login. Please try again.');
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -695,27 +744,25 @@ const Login = ({ onLogin }) => {
           font-size: 11px;
         }
 
-        .user-accounts-info {
+        .info-note {
           background: linear-gradient(135deg, rgba(13, 110, 253, 0.08), rgba(33, 128, 141, 0.12));
           padding: 16px;
           border-radius: 12px;
           border-left: 3px solid #0d6efd;
         }
 
-        .user-accounts-info h4 {
+        .info-note h4 {
           color: #212529;
-          margin-bottom: 10px;
+          margin-bottom: 8px;
           font-size: 14px;
           font-weight: 700;
         }
 
-        .user-accounts-info p {
+        .info-note p {
           color: #495057;
-          margin-bottom: 5px;
-          font-size: 12px;
-          font-family: 'Courier New', monospace;
-          font-weight: 500;
-          word-break: break-all;
+          margin: 0;
+          font-size: 13px;
+          line-height: 1.5;
         }
 
         .footer {
@@ -750,7 +797,6 @@ const Login = ({ onLogin }) => {
           color: #0d6efd;
         }
 
-        /* Tablet and below */
         @media (max-width: 968px) {
           .login-wrapper {
             grid-template-columns: 1fr;
@@ -774,7 +820,6 @@ const Login = ({ onLogin }) => {
           }
         }
 
-        /* Mobile devices */
         @media (max-width: 640px) {
           .container {
             padding: 0 16px;
@@ -863,16 +908,16 @@ const Login = ({ onLogin }) => {
             align-items: center;
           }
 
-          .user-accounts-info {
+          .info-note {
             padding: 14px;
           }
 
-          .user-accounts-info h4 {
+          .info-note h4 {
             font-size: 13px;
           }
 
-          .user-accounts-info p {
-            font-size: 11px;
+          .info-note p {
+            font-size: 12px;
           }
 
           .success-message,
@@ -890,7 +935,6 @@ const Login = ({ onLogin }) => {
           }
         }
 
-        /* Extra small devices */
         @media (max-width: 380px) {
           .card-body {
             padding: 24px 16px;
@@ -919,7 +963,6 @@ const Login = ({ onLogin }) => {
           }
         }
 
-        /* Landscape mode for mobile */
         @media (max-width: 968px) and (max-height: 600px) {
           .main-section {
             padding: 20px 0;
@@ -1075,12 +1118,21 @@ const Login = ({ onLogin }) => {
                 <li>24/7 customer support</li>
               </ul>
               
-              <div className="user-accounts-info">
-                <h4>Authorized Users:</h4>
-                <p>• info@seal.co.in</p>
-                <p>• pankaj.singh@seal.co.in</p>
-                <p>• anshuman.singh@seal.co.in</p>
-                <p>• transport@seal.co.in</p>
+              <div className="info-note">
+                <h4>🔧 Environment Setup</h4>
+                <p><strong>Required:</strong> Create a <code>.env</code> file in your project root</p>
+                <p style={{ fontSize: '12px', fontFamily: 'monospace', marginTop: '8px' }}>
+                  VITE_SUPABASE_URL=your_url<br/>
+                  VITE_SUPABASE_ANON_KEY=your_key
+                </p>
+                <p style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(13, 110, 253, 0.2)' }}>
+                  <strong>Connection Status:</strong> {supabase ? '✅ Connected' : '❌ Not configured'}
+                </p>
+                {!supabase && (
+                  <p style={{ marginTop: '8px', color: '#dc3545', fontSize: '12px' }}>
+                    ⚠️ Environment variables not found. Please check your .env file.
+                  </p>
+                )}
               </div>
             </div>
           </div>

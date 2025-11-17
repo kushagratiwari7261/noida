@@ -73,7 +73,7 @@ import Login from './components/Login'
 import './App.css'
 import NewShipments from './components/NewShipments'
 import DSRPage from './components/DSRPage'
-import EmailArchive from './components/App1.jsx'
+
 import { supabase } from './lib/supabaseClient'
 import ForgotPassword from './components/ForgotPassword'
 import ResetPassword from './components/ResetPassword'
@@ -858,14 +858,7 @@ function App() {
             }
           />
           
-          <Route 
-            path="/email-archive" 
-            element={
-              <ProtectedRoute>
-                <EmailArchive />
-              </ProtectedRoute>
-            } 
-          />
+          
         
           <Route 
             path="/customers" 
