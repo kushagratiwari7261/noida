@@ -73,6 +73,7 @@ import Login from './components/Login'
 import './App.css'
 import NewShipments from './components/NewShipments'
 import DSRPage from './components/DSRPage'
+import MessagesMain from './components/messages/MessagesMain'
 
 import { supabase } from './lib/supabaseClient'
 import ForgotPassword from './components/ForgotPassword'
@@ -92,10 +93,11 @@ function App() {
   const [isJobsLoading, setIsJobsLoading] = useState(false)
   const [isShipmentsLoading, setIsShipmentsLoading] = useState(false)
   
-  // Refs to prevent duplicate redirects
+  // Refs to prevent duplicate redirects and auth loops
   const redirectTimeoutRef = useRef(null)
   const lastRedirectRef = useRef(null)
   const authInitializedRef = useRef(false)
+  const authListenerActiveRef = useRef(false)
   
   const navigate = useNavigate()
 
@@ -136,9 +138,10 @@ function App() {
     }
   }, []);
 
-  // Enhanced authentication state management
+  // FIXED: Enhanced authentication state management
   useEffect(() => {
     let mounted = true;
+    let authSubscription = null;
 
     const getInitialSession = async () => {
       try {
@@ -219,93 +222,101 @@ function App() {
 
     getInitialSession();
 
-    // Enhanced auth state change listener - FIXED to prevent unnecessary redirects
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        console.log('Auth state change:', event, 'Session exists:', !!session);
-        
-        if (!mounted) return;
-        
-        try {
-          switch (event) {
-            case 'SIGNED_IN':
-              if (session?.user) {
-                console.log('User signed in');
-                setIsAuthenticated(true);
-                setUser(session.user);
-                authInitializedRef.current = true;
-                
-                // Only redirect from auth pages, and only if enough time has passed
-                const currentPath = window.location.pathname;
-                if ((currentPath === '/login' || currentPath === '/forgot-password') &&
-                    shouldRedirect('/dashboard')) {
-                  navigate('/dashboard', { replace: true });
+    // FIXED: Prevent multiple auth listeners from running simultaneously
+    if (!authListenerActiveRef.current) {
+      authListenerActiveRef.current = true;
+      
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(
+        async (event, session) => {
+          console.log('🔐 Auth event received:', event, 'Session:', !!session);
+          
+          if (!mounted) {
+            console.log('Component unmounted, ignoring auth event');
+            return;
+          }
+          
+          try {
+            switch (event) {
+              case 'SIGNED_IN':
+                console.log('✅ User signed in successfully');
+                if (session?.user) {
+                  setIsAuthenticated(true);
+                  setUser(session.user);
+                  authInitializedRef.current = true;
+                  
+                  const currentPath = window.location.pathname;
+                  if ((currentPath === '/login' || currentPath === '/forgot-password') &&
+                      shouldRedirect('/dashboard')) {
+                    console.log('Redirecting to dashboard after sign in');
+                    navigate('/dashboard', { replace: true });
+                  }
                 }
-              }
-              break;
-              
-            case 'SIGNED_OUT':
-              console.log('User signed out');
+                break;
+                
+              case 'SIGNED_OUT':
+                console.log('👋 User signed out');
+                await performLocalCleanup();
+                setIsAuthenticated(false);
+                setUser(null);
+                authInitializedRef.current = false;
+                
+                const signOutPath = window.location.pathname;
+                if (!signOutPath.includes('/login') && 
+                    !signOutPath.includes('/forgot-password') &&
+                    !signOutPath.includes('/reset-password') &&
+                    shouldRedirect('/login')) {
+                  navigate('/login', { replace: true });
+                }
+                break;
+                
+              case 'TOKEN_REFRESHED':
+                console.log('🔄 Token refreshed silently');
+                if (session?.user && authInitializedRef.current) {
+                  setUser(session.user);
+                }
+                break;
+                
+              case 'USER_UPDATED':
+                console.log('👤 User updated');
+                if (session?.user && authInitializedRef.current) {
+                  setUser(session.user);
+                }
+                break;
+                
+              case 'PASSWORD_RECOVERY':
+                console.log('🔑 Password recovery flow initiated');
+                break;
+                
+              default:
+                console.log('Unhandled auth event:', event);
+            }
+          } catch (error) {
+            console.error('Auth state change error:', error);
+            if (mounted) {
               await performLocalCleanup();
               setIsAuthenticated(false);
               setUser(null);
-              const signOutPath = window.location.pathname;
-              
-              if (!signOutPath.includes('/login') && 
-                  !signOutPath.includes('/forgot-password') &&
-                  !signOutPath.includes('/reset-password') &&
+              if (!window.location.pathname.includes('/reset-password') &&
                   shouldRedirect('/login')) {
                 navigate('/login', { replace: true });
               }
-              break;
-              
-            case 'TOKEN_REFRESHED':
-              console.log('Token refreshed');
-              if (session?.user) {
-                setIsAuthenticated(true);
-                setUser(session.user);
-              }
-              break;
-              
-            case 'USER_UPDATED':
-              console.log('User updated');
-              if (session?.user) {
-                setUser(session.user);
-              }
-              break;
-              
-            case 'PASSWORD_RECOVERY':
-              console.log('Password recovery flow initiated');
-              break;
-              
-            default:
-              console.log('Unhandled auth event:', event);
-          }
-        } catch (error) {
-          console.error('Auth state change error:', error);
-          if (mounted) {
-            await performLocalCleanup();
-            setIsAuthenticated(false);
-            setUser(null);
-            if (!window.location.pathname.includes('/reset-password') &&
-                shouldRedirect('/login')) {
-              navigate('/login', { replace: true });
             }
           }
-        } finally {
-          if (mounted) {
-            setIsLoading(false);
-          }
         }
-      }
-    );
+      );
+      
+      authSubscription = subscription;
+    }
 
     return () => {
       mounted = false;
+      authListenerActiveRef.current = false;
       if (redirectTimeoutRef.current) {
         clearTimeout(redirectTimeoutRef.current);
       }
-      subscription.unsubscribe();
+      if (authSubscription) {
+        authSubscription.unsubscribe();
+      }
     };
   }, [navigate, performLocalCleanup, shouldRedirect]);
 
@@ -353,12 +364,11 @@ function App() {
     }
   };
 
-  // Reset Password function - ENHANCED
+  // Reset Password function
   const handleResetPassword = async (password) => {
     try {
       console.log('Updating user password...');
       
-      // First, check if we have a valid session
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       
       if (sessionError || !session) {
@@ -379,8 +389,6 @@ function App() {
       }
 
       console.log('Password updated successfully:', data);
-      
-      // After successful password update, sign out the user to clear the recovery session
       await supabase.auth.signOut();
       
       return { success: true };
@@ -390,13 +398,16 @@ function App() {
     }
   };
 
-  // Supabase Login function
+  // FIXED: Supabase Login function
   const handleLogin = async (email, password) => {
     try {
       setIsLoggingIn(true);
       setError(null);
       
-      console.log('Attempting login with:', email);
+      console.log('🔐 Attempting login with:', email);
+      
+      // Clear any existing sessions first
+      await performLocalCleanup();
       
       const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
@@ -404,17 +415,19 @@ function App() {
       });
 
       if (error) {
-        console.error('Supabase login error:', error);
+        console.error('❌ Supabase login error:', error);
         return { 
           success: false, 
           error: error.message || 'Invalid email or password. Please try again.' 
         };
       }
 
-      if (data.session) {
-        console.log('Login successful:', data.user);
+      if (data.session && data.user) {
+        console.log('✅ Login successful for user:', data.user.email);
+        // The auth listener will handle the state update and navigation
         return { success: true };
       } else {
+        console.error('❌ Login failed: No session returned');
         return { 
           success: false, 
           error: 'Login failed. Please try again.' 
@@ -422,7 +435,7 @@ function App() {
       }
       
     } catch (error) {
-      console.error('Unexpected login error:', error);
+      console.error('❌ Unexpected login error:', error);
       return { 
         success: false, 
         error: 'An unexpected error occurred. Please try again.' 
@@ -437,7 +450,6 @@ function App() {
     try {
       console.log('Starting logout process...');
       
-      // First, check if we have a valid session
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       
       if (sessionError) {
@@ -456,14 +468,11 @@ function App() {
         }
       }
       
-      // Always perform local cleanup
       await performLocalCleanup();
-      
-      // Update state and redirect
       setIsAuthenticated(false);
       setUser(null);
+      authInitializedRef.current = false;
       
-      // Navigate to login page
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
       }
@@ -475,6 +484,7 @@ function App() {
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
+      authInitializedRef.current = false;
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
       }
@@ -731,8 +741,8 @@ function App() {
     </>
   );
 
-  // Protected Route Component - UPDATED
-  const ProtectedRoute = ({ children }) => {
+  // FIXED: Memoized ProtectedRoute to prevent unnecessary re-renders
+  const ProtectedRoute = useCallback(({ children }) => {
     if (isLoading) {
       return (
         <div className="loading-container">
@@ -744,7 +754,6 @@ function App() {
     const authPages = ['/login', '/forgot-password', '/reset-password'];
     const currentPath = window.location.pathname;
     
-    // Special case: reset-password should always be accessible
     if (currentPath === '/reset-password') {
       return children;
     }
@@ -754,7 +763,7 @@ function App() {
     }
   
     return children;
-  };
+  }, [isLoading, isAuthenticated]);
 
   // Placeholder components for other routes
   const ShipmentsPage = () => (
@@ -782,13 +791,6 @@ function App() {
     <div className="page-container">
       <h1>Invoices</h1>
       <p>View and manage all your invoices here.</p>
-    </div>
-  );
-
-  const MessagesPage = () => (
-    <div className="page-container">
-      <h1>Messages</h1>
-      <p>View and manage all your messages here.</p>
     </div>
   );
   
@@ -831,7 +833,6 @@ function App() {
             } 
           />
 
-          {/* Forgot Password Route */}
           <Route
             path="/forgot-password"
             element={
@@ -843,7 +844,6 @@ function App() {
             }
           />
 
-          {/* Reset Password Route - Always accessible */}
           <Route
             path="/reset-password"
             element={<ResetPassword onUpdatePassword={handleResetPassword} />}
@@ -858,8 +858,6 @@ function App() {
             }
           />
           
-          
-        
           <Route 
             path="/customers" 
             element={
@@ -927,12 +925,11 @@ function App() {
             path="/messages" 
             element={
               <ProtectedRoute>
-                <MessagesPage />
+                <MessagesMain user={user} key={user?.id} />
               </ProtectedRoute>
             } 
           />
 
-          {/* 404 Fallback Route */}
           <Route 
             path="*" 
             element={

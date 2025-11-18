@@ -1,0 +1,265 @@
+/* Main Container */
+.messages-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #b88ee6ff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.messages-container,
+.messages-container * {
+  color: #000000;
+}
+
+/* Header */
+.messages-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #1f396cff;
+  background: #1464b4ff;
+}
+
+.messages-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #000000;
+}
+
+.messages-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-compose {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-compose:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-compose:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* Content Layout */
+.messages-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.messages-sidebar {
+  width: 400px;
+  border-right: 1px solid #213f7aff;
+  display: flex;
+  flex-direction: column;
+  background: #040404ff;
+}
+
+.messages-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #f8f2f2ff;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .messages-sidebar.mobile-hidden {
+    display: none;
+  }
+  
+  .messages-main.mobile-hidden {
+    display: none;
+  }
+  
+  .messages-sidebar {
+    width: 100%;
+  }
+}
+
+/* Loading States */
+.messages-loading,
+.messages-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 2rem;
+  text-align: center;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #5c90f7ff;
+  border-left: 4px solid #007bff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.messages-error p {
+  color: #dc2626;
+  margin-bottom: 1rem;
+}
+
+.btn-retry {
+  padding: 0.5rem 1rem;
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-retry:hover {
+  background: #b91c1c;
+}
+
+/* Filters */
+.message-filters {
+  display: flex;
+  padding: 1rem;
+  border-bottom: 1px solid #466bb3ff;
+  gap: 0.5rem;
+  background: #307bc6ff;
+}
+
+.filter-btn {
+  position: relative;
+  padding: 0.5rem 1rem;
+  border: 1px solid #215098ff;
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+  color: #000000;
+}
+
+.filter-btn:hover:not(:disabled) {
+  background: #4d7fe3ff;
+  border-color: #6295edff;
+}
+
+.filter-btn.active {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.filter-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #dc2626;
+  color: white;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Empty States */
+.no-message-selected {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 2rem;
+}
+
+.empty-state {
+  text-align: center;
+  color: #000000;
+}
+
+.empty-state .icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+  display: block;
+}
+
+.empty-state h3 {
+  margin: 0 0 0.5rem 0;
+  color: #000000;
+}
+
+.empty-state p {
+  margin: 0 0 1.5rem 0;
+  color: #000000;
+}
+
+.btn-primary {
+  padding: 0.75rem 1.5rem;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-primary:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* Global Loading Overlay */
+.global-loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #8baff8ff;
+  border-left: 4px solid #007bff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
