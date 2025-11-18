@@ -138,7 +138,7 @@ function App() {
     }
   }, []);
 
-  // FIXED: Enhanced authentication state management
+  // Enhanced authentication state management
   useEffect(() => {
     let mounted = true;
     let authSubscription = null;
@@ -228,39 +228,42 @@ function App() {
       
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
         async (event, session) => {
-          console.log('🔐 Auth event received:', event, 'Session:', !!session);
+          // CRITICAL FIX: Ignore redundant auth events
+          if (!mounted || !authInitializedRef.current) return;
           
-          if (!mounted) {
-            console.log('Component unmounted, ignoring auth event');
+          // Ignore TOKEN_REFRESHED and USER_UPDATED when already authenticated
+          // These events trigger unnecessarily and cause remounts
+          if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && 
+              isAuthenticated && session?.user?.id === user?.id) {
+            console.log(`Ignoring redundant ${event} event`);
             return;
           }
+          
+          console.log('Auth state change:', event, 'Session exists:', !!session);
           
           try {
             switch (event) {
               case 'SIGNED_IN':
-                console.log('✅ User signed in successfully');
-                if (session?.user) {
+                if (session?.user && !isAuthenticated) {
+                  console.log('User signed in');
                   setIsAuthenticated(true);
                   setUser(session.user);
-                  authInitializedRef.current = true;
                   
                   const currentPath = window.location.pathname;
                   if ((currentPath === '/login' || currentPath === '/forgot-password') &&
                       shouldRedirect('/dashboard')) {
-                    console.log('Redirecting to dashboard after sign in');
                     navigate('/dashboard', { replace: true });
                   }
                 }
                 break;
                 
               case 'SIGNED_OUT':
-                console.log('👋 User signed out');
+                console.log('User signed out');
                 await performLocalCleanup();
                 setIsAuthenticated(false);
                 setUser(null);
-                authInitializedRef.current = false;
-                
                 const signOutPath = window.location.pathname;
+                
                 if (!signOutPath.includes('/login') && 
                     !signOutPath.includes('/forgot-password') &&
                     !signOutPath.includes('/reset-password') &&
@@ -270,21 +273,21 @@ function App() {
                 break;
                 
               case 'TOKEN_REFRESHED':
-                console.log('🔄 Token refreshed silently');
-                if (session?.user && authInitializedRef.current) {
+                console.log('Token refreshed - updating user silently');
+                if (session?.user) {
                   setUser(session.user);
                 }
                 break;
                 
               case 'USER_UPDATED':
-                console.log('👤 User updated');
-                if (session?.user && authInitializedRef.current) {
+                console.log('User updated - updating user silently');
+                if (session?.user) {
                   setUser(session.user);
                 }
                 break;
                 
               case 'PASSWORD_RECOVERY':
-                console.log('🔑 Password recovery flow initiated');
+                console.log('Password recovery flow initiated');
                 break;
                 
               default:
@@ -398,16 +401,13 @@ function App() {
     }
   };
 
-  // FIXED: Supabase Login function
+  // Supabase Login function
   const handleLogin = async (email, password) => {
     try {
       setIsLoggingIn(true);
       setError(null);
       
-      console.log('🔐 Attempting login with:', email);
-      
-      // Clear any existing sessions first
-      await performLocalCleanup();
+      console.log('Attempting login with:', email);
       
       const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
@@ -415,19 +415,17 @@ function App() {
       });
 
       if (error) {
-        console.error('❌ Supabase login error:', error);
+        console.error('Supabase login error:', error);
         return { 
           success: false, 
           error: error.message || 'Invalid email or password. Please try again.' 
         };
       }
 
-      if (data.session && data.user) {
-        console.log('✅ Login successful for user:', data.user.email);
-        // The auth listener will handle the state update and navigation
+      if (data.session) {
+        console.log('Login successful:', data.user);
         return { success: true };
       } else {
-        console.error('❌ Login failed: No session returned');
         return { 
           success: false, 
           error: 'Login failed. Please try again.' 
@@ -435,7 +433,7 @@ function App() {
       }
       
     } catch (error) {
-      console.error('❌ Unexpected login error:', error);
+      console.error('Unexpected login error:', error);
       return { 
         success: false, 
         error: 'An unexpected error occurred. Please try again.' 
@@ -471,7 +469,6 @@ function App() {
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
-      authInitializedRef.current = false;
       
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
@@ -484,7 +481,6 @@ function App() {
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
-      authInitializedRef.current = false;
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
       }
@@ -921,6 +917,7 @@ function App() {
             } 
           />
 
+          {/* FIXED: Messages route - user prop is stable now */}
           <Route 
             path="/messages" 
             element={
@@ -930,6 +927,7 @@ function App() {
             } 
           />
 
+          {/* 404 Fallback Route */}
           <Route 
             path="*" 
             element={
