@@ -4,14 +4,17 @@ import { useMessageSubscription } from '../../hooks/useMessageSubscription';
 import MessageList from './MessageList';
 import MessageThread from './MessageThread';
 import ComposeMessage from './ComposeMessage';
+import GroupComposeMessage from './GroupComposeMessage.jsx';
 import MessageSearch from './MessageSearch';
 import './Messages.css';
 
 const MessagesMain = ({ user }) => {
   const [selectedMessage, setSelectedMessage] = useState(null);
+  const [selectedConversation, setSelectedConversation] = useState(null);
   const [isComposing, setIsComposing] = useState(false);
+  const [isGroupComposing, setIsGroupComposing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filter, setFilter] = useState('all'); // all, unread, sent, received
+  const [filter, setFilter] = useState('all'); // all, unread, sent, received, groups
   const [initialLoading, setInitialLoading] = useState(true);
   
   // Track if component has loaded data before
@@ -19,10 +22,13 @@ const MessagesMain = ({ user }) => {
 
   const {
     messages,
+    conversations,
     loading,
     error,
     unreadCount,
     sendMessage,
+    sendGroupMessage,
+    createGroup,
     markAsRead,
     deleteMessage,
     searchMessages,
@@ -43,11 +49,11 @@ const MessagesMain = ({ user }) => {
     refetch(); // Refresh messages when new message arrives
   });
 
-  // Filter messages based on selected filter
+  // Filter messages and conversations based on selected filter
   const getFilteredMessages = () => {
     if (!messages || messages.length === 0) return [];
 
-    let filtered = [...messages]; // Create a copy to avoid mutating original
+    let filtered = [...messages];
 
     switch (filter) {
       case 'unread':
@@ -65,6 +71,12 @@ const MessagesMain = ({ user }) => {
           msg.receiver_id === user?.id && !msg.deleted_at
         );
         break;
+      case 'groups':
+        // Filter group conversations
+        filtered = messages.filter(msg => 
+          msg.conversation_id && !msg.deleted_at
+        );
+        break;
       case 'all':
       default:
         filtered = messages.filter(msg => !msg.deleted_at);
@@ -79,7 +91,9 @@ const MessagesMain = ({ user }) => {
     if (message.deleted_at) return;
 
     setSelectedMessage(message);
+    setSelectedConversation(null);
     setIsComposing(false);
+    setIsGroupComposing(false);
 
     // Mark as read if it's received and unread
     if (message.receiver_id === user?.id && !message.is_read) {
@@ -91,9 +105,25 @@ const MessagesMain = ({ user }) => {
     }
   };
 
+  const handleConversationSelect = async (conversation) => {
+    setSelectedConversation(conversation);
+    setSelectedMessage(null);
+    setIsComposing(false);
+    setIsGroupComposing(false);
+  };
+
   const handleComposeNew = () => {
     setSelectedMessage(null);
+    setSelectedConversation(null);
     setIsComposing(true);
+    setIsGroupComposing(false);
+  };
+
+  const handleGroupComposeNew = () => {
+    setSelectedMessage(null);
+    setSelectedConversation(null);
+    setIsComposing(false);
+    setIsGroupComposing(true);
   };
 
   const handleSendMessage = async (messageData) => {
@@ -103,7 +133,6 @@ const MessagesMain = ({ user }) => {
       if (!result.error) {
         setIsComposing(false);
         setSelectedMessage(null);
-        // Refetch to get the latest messages with proper relationships
         await refetch();
       }
 
@@ -113,17 +142,51 @@ const MessagesMain = ({ user }) => {
       return { data: null, error: error.message };
     }
   };
-const handleDeleteMessage = async (messageId) => {
-  try {
-    await deleteMessage(messageId);
-    if (selectedMessage?.id === messageId) {
-      setSelectedMessage(null);
+
+  const handleSendGroupMessage = async (messageData) => {
+    try {
+      const result = await sendGroupMessage(messageData);
+      
+      if (!result.error) {
+        setIsGroupComposing(false);
+        setSelectedConversation(null);
+        await refetch();
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error sending group message:', error);
+      return { data: null, error: error.message };
     }
-    // NO refetch() here - deleteMessage handles everything
-  } catch (error) {
-    console.error('Error deleting message:', error);
-  }
-};
+  };
+
+  const handleCreateGroup = async (groupData) => {
+    try {
+      const result = await createGroup(groupData);
+      
+      if (!result.error) {
+        setIsGroupComposing(false);
+        await refetch();
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error creating group:', error);
+      return { data: null, error: error.message };
+    }
+  };
+
+  const handleDeleteMessage = async (messageId) => {
+    try {
+      await deleteMessage(messageId);
+      if (selectedMessage?.id === messageId) {
+        setSelectedMessage(null);
+      }
+    } catch (error) {
+      console.error('Error deleting message:', error);
+    }
+  };
+
   const handleSearch = async (query) => {
     setSearchQuery(query);
     if (query.trim()) {
@@ -133,14 +196,15 @@ const handleDeleteMessage = async (messageId) => {
         console.error('Error searching messages:', error);
       }
     } else {
-      // If search is cleared, refetch all messages
       await refetch();
     }
   };
 
   const handleBackToList = () => {
     setSelectedMessage(null);
+    setSelectedConversation(null);
     setIsComposing(false);
+    setIsGroupComposing(false);
   };
 
   const handleRetry = async () => {
@@ -184,21 +248,32 @@ const handleDeleteMessage = async (messageId) => {
       <div className="messages-header">
         <h1>Messages</h1>
         <div className="messages-header-actions">
-          <button 
-            onClick={handleComposeNew} 
-            className="btn-compose"
-            aria-label="Compose new message"
-            disabled={loading}
-          >
-            <span className="icon">✉️</span>
-            Compose
-          </button>
+          <div className="compose-buttons">
+            <button 
+              onClick={handleComposeNew} 
+              className="btn-compose"
+              aria-label="Compose new message"
+              disabled={loading}
+            >
+              <span className="icon">✉️</span>
+              New Message
+            </button>
+            <button 
+              onClick={handleGroupComposeNew} 
+              className="btn-compose-group"
+              aria-label="Create group message"
+              disabled={loading}
+            >
+              <span className="icon">👥</span>
+              New Group
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="messages-content">
         {/* Left sidebar - Message list */}
-        <div className={`messages-sidebar ${(selectedMessage || isComposing) ? 'mobile-hidden' : ''}`}>
+        <div className={`messages-sidebar ${(selectedMessage || selectedConversation || isComposing || isGroupComposing) ? 'mobile-hidden' : ''}`}>
           <MessageSearch 
             onSearch={handleSearch}
             searchQuery={searchQuery}
@@ -237,24 +312,42 @@ const handleDeleteMessage = async (messageId) => {
             >
               Sent
             </button>
+            <button
+              className={`filter-btn ${filter === 'groups' ? 'active' : ''}`}
+              onClick={() => setFilter('groups')}
+              disabled={loading}
+            >
+              Groups
+            </button>
           </div>
 
           <MessageList
             messages={filteredMessages}
+            conversations={conversations}
             selectedMessage={selectedMessage}
+            selectedConversation={selectedConversation}
             onSelectMessage={handleMessageSelect}
+            onSelectConversation={handleConversationSelect}
             currentUserId={user?.id}
             loading={loading && !hasLoadedRef.current}
             searchQuery={searchQuery}
+            filter={filter}
           />
         </div>
 
-        {/* Right panel - Message thread or compose */}
-        <div className={`messages-main ${!(selectedMessage || isComposing) ? 'mobile-hidden' : ''}`}>
+        {/* Right panel - Message thread, group thread, or compose */}
+        <div className={`messages-main ${!(selectedMessage || selectedConversation || isComposing || isGroupComposing) ? 'mobile-hidden' : ''}`}>
           {isComposing ? (
             <ComposeMessage
               currentUser={user}
               onSend={handleSendMessage}
+              onCancel={handleBackToList}
+            />
+          ) : isGroupComposing ? (
+            <GroupComposeMessage
+              currentUser={user}
+              onSend={handleSendGroupMessage}
+              onCreateGroup={handleCreateGroup}
               onCancel={handleBackToList}
             />
           ) : selectedMessage ? (
@@ -265,19 +358,37 @@ const handleDeleteMessage = async (messageId) => {
               onBack={handleBackToList}
               onSendReply={handleSendMessage}
             />
+          ) : selectedConversation ? (
+            <MessageThread
+              conversation={selectedConversation}
+              currentUser={user}
+              onDelete={handleDeleteMessage}
+              onBack={handleBackToList}
+              onSendReply={handleSendGroupMessage}
+              isGroup={true}
+            />
           ) : (
             <div className="no-message-selected">
               <div className="empty-state">
                 <span className="icon">📬</span>
                 <h3>No message selected</h3>
-                <p>Select a message from the list or compose a new one</p>
-                <button 
-                  onClick={handleComposeNew} 
-                  className="btn-primary"
-                  disabled={loading}
-                >
-                  Compose Message
-                </button>
+                <p>Select a message from the list or start a new conversation</p>
+                <div className="empty-state-actions">
+                  <button 
+                    onClick={handleComposeNew} 
+                    className="btn-primary"
+                    disabled={loading}
+                  >
+                    New Message
+                  </button>
+                  <button 
+                    onClick={handleGroupComposeNew} 
+                    className="btn-secondary"
+                    disabled={loading}
+                  >
+                    Create Group
+                  </button>
+                </div>
               </div>
             </div>
           )}

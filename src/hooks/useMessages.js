@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 
 export const useMessages = (userId) => {
   const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -30,6 +31,15 @@ export const useMessages = (userId) => {
       console.log('All profiles in database:', allProfiles);
       console.log('Profiles error:', profilesError);
 
+      // Check conversations table
+      const { data: allConversations, error: convError } = await supabase
+        .from('conversations')
+        .select('*')
+        .limit(10);
+
+      console.log('All conversations in database:', allConversations);
+      console.log('Conversations error:', convError);
+
       // Check current user profile
       if (userId) {
         const { data: currentProfile, error: userError } = await supabase
@@ -48,6 +58,70 @@ export const useMessages = (userId) => {
     }
   };
 
+  // Fetch conversations for the user
+  const fetchConversations = async () => {
+    try {
+      if (!userId) return [];
+
+      // Get conversations where user is a participant
+      const { data: participantData, error: participantError } = await supabase
+        .from('conversation_participants')
+        .select(`
+          conversation_id,
+          conversations (
+            id,
+            title,
+            created_by,
+            is_group,
+            created_at,
+            updated_at
+          )
+        `)
+        .eq('user_id', userId);
+
+      if (participantError) throw participantError;
+
+      const conversationsWithDetails = await Promise.all(
+        (participantData || []).map(async (participant) => {
+          const conversation = participant.conversations;
+          
+          // Get participants for this conversation
+          const { data: participants, error: partError } = await supabase
+            .from('conversation_participants')
+            .select(`
+              user_id,
+              profiles (id, username, full_name, avatar_url)
+            `)
+            .eq('conversation_id', conversation.id);
+
+          if (partError) console.error('Error fetching participants:', partError);
+
+          // Get last message in conversation
+          const { data: lastMessage, error: msgError } = await supabase
+            .from('messages')
+            .select('*')
+            .eq('conversation_id', conversation.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+          return {
+            ...conversation,
+            participants: participants || [],
+            last_message: lastMessage,
+            unread_count: 0 // You can implement this based on your needs
+          };
+        })
+      );
+
+      setConversations(conversationsWithDetails);
+      return conversationsWithDetails;
+    } catch (error) {
+      console.error('Error fetching conversations:', error);
+      return [];
+    }
+  };
+
   // Simple fetch without complex joins - optimized version
   const fetchMessages = async () => {
     try {
@@ -58,6 +132,9 @@ export const useMessages = (userId) => {
 
       // Run debug first to see database state
       await debugDatabase();
+
+      // Fetch conversations
+      await fetchConversations();
 
       // FIXED: Filter out deleted messages (deleted_at IS NULL)
       const { data, error } = await supabase
@@ -267,6 +344,121 @@ export const useMessages = (userId) => {
     }
   };
 
+  // Send group message
+  const sendGroupMessage = async (messageData) => {
+    try {
+      console.log('Sending group message:', messageData);
+
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([{
+          sender_id: userId,
+          conversation_id: messageData.conversation_id,
+          subject: messageData.subject,
+          content: messageData.content,
+          parent_message_id: messageData.parent_message_id,
+          is_group_message: true,
+          deleted_at: null
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error sending group message:', error);
+        throw error;
+      }
+
+      console.log('Group message sent successfully:', data);
+
+      // Handle attachments if any
+      if (messageData.attachments && messageData.attachments.length > 0) {
+        console.log('Processing attachments for group message:', messageData.attachments);
+        
+        for (const attachment of messageData.attachments) {
+          const { error: attachmentError } = await supabase
+            .from('message_attachments')
+            .insert({
+              message_id: data.id,
+              file_name: attachment.name,
+              file_size: attachment.size,
+              file_type: attachment.type,
+              storage_path: attachment.path,
+              uploaded_by: userId
+            });
+
+          if (attachmentError) {
+            console.error('Error saving group attachment:', attachmentError);
+          }
+        }
+        console.log('All group attachments processed');
+      }
+
+      // Refresh messages after sending
+      await fetchMessages();
+
+      return { data, error: null };
+    } catch (err) {
+      console.error('Error in sendGroupMessage:', err);
+      return { data: null, error: err.message };
+    }
+  };
+
+  // Create new group conversation
+  const createGroup = async (groupData) => {
+    try {
+      console.log('Creating new group:', groupData);
+
+      // Create conversation
+      const { data: conversation, error: convError } = await supabase
+        .from('conversations')
+        .insert([{
+          title: groupData.title,
+          created_by: groupData.created_by,
+          is_group: true
+        }])
+        .select()
+        .single();
+
+      if (convError) {
+        console.error('Error creating conversation:', convError);
+        throw convError;
+      }
+
+      console.log('Conversation created:', conversation);
+
+      // Add participants (including creator)
+      const participants = [
+        ...groupData.participant_ids.map(pid => ({
+          conversation_id: conversation.id,
+          user_id: pid
+        })),
+        {
+          conversation_id: conversation.id,
+          user_id: groupData.created_by
+        }
+      ];
+
+      const { error: partError } = await supabase
+        .from('conversation_participants')
+        .insert(participants);
+
+      if (partError) {
+        console.error('Error adding participants:', partError);
+        throw partError;
+      }
+
+      console.log('Group created successfully with participants:', participants);
+
+      // Refresh conversations
+      await fetchConversations();
+
+      return { data: conversation, error: null };
+    } catch (err) {
+      console.error('Error in createGroup:', err);
+      return { data: null, error: err.message };
+    }
+  };
+
   const markAsRead = async (messageId) => {
     try {
       console.log('Marking message as read:', messageId);
@@ -312,47 +504,48 @@ export const useMessages = (userId) => {
       console.error('Error in markAsRead:', err);
     }
   };
-const deleteMessage = async (messageId) => {
-  try {
-    console.log('🗑️ DIRECT DATABASE DELETE:', messageId);
 
-    // Don't delete welcome messages from database
-    const message = messages.find(msg => msg.id === messageId);
-    if (message && message.is_welcome_message) {
-      console.log('Removing welcome message from UI only');
+  const deleteMessage = async (messageId) => {
+    try {
+      console.log('🗑️ DIRECT DATABASE DELETE:', messageId);
+
+      // Don't delete welcome messages from database
+      const message = messages.find(msg => msg.id === messageId);
+      if (message && message.is_welcome_message) {
+        console.log('Removing welcome message from UI only');
+        setMessages(prev => prev.filter(msg => msg.id !== messageId));
+        return;
+      }
+
+      // DIRECT HARD DELETE - permanently remove from database
+      const { data, error } = await supabase
+        .from('messages')
+        .delete()
+        .eq('id', messageId)
+        .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+        .select();
+
+      console.log('📊 Direct delete result:', { data, error });
+
+      if (error) {
+        console.error('❌ Database delete error:', error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        console.error('❌ No rows deleted from database');
+        throw new Error('Delete operation did not affect any rows');
+      }
+
+      console.log('✅ Message PERMANENTLY deleted from database. Deleted rows:', data);
+
+      // Update local state
       setMessages(prev => prev.filter(msg => msg.id !== messageId));
-      return;
+      
+    } catch (err) {
+      console.error('❌ Error in deleteMessage:', err);
     }
-
-    // DIRECT HARD DELETE - permanently remove from database
-    const { data, error } = await supabase
-      .from('messages')
-      .delete()
-      .eq('id', messageId)
-      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
-      .select();
-
-    console.log('📊 Direct delete result:', { data, error });
-
-    if (error) {
-      console.error('❌ Database delete error:', error);
-      throw error;
-    }
-
-    if (!data || data.length === 0) {
-      console.error('❌ No rows deleted from database');
-      throw new Error('Delete operation did not affect any rows');
-    }
-
-    console.log('✅ Message PERMANENTLY deleted from database. Deleted rows:', data);
-
-    // Update local state
-    setMessages(prev => prev.filter(msg => msg.id !== messageId));
-    
-  } catch (err) {
-    console.error('❌ Error in deleteMessage:', err);
-  }
-};
+  };
 
   const searchMessages = async (query) => {
     try {
@@ -424,16 +617,20 @@ const deleteMessage = async (messageId) => {
       fetchMessages();
     } else {
       setMessages([]);
+      setConversations([]);
       setLoading(false);
     }
   }, [userId]);
 
   return {
     messages,
+    conversations,
     loading,
     error,
     unreadCount,
     sendMessage,
+    sendGroupMessage,
+    createGroup,
     markAsRead,
     deleteMessage,
     searchMessages,
