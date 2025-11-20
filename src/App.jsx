@@ -98,6 +98,7 @@ function App() {
   const lastRedirectRef = useRef(null)
   const authInitializedRef = useRef(false)
   const authListenerActiveRef = useRef(false)
+  const sessionCheckedRef = useRef(false)
   
   const navigate = useNavigate()
 
@@ -138,15 +139,22 @@ function App() {
     }
   }, []);
 
-  // Enhanced authentication state management
+  // FIXED: Enhanced authentication state management with better session handling
   useEffect(() => {
     let mounted = true;
     let authSubscription = null;
 
     const getInitialSession = async () => {
       try {
+        if (sessionCheckedRef.current) {
+          console.log('Session already checked, skipping...');
+          return;
+        }
+
         setIsLoading(true);
+        sessionCheckedRef.current = true;
         
+        console.log('Checking initial session...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
         if (!mounted) return;
@@ -155,9 +163,13 @@ function App() {
           console.error('Session error:', sessionError);
           await performLocalCleanup();
           setIsAuthenticated(false);
-          if (!window.location.pathname.includes('/login') && 
-              !window.location.pathname.includes('/forgot-password') &&
-              !window.location.pathname.includes('/reset-password')) {
+          setUser(null);
+          
+          // Only redirect if not already on auth pages
+          const currentPath = window.location.pathname;
+          if (!currentPath.includes('/login') && 
+              !currentPath.includes('/forgot-password') &&
+              !currentPath.includes('/reset-password')) {
             if (shouldRedirect('/login')) {
               navigate('/login', { replace: true });
             }
@@ -166,37 +178,27 @@ function App() {
         }
         
         if (session?.user) {
-          // Validate session is not expired
-          const isExpired = session.expires_at ? new Date(session.expires_at * 1000) < new Date() : true;
+          console.log('Valid session found for user:', session.user.email);
+          setIsAuthenticated(true);
+          setUser(session.user);
+          authInitializedRef.current = true;
           
-          if (isExpired) {
-            console.log('Session expired, clearing...');
-            await performLocalCleanup();
-            setIsAuthenticated(false);
-            if (!window.location.pathname.includes('/reset-password')) {
-              if (shouldRedirect('/login')) {
-                navigate('/login', { replace: true });
-              }
-            }
-          } else {
-            setIsAuthenticated(true);
-            setUser(session.user);
-            authInitializedRef.current = true;
-            
-            // Only redirect if we're on an auth page
-            if ((window.location.pathname === '/login' || 
-                 window.location.pathname === '/forgot-password') &&
-                shouldRedirect('/dashboard')) {
-              navigate('/dashboard', { replace: true });
-            }
+          // Redirect from auth pages to dashboard
+          const currentPath = window.location.pathname;
+          if ((currentPath === '/login' || currentPath === '/forgot-password') &&
+              shouldRedirect('/dashboard')) {
+            navigate('/dashboard', { replace: true });
           }
         } else {
+          console.log('No valid session found');
           setIsAuthenticated(false);
           setUser(null);
+          
           // Only redirect to login if not on auth pages
-          if (!window.location.pathname.includes('/login') && 
-              !window.location.pathname.includes('/forgot-password') &&
-              !window.location.pathname.includes('/reset-password')) {
+          const currentPath = window.location.pathname;
+          if (!currentPath.includes('/login') && 
+              !currentPath.includes('/forgot-password') &&
+              !currentPath.includes('/reset-password')) {
             if (shouldRedirect('/login')) {
               navigate('/login', { replace: true });
             }
@@ -207,10 +209,10 @@ function App() {
         if (mounted) {
           await performLocalCleanup();
           setIsAuthenticated(false);
-          if (!window.location.pathname.includes('/reset-password')) {
-            if (shouldRedirect('/login')) {
-              navigate('/login', { replace: true });
-            }
+          setUser(null);
+          const currentPath = window.location.pathname;
+          if (!currentPath.includes('/reset-password') && shouldRedirect('/login')) {
+            navigate('/login', { replace: true });
           }
         }
       } finally {
@@ -222,20 +224,15 @@ function App() {
 
     getInitialSession();
 
-    // FIXED: Prevent multiple auth listeners from running simultaneously
+    // FIXED: Improved auth state change handler with better event filtering
     if (!authListenerActiveRef.current) {
       authListenerActiveRef.current = true;
       
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
         async (event, session) => {
-          // CRITICAL FIX: Ignore redundant auth events
-          if (!mounted || !authInitializedRef.current) return;
-          
-          // Ignore TOKEN_REFRESHED and USER_UPDATED when already authenticated
-          // These events trigger unnecessarily and cause remounts
-          if ((event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && 
-              isAuthenticated && session?.user?.id === user?.id) {
-            console.log(`Ignoring redundant ${event} event`);
+          // CRITICAL FIX: Only process events after initial setup and when mounted
+          if (!mounted || !authInitializedRef.current) {
+            console.log(`Ignoring auth event ${event} during initialization`);
             return;
           }
           
@@ -245,15 +242,18 @@ function App() {
             switch (event) {
               case 'SIGNED_IN':
                 if (session?.user && !isAuthenticated) {
-                  console.log('User signed in');
+                  console.log('User signed in successfully:', session.user.email);
                   setIsAuthenticated(true);
                   setUser(session.user);
                   
-                  const currentPath = window.location.pathname;
-                  if ((currentPath === '/login' || currentPath === '/forgot-password') &&
-                      shouldRedirect('/dashboard')) {
-                    navigate('/dashboard', { replace: true });
-                  }
+                  // Wait a bit for state to update before redirecting
+                  setTimeout(() => {
+                    const currentPath = window.location.pathname;
+                    if ((currentPath === '/login' || currentPath === '/forgot-password') &&
+                        shouldRedirect('/dashboard')) {
+                      navigate('/dashboard', { replace: true });
+                    }
+                  }, 100);
                 }
                 break;
                 
@@ -262,14 +262,18 @@ function App() {
                 await performLocalCleanup();
                 setIsAuthenticated(false);
                 setUser(null);
-                const signOutPath = window.location.pathname;
+                authInitializedRef.current = false;
+                sessionCheckedRef.current = false;
                 
-                if (!signOutPath.includes('/login') && 
-                    !signOutPath.includes('/forgot-password') &&
-                    !signOutPath.includes('/reset-password') &&
-                    shouldRedirect('/login')) {
-                  navigate('/login', { replace: true });
-                }
+                setTimeout(() => {
+                  const signOutPath = window.location.pathname;
+                  if (!signOutPath.includes('/login') && 
+                      !signOutPath.includes('/forgot-password') &&
+                      !signOutPath.includes('/reset-password') &&
+                      shouldRedirect('/login')) {
+                    navigate('/login', { replace: true });
+                  }
+                }, 100);
                 break;
                 
               case 'TOKEN_REFRESHED':
@@ -299,10 +303,15 @@ function App() {
               await performLocalCleanup();
               setIsAuthenticated(false);
               setUser(null);
-              if (!window.location.pathname.includes('/reset-password') &&
-                  shouldRedirect('/login')) {
-                navigate('/login', { replace: true });
-              }
+              authInitializedRef.current = false;
+              sessionCheckedRef.current = false;
+              
+              setTimeout(() => {
+                if (!window.location.pathname.includes('/reset-password') &&
+                    shouldRedirect('/login')) {
+                  navigate('/login', { replace: true });
+                }
+              }, 100);
             }
           }
         }
@@ -321,11 +330,12 @@ function App() {
         authSubscription.unsubscribe();
       }
     };
-  }, [navigate, performLocalCleanup, shouldRedirect]);
+  }, [navigate, performLocalCleanup, shouldRedirect, isAuthenticated]);
 
   // Fetch data when authenticated
   useEffect(() => {
     if (isAuthenticated) {
+      console.log('User authenticated, fetching dashboard data...');
       fetchDashboardData();
     }
   }, [isAuthenticated]);
@@ -401,7 +411,7 @@ function App() {
     }
   };
 
-  // Supabase Login function
+  // FIXED: Enhanced Supabase Login function with better session handling
   const handleLogin = async (email, password) => {
     try {
       setIsLoggingIn(true);
@@ -423,7 +433,11 @@ function App() {
       }
 
       if (data.session) {
-        console.log('Login successful:', data.user);
+        console.log('Login successful:', data.user.email);
+        
+        // Force session refresh and wait for auth state to update
+        await supabase.auth.getSession();
+        
         return { success: true };
       } else {
         return { 
@@ -469,6 +483,8 @@ function App() {
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
+      authInitializedRef.current = false;
+      sessionCheckedRef.current = false;
       
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
@@ -481,6 +497,8 @@ function App() {
       await performLocalCleanup();
       setIsAuthenticated(false);
       setUser(null);
+      authInitializedRef.current = false;
+      sessionCheckedRef.current = false;
       if (shouldRedirect('/login')) {
         navigate('/login', { replace: true });
       }

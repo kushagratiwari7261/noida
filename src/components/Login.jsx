@@ -3,24 +3,10 @@ import { Eye, EyeOff } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // Import images - adjust the path based on your folder structure
-// If images are in the same folder as this component:
 import sealLogo from './seal.png';
 import loadingImage from './image.png';
 
-// OR if they're in a different folder, adjust the path:
-// import sealLogo from '../assets/seal.png';
-// import loadingImage from '../assets/image.png';
-
 // ===== SUPABASE CONFIGURATION FROM ENVIRONMENT VARIABLES =====
-// Make sure you have these variables in your .env file:
-// VITE_SUPABASE_URL=https://your-project.supabase.co
-// VITE_SUPABASE_ANON_KEY=your-anon-key-here
-// 
-// For Create React App, use:
-// REACT_APP_SUPABASE_URL=https://your-project.supabase.co
-// REACT_APP_SUPABASE_ANON_KEY=your-anon-key-here
-// ================================================================
-
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY;
 
@@ -29,8 +15,6 @@ let supabase = null;
 if (supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith('https://')) {
   supabase = createClient(supabaseUrl, supabaseAnonKey);
 }
-
-// Placeholder images - replace with your actual image imports
 
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
@@ -55,9 +39,16 @@ const Login = ({ onLogin }) => {
 
   const checkUser = async () => {
     if (!supabase) return;
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session && onLogin) {
-      onLogin(session.user.email, null);
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session && session.user && onLogin) {
+        console.log('User already has active session:', session.user.email);
+        // Let the parent App.jsx handle the redirect
+        onLogin(session.user.email, session.access_token);
+      }
+    } catch (error) {
+      console.error('Error checking user session:', error);
     }
   };
 
@@ -83,65 +74,77 @@ const Login = ({ onLogin }) => {
   };
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
-    setMessage('');
+  e.preventDefault();
+  setMessage('');
+  
+  if (!validateForm()) {
+    return;
+  }
+
+  // Check if Supabase is configured
+  if (!supabase) {
+    setMessage('⚠️ Supabase is not configured. Please add your Supabase credentials in the code.');
+    return;
+  }
+
+  setIsLoggingIn(true);
+
+  try {
+    console.log('Attempting login with:', email);
     
-    if (!validateForm()) {
-      return;
+    // Authenticate with Supabase
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: password,
+    });
+
+    if (error) {
+      throw error;
     }
 
-    // Check if Supabase is configured
-    if (!supabase) {
-      setMessage('⚠️ Supabase is not configured. Please add your Supabase credentials in the code.');
-      return;
-    }
-
-    setIsLoggingIn(true);
-
-    try {
-      // Authenticate with Supabase
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password,
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      if (data.session) {
-        setMessage('Login successful! Redirecting to dashboard...');
-        
-        if (rememberMe) {
-          localStorage.setItem('rememberMe', 'true');
-          localStorage.setItem('userEmail', email);
-        }
-        
-        if (onLogin) {
-          setTimeout(() => {
-            onLogin(data.user.email, data.session.access_token);
-          }, 1000);
-        } else {
-          setTimeout(() => {
-            alert('Login successful! Dashboard would load here.');
-          }, 1000);
-        }
-      }
-    } catch (error) {
-      console.error('Login error:', error);
+    if (data.session && data.user) {
+      console.log('Login successful for user:', data.user.email);
+      setMessage('Login successful! Redirecting to dashboard...');
       
-      // Handle specific error messages
-      if (error.message.includes('Invalid login credentials')) {
-        setMessage('Invalid email or password. Please try again.');
-      } else if (error.message.includes('Email not confirmed')) {
-        setMessage('Please verify your email address before logging in.');
-      } else if (error.message.includes('User not found')) {
-        setMessage('No account found with this email address.');
-      } else {
-        setMessage('An error occurred during login. Please try again.');
+      if (rememberMe) {
+        localStorage.setItem('rememberMe', 'true');
+        localStorage.setItem('userEmail', email);
       }
-    } finally {
-      setIsLoggingIn(false);
+      
+      // Force session refresh
+      await supabase.auth.getSession();
+      
+      // SIMPLE SOLUTION: Force page reload to trigger App.jsx auth check
+      setTimeout(() => {
+        window.location.href = '/dashboard';
+      }, 1000);
+      
+    } else {
+      throw new Error('No session data received');
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    
+    // Handle specific error messages
+    if (error.message.includes('Invalid login credentials')) {
+      setMessage('Invalid email or password. Please try again.');
+    } else if (error.message.includes('Email not confirmed')) {
+      setMessage('Please verify your email address before logging in.');
+    } else if (error.message.includes('User not found')) {
+      setMessage('No account found with this email address.');
+    } else if (error.message.includes('rate limit')) {
+      setMessage('Too many login attempts. Please try again in a few minutes.');
+    } else {
+      setMessage('An error occurred during login. Please try again.');
+    }
+  } finally {
+    setIsLoggingIn(false);
+  }
+};
+  // Handle Enter key press for form submission
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !isLoggingIn) {
+      handleSubmit(e);
     }
   };
 
@@ -1019,7 +1022,7 @@ const Login = ({ onLogin }) => {
                   </div>
                 )}
 
-                <form className="login-form" onSubmit={handleSubmit}>
+                <form className="login-form" onSubmit={handleSubmit} onKeyPress={handleKeyPress}>
                   <div className="form-group">
                     <label htmlFor="email" className="form-label">Email Address</label>
                     <input 
@@ -1031,6 +1034,7 @@ const Login = ({ onLogin }) => {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       disabled={isLoggingIn}
+                      autoComplete="email"
                     />
                     {errors.email && <div className="field-error">{errors.email}</div>}
                   </div>
@@ -1047,6 +1051,7 @@ const Login = ({ onLogin }) => {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         disabled={isLoggingIn}
+                        autoComplete="current-password"
                       />
                       <button
                         type="button"
@@ -1074,7 +1079,10 @@ const Login = ({ onLogin }) => {
                       <span className="checkmark"></span>
                       Remember me
                     </label>
-                    <a href="#" className="forgot-password" onClick={(e) => e.preventDefault()}>
+                    <a href="#" className="forgot-password" onClick={(e) => {
+                      e.preventDefault();
+                      window.location.href = '/forgot-password';
+                    }}>
                       Forgot Password?
                     </a>
                   </div>
@@ -1118,7 +1126,10 @@ const Login = ({ onLogin }) => {
                 <li>24/7 customer support</li>
               </ul>
               
-              
+              <div className="info-note">
+                <h4>Secure Authentication</h4>
+                <p>Your login credentials are securely encrypted and authenticated through our enterprise-grade security system.</p>
+              </div>
             </div>
           </div>
         </div>
