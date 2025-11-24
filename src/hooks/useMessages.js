@@ -59,69 +59,86 @@ export const useMessages = (userId) => {
   };
 
   // Fetch conversations for the user
-  const fetchConversations = async () => {
-    try {
-      if (!userId) return [];
+// Fetch conversations for the user - FIXED VERSION
+const fetchConversations = async () => {
+  try {
+    if (!userId) return [];
 
-      // Get conversations where user is a participant
-      const { data: participantData, error: participantError } = await supabase
-        .from('conversation_participants')
-        .select(`
-          conversation_id,
-          conversations (
-            id,
-            title,
-            created_by,
-            is_group,
-            created_at,
-            updated_at
-          )
-        `)
-        .eq('user_id', userId);
+    // Get conversations where user is a participant
+    const { data: participantData, error: participantError } = await supabase
+      .from('conversation_participants')
+      .select(`
+        conversation_id,
+        conversations (
+          id,
+          title,
+          created_by,
+          is_group,
+          created_at,
+          updated_at
+        )
+      `)
+      .eq('user_id', userId);
 
-      if (participantError) throw participantError;
+    if (participantError) throw participantError;
 
-      const conversationsWithDetails = await Promise.all(
-        (participantData || []).map(async (participant) => {
-          const conversation = participant.conversations;
-          
-          // Get participants for this conversation
-          const { data: participants, error: partError } = await supabase
-            .from('conversation_participants')
-            .select(`
-              user_id,
-              profiles (id, username, full_name, avatar_url)
-            `)
-            .eq('conversation_id', conversation.id);
+    const conversationsWithDetails = await Promise.all(
+      (participantData || []).map(async (participant) => {
+        const conversation = participant.conversations;
+        
+        // FIXED: Get participants without embedded profiles
+        const { data: participants, error: partError } = await supabase
+          .from('conversation_participants')
+          .select('user_id')
+          .eq('conversation_id', conversation.id);
 
-          if (partError) console.error('Error fetching participants:', partError);
+        if (partError) console.error('Error fetching participants:', partError);
 
-          // Get last message in conversation
-          const { data: lastMessage, error: msgError } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('conversation_id', conversation.id)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
+        // FIXED: Fetch profile details separately
+        const participantsWithProfiles = await Promise.all(
+          (participants || []).map(async (part) => {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('id, username, full_name, avatar_url')
+              .eq('id', part.user_id)
+              .single();
+            
+            return {
+              user_id: part.user_id,
+              profile: profile || { id: part.user_id, username: 'unknown', full_name: 'Unknown User' }
+            };
+          })
+        );
 
-          return {
-            ...conversation,
-            participants: participants || [],
-            last_message: lastMessage,
-            unread_count: 0 // You can implement this based on your needs
-          };
-        })
-      );
+        // Get last message in conversation
+        const { data: lastMessage, error: msgError } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('conversation_id', conversation.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      setConversations(conversationsWithDetails);
-      return conversationsWithDetails;
-    } catch (error) {
-      console.error('Error fetching conversations:', error);
-      return [];
-    }
-  };
+        if (mesgError && msgError.code !== 'PGRST116'){
+          console.error('Error fetching last message:', msgError);
+        }
 
+        return {
+          ...conversation,
+          participants: participantsWithProfiles,
+          last_message: lastMessage,
+          unread_count: 0
+        };
+      })
+    );
+
+    setConversations(conversationsWithDetails);
+    return conversationsWithDetails;
+  } catch (error) {
+    console.error('Error fetching conversations:', error);
+    return [];
+  }
+};
   // Simple fetch without complex joins - optimized version
   const fetchMessages = async () => {
     try {
@@ -344,65 +361,65 @@ export const useMessages = (userId) => {
     }
   };
 
-  // Send group message
-  const sendGroupMessage = async (messageData) => {
-    try {
-      console.log('Sending group message:', messageData);
+// Send group message - FIXED VERSION
+const sendGroupMessage = async (messageData) => {
+  try {
+    console.log('Sending group message:', messageData);
 
-      const { data, error } = await supabase
-        .from('messages')
-        .insert([{
-          sender_id: userId,
-          conversation_id: messageData.conversation_id,
-          subject: messageData.subject,
-          content: messageData.content,
-          parent_message_id: messageData.parent_message_id,
-          is_group_message: true,
-          deleted_at: null
-        }])
-        .select()
-        .single();
+    const { data, error } = await supabase
+      .from('messages')
+      .insert([{
+        sender_id: userId,
+        conversation_id: messageData.conversation_id,
+        subject: messageData.subject || '',
+        content: messageData.content,
+        parent_message_id: messageData.parent_message_id,
+        is_group_message: true,
+        // Don't set receiver_id for group messages
+        deleted_at: null
+      }])
+      .select()
+      .single();
 
-      if (error) {
-        console.error('Error sending group message:', error);
-        throw error;
-      }
-
-      console.log('Group message sent successfully:', data);
-
-      // Handle attachments if any
-      if (messageData.attachments && messageData.attachments.length > 0) {
-        console.log('Processing attachments for group message:', messageData.attachments);
-        
-        for (const attachment of messageData.attachments) {
-          const { error: attachmentError } = await supabase
-            .from('message_attachments')
-            .insert({
-              message_id: data.id,
-              file_name: attachment.name,
-              file_size: attachment.size,
-              file_type: attachment.type,
-              storage_path: attachment.path,
-              uploaded_by: userId
-            });
-
-          if (attachmentError) {
-            console.error('Error saving group attachment:', attachmentError);
-          }
-        }
-        console.log('All group attachments processed');
-      }
-
-      // Refresh messages after sending
-      await fetchMessages();
-
-      return { data, error: null };
-    } catch (err) {
-      console.error('Error in sendGroupMessage:', err);
-      return { data: null, error: err.message };
+    if (error) {
+      console.error('Error sending group message:', error);
+      throw error;
     }
-  };
 
+    console.log('Group message sent successfully:', data);
+
+    // Handle attachments if any
+    if (messageData.attachments && messageData.attachments.length > 0) {
+      console.log('Processing attachments for group message:', messageData.attachments);
+      
+      for (const attachment of messageData.attachments) {
+        const { error: attachmentError } = await supabase
+          .from('message_attachments')
+          .insert({
+            message_id: data.id,
+            file_name: attachment.name,
+            file_size: attachment.size,
+            file_type: attachment.type,
+            storage_path: attachment.path,
+            uploaded_by: userId
+          });
+
+        if (attachmentError) {
+          console.error('Error saving group attachment:', attachmentError);
+        }
+      }
+      console.log('All group attachments processed');
+    }
+
+    // Refresh messages after sending
+    await fetchMessages();
+
+    return { data, error: null };
+  } catch (err) {
+    console.error('Error in sendGroupMessage:', err);
+    return { data: null, error: err.message };
+  }
+};
   // Create new group conversation
   const createGroup = async (groupData) => {
     try {
