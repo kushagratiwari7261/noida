@@ -160,6 +160,7 @@ const Login = ({ onLogin }) => {
                 className="loading-main-image"
               />
             </div>
+            
             <p className="loading-text-large">Loading your workspace...</p>
             <div className="loading-progress">
               <div className="loading-progress-bar"></div>
@@ -167,6 +168,7 @@ const Login = ({ onLogin }) => {
           </div>
         </div>
       </div>
+      
     );
   }
 
@@ -996,6 +998,7 @@ const Login = ({ onLogin }) => {
           }
         }
       `}</style>
+      
 
       <header className="header">
         <div className="container">
@@ -1004,6 +1007,17 @@ const Login = ({ onLogin }) => {
           </div>
         </div>
       </header>
+      <header className="header">
+  <div className="container">
+    <div className="logo-header">
+      <img 
+        src={sealLogo} 
+        alt="Seal Freight Logo" 
+        className="logo-image"
+      />
+    </div>
+  </div>
+</header>
 
       <main className="main-section">
         <div className="background-pattern"></div>
