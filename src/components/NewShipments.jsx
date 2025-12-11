@@ -62,6 +62,9 @@ const INITIAL_FORM_DATA = {
   // Trade direction
   tradeDirection: '',
   
+  // MTD Registration No.
+  mtdRegistrationNo: '',
+  
   // Air Freight specific fields
   airport_of_departure: '',
   airport_of_destination: '',
@@ -293,6 +296,7 @@ const NewShipments = () => {
         department: job.department || '',
         job_type: job.job_type || '',
         trade_direction: job.trade_direction || 'EXPORT',
+        mtd_registration_no: job.mtd_registration_no || '',
 
         // Air Freight fields
         airport_of_departure: job.airport_of_departure || '',
@@ -464,6 +468,7 @@ const NewShipments = () => {
           description: data.description || prev.description,
           remarks: data.remarks || prev.remarks,
           hs_code: data.hs_code || prev.hs_code,
+          mtdRegistrationNo: data.mtd_registration_no || prev.mtdRegistrationNo,
 
           // Air Freight-specific fields
           airport_of_departure: data.airport_of_departure || prev.airport_of_departure,
@@ -702,6 +707,7 @@ const NewShipments = () => {
           gross_weight: formatNumericForDB(formData.grossWeight),
           description: formatStringForDB(formData.description),
           remarks: formatStringForDB(formData.remarks),
+          mtd_registration_no: formatStringForDB(formData.mtdRegistrationNo),
           shipment_type: shipmentType,
           trade_direction: formatStringForDB(formData.tradeDirection),
           updated_at: new Date().toISOString(),
@@ -837,6 +843,7 @@ const NewShipments = () => {
       description: shipment.description,
       remarks: shipment.remarks,
       tradeDirection: shipment.trade_direction || 'EXPORT',
+      mtdRegistrationNo: shipment.mtd_registration_no || '',
       
       // Air Freight fields
       airport_of_departure: shipment.airport_of_departure,
@@ -926,6 +933,16 @@ const NewShipments = () => {
         <div className="specific-fields-section">
           <h3>Air Freight Details - {formData.tradeDirection}</h3>
           <div className="form-grid-two-column">
+            <div className="form-group">
+              <label>MTD Registration No.</label>
+              <input 
+                type="text"
+                name="mtdRegistrationNo"
+                value={formData.mtdRegistrationNo}
+                onChange={handleInputChange}
+                placeholder="Enter MTD Registration Number"
+              />
+            </div>
             {[
               { label: 'Airport of Departure', name: 'airport_of_departure', type: 'text' },
               { label: 'Airport of Destination', name: 'airport_of_destination', type: 'text' },
@@ -963,6 +980,16 @@ const NewShipments = () => {
           <h3>Land Freight Details - {formData.tradeDirection}</h3>
           <div className="form-grid-two-column">
             <div className="form-group">
+              <label>MTD Registration No.</label>
+              <input 
+                type="text"
+                name="mtdRegistrationNo"
+                value={formData.mtdRegistrationNo}
+                onChange={handleInputChange}
+                placeholder="Enter MTD Registration Number"
+              />
+            </div>
+            <div className="form-group">
               <label>LCL/FCL <span className="required">*</span></label>
               <select 
                 name="lclFcl"
@@ -985,6 +1012,16 @@ const NewShipments = () => {
         <div className="specific-fields-section">
           <h3>Sea Freight Details - {formData.tradeDirection}</h3>
           <div className="form-grid-two-column">
+            <div className="form-group">
+              <label>MTD Registration No.</label>
+              <input 
+                type="text"
+                name="mtdRegistrationNo"
+                value={formData.mtdRegistrationNo}
+                onChange={handleInputChange}
+                placeholder="Enter MTD Registration Number"
+              />
+            </div>
             {[
               { label: 'Exporter', name: 'exporter', type: 'text', condition: formData.tradeDirection === 'EXPORT' },
               { label: 'Importer', name: 'importer', type: 'text', condition: formData.tradeDirection === 'IMPORT' },
@@ -1465,6 +1502,16 @@ const NewShipments = () => {
                         />
                         {validationErrors.dispatchAt && <span className="field-error">{validationErrors.dispatchAt}</span>}
                       </div>
+                      <div className="form-group">
+                        <label>MTD Registration No.</label>
+                        <input 
+                          type="text" 
+                          name="mtdRegistrationNo"
+                          value={formData.mtdRegistrationNo}
+                          onChange={handleInputChange}
+                          placeholder="Enter MTD Registration Number"
+                        />
+                      </div>
                     </div>
                     
                     {/* Render specific fields based on shipment type */}
@@ -1500,6 +1547,10 @@ const NewShipments = () => {
                       <div className="trade-direction-info">
                         <span className="label">Trade Direction</span>
                         <span className="value">{formData.tradeDirection}</span>
+                      </div>
+                      <div className="mtd-registration-info">
+                        <span className="label">MTD Registration No.</span>
+                        <span className="value">{formData.mtdRegistrationNo}</span>
                       </div>
                     </div>
 
@@ -1604,6 +1655,10 @@ const NewShipments = () => {
                           <span className="label">Remarks:</span>
                           <span className="value">{formData.remarks}</span>
                         </div>
+                        <div className="summary-row">
+                          <span className="label">MTD Registration No.:</span>
+                          <span className="value">{formData.mtdRegistrationNo}</span>
+                        </div>
                       </div>
                     </div>
 
@@ -1614,6 +1669,10 @@ const NewShipments = () => {
                         <div className="air-freight-section">
                           <h3>Air Freight Details</h3>
                           <div className="summary-grid">
+                            <div className="summary-row">
+                              <span className="label">MTD Registration No.:</span>
+                              <span className="value">{formData.mtdRegistrationNo}</span>
+                            </div>
                             <div className="summary-row">
                               <span className="label">Airport of Departure:</span>
                               <span className="value">{formData.airport_of_departure}</span>
@@ -1667,6 +1726,10 @@ const NewShipments = () => {
                           <h3>Land Freight Details</h3>
                           <div className="summary-grid">
                             <div className="summary-row">
+                              <span className="label">MTD Registration No.:</span>
+                              <span className="value">{formData.mtdRegistrationNo}</span>
+                            </div>
+                            <div className="summary-row">
                               <span className="label">LCL/FCL:</span>
                               <span className="value">{formData.lclFcl}</span>
                             </div>
@@ -1682,6 +1745,10 @@ const NewShipments = () => {
                         <div className="sea-freight-section">
                           <h3>Sea Freight Details</h3>
                           <div className="summary-grid">
+                            <div className="summary-row">
+                              <span className="label">MTD Registration No.:</span>
+                              <span className="value">{formData.mtdRegistrationNo}</span>
+                            </div>
                             {formData.tradeDirection === 'EXPORT' && (
                               <div className="summary-row">
                                 <span className="label">Exporter:</span>

@@ -74,6 +74,7 @@ import './App.css'
 import NewShipments from './components/NewShipments'
 import DSRPage from './components/DSRPage'
 import MessagesMain from './components/messages/MessagesMain'
+import InvoicesPage from './components/InvoicesPage' // ← ADD THIS IMPORT
 
 import { supabase } from './lib/supabaseClient'
 import ForgotPassword from './components/ForgotPassword'
@@ -506,52 +507,61 @@ function App() {
   }, [navigate, performLocalCleanup, shouldRedirect]);
 
   // Fetch stats data from Supabase
-  const fetchStatsData = async () => {
-    setIsStatsLoading(true);
-    try {
-      const { count: totalShipments, error: shipmentsError } = await supabase
-        .from('shipments')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: jobsCount, error: jobsError } = await supabase
-        .from('jobs')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: invoicesCount, error: invoicesError } = await supabase
-        .from('invoices')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: messagesCount, error: messagesError } = await supabase
-        .from('messages')
-        .select('*', { count: 'exact', head: true });
-      
-      if (shipmentsError || jobsError || invoicesError || messagesError) {
-        console.error('Error fetching stats:', { shipmentsError, jobsError, invoicesError, messagesError });
-        setStatsData([
-          { label: 'Total Shipments', value: '1,250', icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
-          { label: 'Jobs', value: '320', icon: 'teal', id: 'Jobs', path: '/job-orders' },
-          { label: 'Invoices', value: '15', icon: 'yellow', id: 'Invoices', path: '/invoices' },
-          { label: 'Messages', value: '5', icon: 'red', id: 'Messages', path: '/messages' }
-        ]);
-        return;
-      }
-      
-      const formatNumber = (num) => num ? num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "0";
-      
+ const fetchStatsData = async () => {
+  setIsStatsLoading(true);
+  try {
+    // Total shipments count
+    const { count: totalShipments, error: shipmentsError } = await supabase
+      .from('shipments')
+      .select('*', { count: 'exact', head: true });
+    
+    // Jobs count
+    const { count: jobsCount, error: jobsError } = await supabase
+      .from('jobs')
+      .select('*', { count: 'exact', head: true });
+    
+    // Messages count
+    const { count: messagesCount, error: messagesError } = await supabase
+      .from('messages')
+      .select('*', { count: 'exact', head: true });
+    
+    // If you want to count only shipments with certain status as invoices
+    // For example, count shipments with status 'Completed', 'Delivered', or 'Invoiced'
+    const { count: invoicesCount, error: invoicesError } = await supabase
+      .from('shipments')
+      .select('*', { count: 'exact', head: true })
+      .or('status.eq.Completed,status.eq.Delivered,status.eq.Invoiced');
+    
+    // OR simpler: Just use the same as total shipments
+    // const invoicesCount = totalShipments;
+    
+    if (shipmentsError || jobsError || invoicesError || messagesError) {
+      console.error('Error fetching stats:', { shipmentsError, jobsError, invoicesError, messagesError });
+      // Fallback to default values
       setStatsData([
-        { label: 'Total Shipments', value: formatNumber(totalShipments), icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
-        { label: 'Jobs', value: formatNumber(jobsCount), icon: 'teal', id: 'Jobs', path: '/job-orders' },
-        { label: 'Invoices', value: formatNumber(invoicesCount), icon: 'yellow', id: 'Invoices', path: '/invoices' },
-        { label: 'Messages', value: formatNumber(messagesCount), icon: 'red', id: 'Messages', path: '/messages' }
+        { label: 'Total Shipments', value: '0', icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
+        { label: 'Jobs', value: '0', icon: 'teal', id: 'Jobs', path: '/job-orders' },
+        { label: 'Invoices', value: '0', icon: 'yellow', id: 'Invoices', path: '/invoices' },
+        { label: 'Messages', value: '0', icon: 'red', id: 'Messages', path: '/messages' }
       ]);
-    } catch (error) {
-      console.error('Error in fetchStatsData:', error);
-      setError('Failed to load statistics data.');
-    } finally {
-      setIsStatsLoading(false);
+      return;
     }
-  };
-
+    
+    const formatNumber = (num) => num ? num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "0";
+    
+    setStatsData([
+      { label: 'Total Shipments', value: formatNumber(totalShipments), icon: 'blue', id: 'total-shipments', path: '/new-shipment' },
+      { label: 'Jobs', value: formatNumber(jobsCount), icon: 'teal', id: 'Jobs', path: '/job-orders' },
+      { label: 'Invoices', value: formatNumber(invoicesCount || totalShipments), icon: 'yellow', id: 'Invoices', path: '/invoices' },
+      { label: 'Messages', value: formatNumber(messagesCount), icon: 'red', id: 'Messages', path: '/messages' }
+    ]);
+  } catch (error) {
+    console.error('Error in fetchStatsData:', error);
+    setError('Failed to load statistics data.');
+  } finally {
+    setIsStatsLoading(false);
+  }
+};
   // Fetch jobs data from Supabase
   const fetchJobsData = async () => {
     setIsJobsLoading(true);
@@ -801,13 +811,6 @@ function App() {
     </div>
   );
 
-  const InvoicesPage = () => (
-    <div className="page-container">
-      <h1>Invoices</h1>
-      <p>View and manage all your invoices here.</p>
-    </div>
-  );
-  
   // Show loading state while checking authentication
   if (isLoading) {
     return (
@@ -926,6 +929,7 @@ function App() {
             } 
           />
 
+          {/* ✅ Updated Invoices route using InvoicesPage component */}
           <Route 
             path="/invoices" 
             element={

@@ -1,304 +1,343 @@
-// src/components/PDFGenerator.js
 import React from 'react';
-import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
-import { format } from 'date-fns';
+import { Document, Page, Text, View, Image, StyleSheet, Font } from '@react-pdf/renderer';
 
 // Import the logo directly
 import logo from './seal.png';
 
+// Register fonts for better consistency
+Font.register({
+  family: 'Helvetica',
+  fonts: [
+    { src: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/fonts/Roboto/Roboto-Regular.ttf' },
+    { src: 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/fonts/Roboto/Roboto-Bold.ttf', fontWeight: 'bold' },
+  ]
+});
+
 const styles = StyleSheet.create({
   page: {
-    padding: 30,
-    fontSize: 10,
+    padding: 20,
+    fontSize: 8,
     fontFamily: 'Helvetica',
-  },
-  section: {
-    marginBottom: 10,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 15,
-    borderBottom: '1pt solid black',
-    paddingBottom: 10,
+    lineHeight: 1.3,
   },
   logo: {
     width: 120,
     height: 50,
+    marginBottom: 10,
   },
-  title: {
-    fontSize: 16,
+  header: {
+    fontSize: 14,
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: 5,
   },
-  subtitle: {
-    fontSize: 12,
+  companyHeader: {
+    textAlign: 'center',
+    marginBottom: 3,
+  },
+  mtdNumber: {
+    fontSize: 10,
     fontWeight: 'bold',
-    marginBottom: 5,
-    marginTop: 10,
-    borderBottom: '0.5pt solid #333',
-    paddingBottom: 3,
+    textAlign: 'right',
+    marginBottom: 10,
+  },
+  boxBorder: {
+    border: '1pt solid black',
+    padding: 5,
+    marginBottom: 2,
+  },
+  sectionTitle: {
+    fontSize: 8,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  smallText: {
+    fontSize: 7,
+    lineHeight: 1.2,
   },
   row: {
     flexDirection: 'row',
-    marginBottom: 5,
+    gap: 5,
   },
-  col: {
-    flex: 1,
+  col50: {
+    width: '50%',
   },
-  label: {
-    fontWeight: 'bold',
-    marginRight: 5,
+  col25: {
+    width: '25%',
   },
-  table: {
-    display: 'table',
-    width: 'auto',
-    borderStyle: 'solid',
-    borderWidth: 1,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
+  col33: {
+    width: '33%',
+  },
+  transportSection: {
+    border: '1pt solid black',
+    marginBottom: 2,
+  },
+  transportRow: {
+    flexDirection: 'row',
+    borderBottom: '1pt solid black',
+  },
+  transportCell: {
+    padding: 3,
+    borderRight: '1pt solid black',
+    fontSize: 7,
+  },
+  transportCellLast: {
+    padding: 3,
+    fontSize: 7,
+  },
+  goodsSection: {
+    border: '1pt solid black',
+    padding: 5,
+    marginBottom: 2,
+    minHeight: 200,
+  },
+  bottomSection: {
+    border: '1pt solid black',
+    padding: 5,
+    marginBottom: 2,
+  },
+  signatureSection: {
     marginTop: 10,
-    marginBottom: 10,
+    textAlign: 'right',
+    fontSize: 7,
   },
-  tableRow: {
-    margin: 'auto',
+  twoColumnLayout: {
     flexDirection: 'row',
+    gap: 5,
   },
-  tableColHeader: {
-    width: '25%',
-    borderStyle: 'solid',
-    borderWidth: 1,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    backgroundColor: '#f0f0f0',
-    padding: 5,
-    fontWeight: 'bold',
+  leftColumn: {
+    width: '60%',
   },
-  tableCol: {
-    width: '25%',
-    borderStyle: 'solid',
-    borderWidth: 1,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    padding: 5,
-  },
-  footer: {
-    position: 'absolute',
-    bottom: 30,
-    left: 30,
-    right: 30,
-    textAlign: 'center',
-    fontSize: 8,
-    color: 'grey',
-  },
-  note: {
-    fontStyle: 'italic',
-    marginTop: 5,
-    fontSize: 9,
-  },
-  signature: {
-    marginTop: 40,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  signatureBox: {
+  rightColumn: {
     width: '40%',
-    borderTop: '1pt solid black',
-    paddingTop: 5,
-    textAlign: 'center',
   },
 });
 
-const PDFGenerator = ({ shipmentData }) => {
-  // Format dates for display
-  const formatDate = (dateString) => {
-    if (!dateString) return '';
-    try {
-      return format(new Date(dateString), 'dd/MM/yyyy');
-    } catch (error) {
-      return dateString;
-    }
-  };
-
-  // Extract data with proper field mappings
-  const getField = (fieldName, defaultValue = 'N/A') => {
-    return shipmentData[fieldName] || defaultValue;
-  };
-
+const PDFGenerator = ({ shipmentData = {} }) => {
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        {/* Header with logo and title */}
-        <View style={styles.header}>
-          <Image 
-            style={styles.logo} 
-            src={logo}
-          />
-          <View>
-            <Text style={styles.title}>MULTIMODAL TRANSPORT DOCUMENT</Text>
-            <Text>MTD Registration No.: {getField('mtdNumber')}</Text>
-            <Text>CN: {getField('cnNumber')}</Text>
-            <Text>Shipment No: {getField('shipment_no')}</Text>
-            <Text>Job No: {getField('job_no')}</Text>
-          </View>
+        {/* Logo */}
+        <Image 
+          style={styles.logo} 
+          src={logo}
+        />
+        
+        {/* Header */}
+        <Text style={styles.header}>MULTIMODAL TRANSPORT DOCUMENT</Text>
+        <View style={styles.companyHeader}>
+          <Text style={{ fontSize: 9, fontWeight: 'bold' }}>SEAL FREIGHT FORWARDERS PVT. LTD.</Text>
+          <Text style={styles.smallText}>T-2, IIIrd Floor, H Block Market, LSC Plot No. 7, Manish Complex</Text>
+          <Text style={styles.smallText}>Sarita Vihar, New Delhi-110076 INDIA</Text>
+          <Text style={styles.smallText}>Mob: +91 8468811866, Tel+ 91 022 27566678, 79</Text>
+          <Text style={styles.smallText}>Email: info@seal.co.in, Website: www.sealfreight.com</Text>
+          <Text style={styles.smallText}>MTO Rgistration No.: MTO/DGS/566/JAN/2028</Text>
+          <Text style={styles.smallText}>CIN U63013DL1990PTC042315</Text>
         </View>
+        
+        <Text style={styles.mtdNumber}>MTD Number: {shipmentData.mtdNumber}</Text>
 
-        {/* Shipper Information */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Shipper</Text>
-          <Text>{getField('shipper')}</Text>
-          <Text>{getField('address')}</Text>
-          <Text>TEL: {getField('shipper_tel')} FAX: {getField('shipper_fax')}</Text>
-        </View>
-
-        {/* Freight Forwarder Information */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Scal Freight</Text>
-          <Text>SEAL FREIGHT FORWARDERS PVT. LTD.</Text>
-          <Text>T-2, Illrd Floor, H Block Market, LSC Plot No. 7, Manish Complex</Text>
-          <Text>Sarita Plaza, New Delhi-110076 INDIA</Text>
-          <Text>Mob.: +91 8483811885, Tel: +91 822 27586278, 79 Email: info@seal.co.in, Website: www.sealfreight.com</Text>
-        </View>
-
-        {/* Consignee Information */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Consignee (of order):</Text>
-          <Text>{getField('consignee')}</Text>
-          <Text>{getField('consignee_address')}</Text>
-          <Text>K.A. {getField('consignee_contact')}</Text>
-          <Text>TEL {getField('consignee_tel')}</Text>
-        </View>
-
-        {/* Notify Party */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Notify Party:</Text>
-          <Text>{getField('notify_party')}</Text>
-          <Text>{getField('notify_party_address')}</Text>
-          <Text>K.A. {getField('notify_party_contact')}</Text>
-          <Text>TEL {getField('notify_party_tel')}</Text>
-        </View>
-
-        {/* Plan of Acceptance and Shipping Details */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Plan of Acceptance</Text>
-          <Text>{getField('planOfAcceptance')}</Text>
-          
-          <View style={[styles.row, {marginTop: 10}]}>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>Vessel:</Text> {getField('vessel')}</Text>
+        {/* Two Column Layout for Shipper and Consignee */}
+        <View style={styles.twoColumnLayout}>
+          {/* Left Column */}
+          <View style={styles.leftColumn}>
+            {/* Shipper */}
+            <View style={styles.boxBorder}>
+              <Text style={styles.sectionTitle}>Shipper</Text>
+              <Text style={styles.smallText}>{shipmentData.shipper}</Text>
+              <Text style={styles.smallText}>{shipmentData.address}</Text>
+              <Text style={styles.smallText}>TEL :{shipmentData.shipper_tel} FAX :{shipmentData.shipper_fax}</Text>
             </View>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>Port of Loading:</Text> {getField('pol')}</Text>
+
+            {/* Consignee */}
+            <View style={styles.boxBorder}>
+              <Text style={styles.sectionTitle}>Consignee (of order):</Text>
+              <Text style={styles.smallText}>{shipmentData.consignee}</Text>
+              <Text style={styles.smallText}>{shipmentData.consignee_address}</Text>
+              <Text style={styles.smallText}>K.A- {shipmentData.consignee_contact}</Text>
+              <Text style={styles.smallText}>TEL {shipmentData.consignee_tel}</Text>
             </View>
-          </View>
-          
-          <View style={styles.row}>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>Port of Discharge:</Text> {getField('pod')}</Text>
-            </View>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>Port of Delivery:</Text> {getField('pof')}</Text>
+
+            {/* Notify Party */}
+            <View style={styles.boxBorder}>
+              <Text style={styles.sectionTitle}>Notify Party:</Text>
+              <Text style={styles.smallText}>{shipmentData.notify_party}</Text>
+              <Text style={styles.smallText}>{shipmentData.notify_party_address}</Text>
+              <Text style={styles.smallText}>K.A- {shipmentData.notify_party_contact}</Text>
+              <Text style={styles.smallText}>TEL {shipmentData.notify_party_tel}</Text>
             </View>
           </View>
 
-          <View style={styles.row}>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>ETD:</Text> {formatDate(getField('etd'))}</Text>
+          {/* Right Column */}
+          <View style={styles.rightColumn}>
+            <View style={styles.boxBorder}>
+              <Text style={styles.smallText}>Shipment Reference No. :</Text>
+              <Text style={styles.smallText}>{shipmentData.shipment_no}</Text>
             </View>
-            <View style={styles.col}>
-              <Text><Text style={styles.label}>ETA:</Text> {formatDate(getField('eta'))}</Text>
+            
+            <View style={[styles.boxBorder, { minHeight: 150 }]}>
+              <Text style={styles.smallText}>transport and delivery as mentioned above unless otherwise stated. The</Text>
+              <Text style={styles.smallText}>MTO in accordance with the provisions contained in the MTD undertake to</Text>
+              <Text style={styles.smallText}>perform or to procure the performance of the multimodal transport form the</Text>
+              <Text style={styles.smallText}>place at which the goods are taken in charge, to the place designated for</Text>
+              <Text style={styles.smallText}>delivery and assumes responsibilityt for such transport</Text>
+              <Text style={[styles.smallText, { marginTop: 5 }]}>One of the MTD(s) must be surrendered, duly endorsed in exchange for the</Text>
+              <Text style={styles.smallText}>gods in withness where on of the original MTD of theis tenor and date have</Text>
+              <Text style={styles.smallText}>been signed in the number indicated below, one of which being</Text>
+              <Text style={styles.smallText}>accomplished, the other(s) to be void</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Transport Details */}
+        <View style={styles.transportSection}>
+          <View style={styles.transportRow}>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Place of Acceptance</Text>
+              <Text>{shipmentData.placeOfAcceptance}</Text>
+            </View>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Port of Loading</Text>
+              <Text>{shipmentData.pol}</Text>
+            </View>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Rote / Place of Transhipment (if any)</Text>
+              <Text>{shipmentData.transhipment}</Text>
+            </View>
+            <View style={[styles.transportCellLast, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Modes / Means of Transport</Text>
+              <Text>{shipmentData.mode_of_transport}</Text>
+            </View>
+          </View>
+          <View style={styles.transportRow}>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Vessel</Text>
+              <Text>{shipmentData.vessel}</Text>
+            </View>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Port of Discharge</Text>
+              <Text>{shipmentData.pod}</Text>
+            </View>
+            <View style={[styles.transportCell, { width: '25%' }]}>
+              <Text style={{ fontWeight: 'bold' }}>Port of Delivery</Text>
+              <Text>{shipmentData.pof}</Text>
+            </View>
+            <View style={[styles.transportCellLast, { width: '25%', borderBottom: 0 }]}>
+              <Text> </Text>
             </View>
           </View>
         </View>
 
         {/* Goods Description */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Container Marks & Number No(s)</Text>
-          <Text>SAID TO CONTAIN</Text>
-          <Text>{getField('no_of_packages')} packages</Text>
-          <Text>{getField('description')}</Text>
-          <Text>INV. NO.: {getField('invoiceNo')} DT. {formatDate(getField('invoiceDate'))}</Text>
-          <Text>S/B NO.: {getField('sbNo')} DT. {formatDate(getField('sbDate'))}</Text>
-          <Text>HS CODE: {getField('hs_code')}</Text>
-          <Text>Commodity: {getField('commodity')}</Text>
-        </View>
-
-        {/* Weight and Measurement */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>WEIGHT/MEASUREMENT</Text>
-          <Text>Gross Weight: {getField('gross_weight')} kg</Text>
-          <Text>Net Weight: {getField('netWeight')} kg</Text>
-          <Text>Volume: {getField('volume')} m³</Text>
-          <Text>Chargeable Weight: {getField('chargeable_weight')} kg</Text>
-        </View>
-
-        {/* Container Details */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Container No/Seal No</Text>
-          <Text>{getField('containerNo')}</Text>
-          <Text>No. of Containers: {getField('noOfCntr')}</Text>
-          <Text>Container Details: {getField('container_details')}</Text>
-        </View>
-
-        {/* Payment Terms */}
-        <View style={styles.section}>
-          <Text>Incoterms: {getField('incoterms')}</Text>
-          <Text>Service Type: {getField('service_type')}</Text>
-          <Text>Freight: {getField('freight')}</Text>
-          <Text style={styles.note}>DESTINATION ANCILLARY CHARGES TO CONSIGNEE'S ACCOUNT</Text>
-          <Text style={styles.note}>CONSIGNEE/CONSIGNOR ARE ADVISED TO PURCHASE COMPREHENSIVE INSURANCE COVER TO PROTECT THEIR INTEREST IN ALL EVENTS</Text>
-        </View>
-
-        {/* Footer Information */}
-        <View style={styles.section}>
-          <Text>Draft</Text>
-          <Text>Particulars above furnished by Consignee / Consumer, Weight and Measurement of container not to be included</Text>
-          
+        <View style={styles.goodsSection}>
           <View style={styles.row}>
-            <View style={styles.col}>
-              <Text>Freight Amount: {getField('freight_amount')}</Text>
-              <Text>Freight Payable at: {getField('payable_at')}</Text>
+            <View style={{ width: '20%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Container No(s)</Text>
+            </View>
+            <View style={{ width: '20%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Marks & Number</Text>
+            </View>
+            <View style={{ width: '30%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Number of packages, kind of packages, general description of goods</Text>
+            </View>
+            <View style={{ width: '15%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Gross Weight</Text>
+            </View>
+            <View style={{ width: '15%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Measurement</Text>
+            </View>
+          </View>
+          
+          <View style={[styles.row, { marginTop: 5 }]}>
+            <View style={{ width: '20%' }}>
+              <Text style={styles.smallText}>Container No/Seal No</Text>
+              <Text style={styles.smallText}>{shipmentData.containerNo || 'WHSU2286815'}</Text>
+              <Text style={styles.smallText}>{shipmentData.sealNo || '20SD86 WHA1382852'}</Text>
+            </View>
+            <View style={{ width: '20%' }}>
+              <Text style={styles.smallText}>{shipmentData.marks || 'BOX NO.1,2,3,4,5,6, 7,8,9,10,'}</Text>
+              <Text style={styles.smallText}>11, 12, 13, 14 & 15</Text>
+            </View>
+            <View style={{ width: '30%' }}>
+              <Text style={styles.smallText}>{shipmentData.packages || '15 (FIFTEEN BOXES ONLY)'}</Text>
+              <Text style={[styles.smallText, { marginTop: 3 }]}>{shipmentData.description || 'CI CASTING (SIDE COVER R, SIDE COVER C, BALANCE WEIGHT,'}</Text>
+              <Text style={styles.smallText}>MAIN B/G RETAINER, REAR COVER, SUCTION VALVE BASE,</Text>
+              <Text style={styles.smallText}>REAR BEARING COVER & REAR BEARING HOLDER)</Text>
+              <Text style={[styles.smallText, { marginTop: 3 }]}>INV. NO.: {shipmentData.invoiceNo || '12/FS/EXP/2025-2026'} DT. {shipmentData.invoiceDate || '13/08/2025'}</Text>
+              <Text style={styles.smallText}>S/B NO.: {shipmentData.sbNo || '446801'} DT. {shipmentData.sbDate || '14/08/2025'}</Text>
+              <Text style={styles.smallText}>HS CODE: {shipmentData.hsCode || '73251000'}</Text>
+              <Text style={[styles.smallText, { marginTop: 5 }]}>"ORIGIN THC PREPAID"</Text>
+              <Text style={styles.smallText}>"OCEAN FREIGHT COLLECT"</Text>
+              <Text style={styles.smallText}>"ALL DESTINATION CHARGES ON CONSIGNEE ACCOUNT"</Text>
+            </View>
+            <View style={{ width: '15%' }}>
+              <Text style={styles.smallText}>{shipmentData.grossWeight || '8774.000 KGS'}</Text>
+              <Text style={[styles.smallText, { marginTop: 3 }]}>NET.WT.</Text>
+              <Text style={styles.smallText}>{shipmentData.netWeight || '8290.000 KGS'}</Text>
+            </View>
+            <View style={{ width: '15%' }}>
+              <Text style={styles.smallText}>{shipmentData.measurement || '10.000 CBM'}</Text>
+              <Text style={[styles.smallText, { marginTop: 3 }]}>FCL/FCL</Text>
+              <Text style={styles.smallText}>CY/CY</Text>
+            </View>
+          </View>
+          
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.smallText}>SAID TO CONTAIN SAID TO WEIGH/MEASURE</Text>
+          </View>
+        </View>
+
+        {/* Bottom Section */}
+        <View style={styles.bottomSection}>
+          <View style={styles.row}>
+            <View style={{ width: '33%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Place and Date of Issue</Text>
+              <Text style={styles.smallText}>{shipmentData.place_of_issue} DT. {shipmentData.date_of_issue}</Text>
+            </View>
+            <View style={{ width: '33%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Freight Amount</Text>
+              <Text style={styles.smallText}>{shipmentData.freight_amount}</Text>
+            </View>
+            <View style={{ width: '34%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Fright Payable at</Text>
+              <Text style={styles.smallText}>{shipmentData.payable_at}</Text>
+            </View>
+          </View>
+          
+          <View style={[styles.row, { marginTop: 5 }]}>
+            <View style={{ width: '100%' }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Number of Original MTD(S)</Text>
+              <Text style={styles.smallText}>{shipmentData.number_of_originals}</Text>
             </View>
           </View>
         </View>
 
         {/* Delivery Agent */}
-        <View style={styles.section}>
-          <Text style={styles.subtitle}>Delivery Agent:</Text>
-          <Text>{getField('delivery_agent')}</Text>
-          <Text>{getField('delivery_agent_address')}</Text>
-          <Text>TEL: {getField('delivery_agent_tel')} FAX: {getField('delivery_agent_fax')}</Text>
+        <View style={styles.boxBorder}>
+          <Text style={{ fontWeight: 'bold', fontSize: 7 }}>Delivery Agent:</Text>
+          <Text style={styles.smallText}>{shipmentData.delivery_agent}</Text>
+          <Text style={styles.smallText}>{shipmentData.delivery_agent_address}</Text>
+          <Text style={styles.smallText}>TEL : {shipmentData.delivery_agent_tel} FAX:{shipmentData.delivery_agent_fax}</Text>
         </View>
 
-        {/* Additional Information */}
-        <View style={styles.section}>
-          <Text>Carrier: {getField('carrier')}</Text>
-          <Text>MBL No: {getField('mblNo')}</Text>
-          <Text>HBL No: {getField('hbl_no')}</Text>
-          <Text>Remarks: {getField('remarks')}</Text>
+        {/* Footer Notes */}
+        <View style={{ marginTop: 5 }}>
+          <Text style={styles.smallText}>DESTINATION ANCILLARY CHARGES TO CONSIGNEE'S ACCOUNT</Text>
+          <Text style={styles.smallText}>CONSIGNEE/CONSIGNOR ARE ADVISED TO PURCHASE COMPREHENSIVE</Text>
+          <Text style={styles.smallText}>INSURANCE COVER TO PROTECT THEIR INTEREST IN ALL EVENTS"</Text>
+          <Text style={[styles.smallText, { marginTop: 3 }]}>Particulars above furnished by Consignee / Consignor, Weight and Measurment of container not to be included</Text>
         </View>
 
         {/* Jurisdiction */}
-        <View style={styles.section}>
-          <Text>Subject to {getField('jurisdiction')} Jurisdiction</Text>
+        <View style={{ marginTop: 5 }}>
+          <Text style={styles.smallText}>Subject to {shipmentData.jurisdiction} Jurisdiction</Text>
         </View>
 
-        {/* Signatures */}
-        <View style={styles.signature}>
-          <View style={styles.signatureBox}>
-            <Text>For Seal Freight Forwarders Pvt. Ltd.</Text>
-          </View>
-          <View style={styles.signatureBox}>
-            <Text>Authorized Signature</Text>
-          </View>
+        {/* Signature */}
+        <View style={styles.signatureSection}>
+          <Text>For Seal Freight Forwarders Pvt. Ltd.</Text>
+          <Text style={{ marginTop: 20 }}>(Authorised Signatory)</Text>
         </View>
-
-        {/* Footer */}
-        <Text style={styles.footer}>
-          Generated on {format(new Date(), 'dd/MM/yyyy HH:mm')} | Seal Freight Forwarders Pvt. Ltd.
-        </Text>
       </Page>
     </Document>
   );

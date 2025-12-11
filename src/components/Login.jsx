@@ -1000,7 +1000,7 @@ const Login = ({ onLogin }) => {
       <header className="header">
         <div className="container">
           <div className="logo-header">
-            <img src={sealLogo} alt="Seal Freight Logo" className="logo-image" />
+            
           </div>
         </div>
       </header>

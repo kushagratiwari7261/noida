@@ -2,7 +2,7 @@ const Header = ({ toggleMobileMenu, createNewShipment, creatActiveJob, onLogout,
   return (
     <div className="header-section">
       <div className="header-content">
-        <h1 className="header-title">SEAL FREIGHT</h1>
+        <h1 className="header-title">Seal Freight</h1>
         <p className="header-subtitle">Welcome back. Here's your freight forwarding overview.</p>
       </div>
       <div className="header-actions">
