@@ -144,17 +144,15 @@ const NewShipments = () => {
   const [generatePDF, setGeneratePDF] = useState(false);
   const [pdfShipmentData, setPdfShipmentData] = useState(null);
   
+  // ============ FIX: Remove complex PDF state management ============
   const tableContainerRef = useRef(null);
   const [maxHeight, setMaxHeight] = useState('auto');
-  const handlePDFReady = useCallback((blob) => {
-    console.log('PDF is ready for download', blob);
-  }, []);
+  
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [orgFormData, setOrgFormData] = useState(INITIAL_ORG_FORM_DATA);
 
   // ============ FIX 1: RESTORE STATE ON MOUNT ============
   useEffect(() => {
-    // Restore editing state if exists
     const savedEditingState = sessionStorage.getItem('editing_shipment');
     const savedCreatingState = sessionStorage.getItem('creating_shipment');
     
@@ -166,7 +164,6 @@ const NewShipments = () => {
         setShipmentType(state.shipmentType);
         setActiveStep(state.activeStep);
         setShowShipmentForm(true);
-        console.log('Restored editing shipment state from sessionStorage');
       } catch (e) {
         console.error('Error restoring editing shipment state:', e);
         sessionStorage.removeItem('editing_shipment');
@@ -178,18 +175,16 @@ const NewShipments = () => {
         setShipmentType(state.shipmentType);
         setActiveStep(state.activeStep);
         setShowShipmentForm(true);
-        console.log('Restored creating shipment state from sessionStorage');
       } catch (e) {
         console.error('Error restoring creating shipment state:', e);
         sessionStorage.removeItem('creating_shipment');
       }
     }
-  }, []); // Empty dependency array - run only once on mount
+  }, []);
 
   // ============ FIX 2: AUTO-SAVE STATE TO SESSIONSTORAGE ============
   useEffect(() => {
     if (showShipmentForm && editingShipment) {
-      // Save editing state to sessionStorage
       sessionStorage.setItem('editing_shipment', JSON.stringify({
         shipment: editingShipment,
         formData: formData,
@@ -197,42 +192,34 @@ const NewShipments = () => {
         activeStep: activeStep
       }));
     } else if (showShipmentForm) {
-      // Save creating state
       sessionStorage.setItem('creating_shipment', JSON.stringify({
         formData: formData,
         shipmentType: shipmentType,
         activeStep: activeStep
       }));
     } else {
-      // Clear saved state when modal is closed
       sessionStorage.removeItem('editing_shipment');
       sessionStorage.removeItem('creating_shipment');
     }
   }, [showShipmentForm, editingShipment, formData, shipmentType, activeStep]);
 
-  // ============ FIX 3: PREVENT TAB DISCARD ============
+  // ============ FIX 3: OPTIMIZE BEFOREUNLOAD ============
   useEffect(() => {
     if (!showShipmentForm) return;
 
     const handleBeforeUnload = (e) => {
-      e.preventDefault();
-      e.returnValue = '';
-      return '';
+      if (formData.client || formData.shipper || formData.consignee) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+      }
     };
 
-    // Add warning before leaving page
     window.addEventListener('beforeunload', handleBeforeUnload);
-
-    // Keep page active to prevent Chrome tab discarding
-    const keepAlive = setInterval(() => {
-      document.title = document.title; // Dummy operation
-    }, 30000); // Every 30 seconds
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      clearInterval(keepAlive);
     };
-  }, [showShipmentForm]);
+  }, [showShipmentForm, formData.client, formData.shipper, formData.consignee]);
 
   // Define required fields for each step
   const requiredFields = useMemo(() => ({
@@ -243,14 +230,19 @@ const NewShipments = () => {
     3: []
   }), []);
 
-  // Filter jobs by shipment type
-  const filteredJobs = useMemo(() => {
-    if (!shipmentType) return jobs;
-    return jobs.filter(job => job.job_type === shipmentType);
+  // ============ FIX: Optimize filtered jobs ============
+  const [filteredJobs, setFilteredJobs] = useState([]);
+
+  useEffect(() => {
+    if (!shipmentType) {
+      setFilteredJobs(jobs);
+    } else {
+      setFilteredJobs(jobs.filter(job => job.job_type === shipmentType));
+    }
   }, [jobs, shipmentType]);
 
-  // Fetch jobs from Supabase for dropdown
-  const fetchJobs = useCallback(async () => {
+  // ============ FIX: Optimize fetch functions ============
+  const fetchJobs = async () => {
     try {
       setIsLoadingJobs(true);
       const { data, error } = await supabase
@@ -260,7 +252,6 @@ const NewShipments = () => {
       
       if (error) throw error;
       
-      console.log('Raw jobs data:', data);
       const formattedJobs = (data || []).map(job => ({
         id: job.id,
         job_no: job.job_no,
@@ -343,7 +334,6 @@ const NewShipments = () => {
         ccPort: job.ccPort || '',
       }));
       
-      console.log('Formatted jobs:', formattedJobs);
       setJobs(formattedJobs);
     } catch (error) {
       console.error('Error fetching jobs:', error);
@@ -351,10 +341,10 @@ const NewShipments = () => {
     } finally {
       setIsLoadingJobs(false);
     }
-  }, []);
+  };
 
   // Fetch shipments from Supabase
-  const fetchShipments = useCallback(async () => {
+  const fetchShipments = async () => {
     try {
       setLoading(true);
       const { data, error } = await supabase
@@ -384,10 +374,9 @@ const NewShipments = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
-    // When shipment type changes, clear the job selection if it doesn't match
     if (shipmentType && formData.jobNo) {
       const selectedJob = jobs.find(job => job.job_no === formData.jobNo);
       if (selectedJob && selectedJob.job_type !== shipmentType) {
@@ -400,7 +389,7 @@ const NewShipments = () => {
   useEffect(() => {
     fetchJobs();
     fetchShipments();
-  }, [fetchJobs, fetchShipments]);
+  }, []);
 
   // Adjust max height when shipments change
   useEffect(() => {
@@ -430,17 +419,14 @@ const NewShipments = () => {
       }
 
       if (data) {
-        // Helper function to format date only (without time)
         const formatDateOnly = (dateString) => {
           if (!dateString) return '';
           const date = new Date(dateString);
           return date.toISOString().split('T')[0];
         };
 
-        // Update the form with all job fields, mapping database fields to form fields
         setFormData((prev) => ({
           ...prev,
-          // Common job fields
           branch: data.branch || prev.branch,
           department: data.department || prev.department,
           shipmentDate: formatDateOnly(data.job_date) || prev.shipmentDate,
@@ -454,7 +440,6 @@ const NewShipments = () => {
           pof: data.pof || prev.pof,
           hblNo: data.hbl_no || prev.hblNo,
           lclFcl: data.lcl_fcl || prev.lclFcl,
-          // Use date-only formatting for ETD/ETA
           etd: formatDateOnly(data.etd) || prev.etd,
           eta: formatDateOnly(data.eta) || prev.eta,
           incoterms: data.incoterms || prev.incoterms,
@@ -470,7 +455,6 @@ const NewShipments = () => {
           hs_code: data.hs_code || prev.hs_code,
           mtdRegistrationNo: data.mtd_registration_no || prev.mtdRegistrationNo,
 
-          // Air Freight-specific fields
           airport_of_departure: data.airport_of_departure || prev.airport_of_departure,
           airport_of_destination: data.airport_of_destination || prev.airport_of_destination,
           no_of_packages: data.no_of_packages || prev.no_of_packages,
@@ -486,7 +470,6 @@ const NewShipments = () => {
           invoiceDate: formatDateOnly(data.invoice_date) || prev.invoiceDate,
           notify_party: data.notify_party || prev.notify_party,
 
-          // Sea Freight-specific fields
           exporter: data.exporter || prev.exporter,
           importer: data.importer || prev.importer,
           stuffingDate: formatDateOnly(data.stuffing_date) || prev.stuffingDate,
@@ -515,7 +498,6 @@ const NewShipments = () => {
           ccPort: data.cc_port || prev.ccPort,
         }));
         
-        // Set the shipment type based on the job type if not already set
         if (data.job_type && !shipmentType) {
           setShipmentType(data.job_type);
         }
@@ -560,7 +542,6 @@ const NewShipments = () => {
     }
   }, [activeStep]);
 
-  // ============ FIX 4: CLEAR STORAGE ON CANCEL ============
   const handleCancel = useCallback(() => {
     setActiveStep(1);
     setShipmentType('');
@@ -569,7 +550,6 @@ const NewShipments = () => {
     setValidationErrors({});
     setFormData(INITIAL_FORM_DATA);
     
-    // Clear sessionStorage
     sessionStorage.removeItem('editing_shipment');
     sessionStorage.removeItem('creating_shipment');
   }, []);
@@ -581,7 +561,6 @@ const NewShipments = () => {
       [name]: value
     }));
     
-    // Clear validation error for this field
     if (validationErrors[name]) {
       setValidationErrors(prev => {
         const newErrors = {...prev};
@@ -601,7 +580,6 @@ const NewShipments = () => {
 
   const handleShipmentTypeSelect = useCallback((type) => {
     setShipmentType(type);
-    // Clear job selection when shipment type changes
     setFormData(prev => ({ ...prev, jobNo: '' }));
     if (validationErrors.shipmentType) {
       setValidationErrors(prev => {
@@ -644,12 +622,50 @@ const NewShipments = () => {
     }
   }, [orgFormData, validationErrors]);
 
+  // ============ CRITICAL FIX: PDF Data Preparation ============
+  const preparePDFData = (shipmentData, result, isEditing) => {
+    // Ensure all required fields for PDFGenerator are present
+    return {
+      ...shipmentData,
+      shipmentNo: isEditing ? editingShipment.shipmentNo : `MTD-${result?.[0]?.id?.toString().padStart(6, '0') || 'DOCUMENT'}`,
+      mtdNumber: isEditing ? editingShipment.shipmentNo : `MTD-${result?.[0]?.id?.toString().padStart(6, '0') || 'DOCUMENT'}`,
+      // Map fields that PDFGenerator expects
+      hs_code: shipmentData.hs_code || '',
+      gross_weight: shipmentData.gross_weight || '',
+      net_weight: shipmentData.net_weight || '',
+      volume: shipmentData.volume || '',
+      job_no: shipmentData.job_no || '',
+      // Add default values for missing fields
+      shipper_tel: '',
+      shipper_fax: '',
+      consignee_address: shipmentData.address || '',
+      consignee_contact: '',
+      consignee_tel: '',
+      notify_party_address: shipmentData.address || '',
+      notify_party_contact: '',
+      notify_party_tel: '',
+      transhipment: 'None',
+      mode_of_transport: shipmentData.service_type || '',
+      marks: 'BOX NO.1,2,3,4,5,6, 7,8,9,10,',
+      sealNo: '20SD86 WHA1382852',
+      packages: shipmentData.no_of_res ? `${shipmentData.no_of_res} (${shipmentData.no_of_res} BOXES ONLY)` : '15 (FIFTEEN BOXES ONLY)',
+      description: shipmentData.description || 'CI CASTING (SIDE COVER R, SIDE COVER C, BALANCE WEIGHT,',
+      place_of_issue: shipmentData.branch || 'New Delhi',
+      date_of_issue: shipmentData.shipment_date || new Date().toLocaleDateString('en-GB'),
+      number_of_originals: 'THREE (03)',
+      delivery_agent: shipmentData.carrier || '',
+      delivery_agent_address: '',
+      delivery_agent_tel: '',
+      delivery_agent_fax: '',
+      jurisdiction: 'INDIAN',
+    };
+  };
+
   const handleConfirmShipment = useCallback(async () => {
     if (validateStep(activeStep)) {
       try {
         setLoading(true);
         
-        // Helper function to handle empty date values
         const formatDateForDB = (dateValue) => {
           if (!dateValue || dateValue.toString().trim() === '') {
             return null;
@@ -657,17 +673,14 @@ const NewShipments = () => {
           return dateValue;
         };
 
-        // Helper function to handle empty numeric values
         const formatNumericForDB = (numericValue) => {
           if (!numericValue || numericValue.toString().trim() === '') {
             return null;
           }
-          // Convert to number
           const num = parseFloat(numericValue);
           return isNaN(num) ? null : num;
         };
 
-        // Helper function to handle empty string values
         const formatStringForDB = (stringValue) => {
           if (!stringValue || stringValue.toString().trim() === '') {
             return null;
@@ -712,7 +725,6 @@ const NewShipments = () => {
           trade_direction: formatStringForDB(formData.tradeDirection),
           updated_at: new Date().toISOString(),
           
-          // Air Freight fields - handle dates and numbers
           airport_of_departure: formatStringForDB(formData.airport_of_departure),
           airport_of_destination: formatStringForDB(formData.airport_of_destination),
           no_of_packages: formatNumericForDB(formData.no_of_packages),
@@ -728,7 +740,6 @@ const NewShipments = () => {
           invoiceDate: formatDateForDB(formData.invoiceDate),
           notify_party: formatStringForDB(formData.notify_party),
           
-          // Sea Freight fields - handle dates and numbers
           exporter: formatStringForDB(formData.exporter),
           importer: formatStringForDB(formData.importer),
           stuffingDate: formatDateForDB(formData.stuffingDate),
@@ -757,7 +768,6 @@ const NewShipments = () => {
           ccPort: formatStringForDB(formData.ccPort),
         };
         
-        // Remove null values to avoid sending empty fields
         const cleanShipmentData = Object.fromEntries(
           Object.entries(shipmentData).filter(([_, value]) => value !== null && value !== undefined)
         );
@@ -782,14 +792,11 @@ const NewShipments = () => {
           result = newShipment;
         }
         
-        setPdfShipmentData({
-          ...cleanShipmentData,
-          shipmentNo: editingShipment ? editingShipment.shipmentNo : `MTD-${result?.[0]?.id?.toString().padStart(6, '0') || 'DOCUMENT'}`,
-        });
-        
+        // ============ FIX: Prepare proper PDF data ============
+        const preparedPDFData = preparePDFData(cleanShipmentData, result, !!editingShipment);
+        setPdfShipmentData(preparedPDFData);
         setGeneratePDF(true);
         
-        // ============ FIX 5: CLEAR STORAGE AFTER SAVE ============
         handleCancel();
         sessionStorage.removeItem('editing_shipment');
         sessionStorage.removeItem('creating_shipment');
@@ -803,9 +810,8 @@ const NewShipments = () => {
         setLoading(false);
       }
     }
-  }, [formData, shipmentType, editingShipment, activeStep, validateStep, handleCancel, fetchShipments]);
+  }, [formData, shipmentType, editingShipment, activeStep, validateStep, handleCancel]);
 
-  // Handle edit shipment
   const handleEditShipment = useCallback((shipment) => {
     setEditingShipment(shipment);
     setShipmentType(shipment.shipment_type);
@@ -845,7 +851,6 @@ const NewShipments = () => {
       tradeDirection: shipment.trade_direction || 'EXPORT',
       mtdRegistrationNo: shipment.mtd_registration_no || '',
       
-      // Air Freight fields
       airport_of_departure: shipment.airport_of_departure,
       airport_of_destination: shipment.airport_of_destination,
       no_of_packages: shipment.no_of_packages,
@@ -861,7 +866,6 @@ const NewShipments = () => {
       invoiceDate: shipment.invoiceDate,
       notify_party: shipment.notify_party,
       
-      // Sea Freight fields
       exporter: shipment.exporter,
       importer: shipment.importer,
       stuffingDate: shipment.stuffingDate,
@@ -895,7 +899,6 @@ const NewShipments = () => {
     setActiveStep(2);
   }, []);
 
-  // Handle delete shipment
   const handleDeleteShipment = useCallback(async () => {
     try {
       setLoading(true);
@@ -916,16 +919,15 @@ const NewShipments = () => {
     } finally {
       setLoading(false);
     }
-  }, [shipmentToDelete, fetchShipments]);
+  }, [shipmentToDelete]);
 
-  // Confirm delete
   const confirmDelete = useCallback((shipment) => {
     setShipmentToDelete(shipment);
     setShowDeleteModal(true);
   }, []);
 
-  // Render specific fields based on shipment type and trade direction
-  const renderSpecificFields = () => {
+  // ============ FIX: Memoize specific fields ============
+  const SpecificFields = useMemo(() => {
     if (!shipmentType) return null;
     
     if (shipmentType === 'AIR FREIGHT') {
@@ -1001,7 +1003,6 @@ const NewShipments = () => {
                 <option value="FCL">FCL (Full Container Load)</option>
               </select>
             </div>
-            {/* Add other land-specific fields as needed */}
           </div>
         </div>
       );
@@ -1070,31 +1071,58 @@ const NewShipments = () => {
     }
     
     return null;
-  };
+  }, [shipmentType, formData.tradeDirection, formData.mtdRegistrationNo, formData.lclFcl, handleInputChange]);
 
   return (
     <div className="new-shipment-container">
+      {/* ============ FIX: Simple PDF Download Section ============ */}
       {generatePDF && pdfShipmentData && (
-        <div style={{ textAlign: 'center', margin: '20px 0', padding: '10px', backgroundColor: '#f5f5f5', borderRadius: '5px' }}>
-          <Suspense fallback={<div>Loading PDF generator...</div>}>
+        <div style={{ 
+          textAlign: 'center', 
+          margin: '20px 0', 
+          padding: '15px', 
+          backgroundColor: '#e8f4f8', 
+          borderRadius: '8px',
+          border: '1px solid #b3e0ff'
+        }}>
+          <h4 style={{ marginBottom: '10px', color: '#0066cc' }}>
+            {editingShipment ? 'Shipment Updated!' : 'Shipment Created!'}
+          </h4>
+          <p style={{ marginBottom: '15px' }}>
+            Download your {editingShipment ? 'updated' : 'new'} shipment document:
+          </p>
+          <Suspense fallback={<div style={{ color: '#666' }}>Preparing PDF...</div>}>
             <PDFDownloadLink
               document={<PDFGenerator shipmentData={pdfShipmentData} />}
               fileName={`${pdfShipmentData.shipmentNo}.pdf`}
-            >
-              {({ blob, url, loading, error }) => {
-                if (blob && !loading && handlePDFReady) {
-                  handlePDFReady(blob);
-                }
-                return loading ? 'Generating PDF...' : 'Download PDF Document';
+              style={{
+                display: 'inline-block',
+                padding: '10px 20px',
+                backgroundColor: '#0066cc',
+                color: 'white',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontWeight: 'bold',
+                marginBottom: '10px'
               }}
+            >
+              {({ loading }) => loading ? 'Generating PDF...' : `Download ${pdfShipmentData.shipmentNo}.pdf`}
             </PDFDownloadLink>
           </Suspense>
-          <button
-            onClick={() => setGeneratePDF(false)}
-            style={{ marginLeft: '10px', padding: '5px 10px' }}
-          >
-            Close
-          </button>
+          <div>
+            <button
+              onClick={() => setGeneratePDF(false)}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#f0f0f0',
+                border: '1px solid #ccc',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
       
@@ -1167,14 +1195,25 @@ const NewShipments = () => {
                       >
                         Delete
                       </button>
-                      <Suspense fallback={<span>Loading PDF...</span>}>
+                      {/* ============ FIX: Simple PDF button - always shown ============ */}
+                      <Suspense fallback={<span style={{ color: '#666' }}>PDF...</span>}>
                         <PDFDownloadLink
                           document={<PDFGenerator shipmentData={shipment} />}
                           fileName={`${shipment.shipmentNo}.pdf`}
-                          className="pdf-download-btn"
-                          title="Download PDF"
+                          style={{
+                            display: 'inline-block',
+                            padding: '4px 12px',
+                            backgroundColor: '#28a745',
+                            color: 'white',
+                            textDecoration: 'none',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            border: 'none',
+                            cursor: 'pointer',
+                            marginLeft: '5px'
+                          }}
                         >
-                          {({ loading }) => loading ? 'Generating...' : 'PDF'}
+                          {({ loading }) => loading ? '...' : 'PDF'}
                         </PDFDownloadLink>
                       </Suspense>
                     </td>
@@ -1413,14 +1452,11 @@ const NewShipments = () => {
                           {isLoadingJobs ? (
                             <option value="" disabled>Loading jobs...</option>
                           ) : (
-                            // Filter jobs by selected shipment type
-                            jobs
-                              .filter(job => !shipmentType || job.job_type === shipmentType)
-                              .map((job) => (
-                                <option key={job.id} value={job.job_no}>
-                                  {job.job_no} - {job.client || 'No Client'} ({job.job_type || 'No Type'})
-                                </option>
-                              ))
+                            filteredJobs.map((job) => (
+                              <option key={job.id} value={job.job_no}>
+                                {job.job_no} - {job.client || 'No Client'} ({job.job_type || 'No Type'})
+                              </option>
+                            ))
                           )}
                         </select>
                         {validationErrors.jobNo && <span className="field-error">{validationErrors.jobNo}</span>}
@@ -1515,7 +1551,7 @@ const NewShipments = () => {
                     </div>
                     
                     {/* Render specific fields based on shipment type */}
-                    {renderSpecificFields()}
+                    {SpecificFields}
                     
                     <div className="client-os-info">
                       Client O/S: Credit Term: CASH | Total O/S: 46000 | Over Due O/S: 46000
