@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Seal Freight — Modern logistics and freight forwarding management platform." />
+  <title>Seal Freight | Logistics Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet" />
+  <!-- Restore saved theme before first paint -->
+  <script>
+    (function () {
+      var html = document.documentElement;
+      var mode = localStorage.getItem('sf_color_mode') || 'dark';
+      if (mode === 'system') {
+        mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      html.setAttribute('data-theme', mode);
+
+      // Only restore sidebar accent if user has explicitly saved one
+      var accent = localStorage.getItem('sf_accent_color');
+      if (accent) {
+        var accents = {
+          indigo: { '--brand-primary': '#6366f1', '--brand-gradient': 'linear-gradient(135deg,#4f46e5,#6366f1,#818cf8)', '--brand-glow': 'rgba(99,102,241,0.35)' },
+          emerald: { '--brand-primary': '#10b981', '--brand-gradient': 'linear-gradient(135deg,#059669,#10b981,#34d399)', '--brand-glow': 'rgba(16,185,129,0.3)' },
+          rose: { '--brand-primary': '#f43f5e', '--brand-gradient': 'linear-gradient(135deg,#e11d48,#f43f5e,#fb7185)', '--brand-glow': 'rgba(244,63,94,0.3)' },
+          amber: { '--brand-primary': '#f59e0b', '--brand-gradient': 'linear-gradient(135deg,#d97706,#f59e0b,#fbbf24)', '--brand-glow': 'rgba(245,158,11,0.3)' },
+          violet: { '--brand-primary': '#8b5cf6', '--brand-gradient': 'linear-gradient(135deg,#7c3aed,#8b5cf6,#a78bfa)', '--brand-glow': 'rgba(139,92,246,0.3)' },
+          sky: { '--brand-primary': '#0ea5e9', '--brand-gradient': 'linear-gradient(135deg,#0284c7,#0ea5e9,#38bdf8)', '--brand-glow': 'rgba(14,165,233,0.3)' },
+        };
+        var t = accents[accent];
+        if (t) Object.keys(t).forEach(function (k) { html.style.setProperty(k, t[k]); });
+      }
+    })();
+  </script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="./src/main.jsx"></script>
+</body>
+
+</html>

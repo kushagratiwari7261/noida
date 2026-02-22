@@ -1,0 +1,344 @@
+/* GroupComposeMessage.css — Theme-adaptive create-group UI */
+
+.group-compose-message {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  animation: slideInUp 0.25s ease-out;
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.group-compose-message .compose-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 1.25rem;
+  height: 60px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.group-compose-message .compose-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.group-compose-message .compose-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.group-compose-message .btn-cancel {
+  padding: 7px 16px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.group-compose-message .btn-cancel:hover {
+  background: var(--nav-hover-bg);
+  color: var(--text-primary);
+}
+
+.group-compose-message .btn-send {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 20px;
+  background: var(--brand-primary);
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.group-compose-message .btn-send:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.group-compose-message .btn-send:disabled {
+  background: var(--bg-surface-2);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.group-compose-message .compose-form {
+  flex: 1;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: var(--bg-base);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.group-compose-message .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group-compose-message .form-group label {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.group-compose-message .group-name-input,
+.group-compose-message input[type="text"],
+.group-compose-message textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.group-compose-message .group-name-input::placeholder,
+.group-compose-message input[type="text"]::placeholder,
+.group-compose-message textarea::placeholder {
+  color: var(--text-secondary);
+}
+
+.group-compose-message .group-name-input:focus,
+.group-compose-message input[type="text"]:focus,
+.group-compose-message textarea:focus {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 3px var(--brand-glow);
+}
+
+.group-compose-message textarea {
+  resize: vertical;
+  min-height: 110px;
+  line-height: 1.55;
+}
+
+/* Selected users */
+.group-compose-message .selected-users {
+  padding: 12px;
+  background: var(--bg-surface);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.group-compose-message .selected-users h4 {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.group-compose-message .users-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.group-compose-message .user-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.group-compose-message .user-chip.current-user {
+  background: var(--info-bg);
+  border-color: var(--info);
+  color: var(--info);
+}
+
+.group-compose-message .user-chip .user-name {
+  font-weight: 500;
+}
+
+.group-compose-message .user-chip .remove-user {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  line-height: 1;
+  transition: all 0.2s;
+}
+
+.group-compose-message .user-chip .remove-user:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Attachments */
+.group-compose-message .attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group-compose-message .attachment-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.group-compose-message .attachment-name {
+  font-size: 0.825rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-compose-message .remove-attachment {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 2px;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.group-compose-message .remove-attachment:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Upload progress */
+.group-compose-message .upload-progress {
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group-compose-message .progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.group-compose-message .progress-fill {
+  height: 100%;
+  background: var(--brand-primary);
+  transition: width 0.3s ease;
+}
+
+.group-compose-message .upload-progress span {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+/* Footer */
+.group-compose-message .compose-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.group-compose-message .attachment-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.group-compose-message .btn-attach {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.825rem;
+  color: var(--text-secondary);
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.group-compose-message .btn-attach:hover:not(:disabled) {
+  background: var(--nav-hover-bg);
+  color: var(--text-primary);
+}
+
+.group-compose-message .btn-attach:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .group-compose-message .compose-form {
+    padding: 1rem;
+  }
+
+  .group-compose-message .compose-actions {
+    flex-direction: column;
+  }
+
+  .group-compose-message .btn-cancel,
+  .group-compose-message .btn-send {
+    width: 100%;
+    border-radius: 8px;
+  }
+}

@@ -1,0 +1,170 @@
+/* Layout Styles */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--bg-base);
+}
+
+/* .main-content margin handled by flex layout, NOT margin-left */
+/* The sidebar uses fixed width; main grows with flex: 1 in App.css */
+
+/* Loading Screen */
+.loading-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+
+.loading-screen .spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid var(--border);
+  border-left: 4px solid var(--brand-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-screen p {
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* Messages Page Specific Layout */
+.messages-page {
+  margin-left: var(--sidebar-width, 260px);
+  height: 100vh;
+  background: var(--bg-base);
+}
+
+/* Responsive Design */
+@media screen and (max-width: 1024px) {
+  .main-content {
+    margin-left: var(--sidebar-width, 260px);
+  }
+}
+
+@media screen and (max-width: 768px) {
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    padding-top: 60px;
+    /* account for mobile header height */
+  }
+
+  .messages-page {
+    margin-left: 0;
+    padding-top: 60px;
+  }
+}
+
+/* Ensure proper content area for different pages */
+.content-area {
+  padding: 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media screen and (max-width: 1024px) {
+  .content-area {
+    padding: 1.5rem;
+  }
+}
+
+@media screen and (max-width: 768px) {
+  .content-area {
+    padding: 1rem;
+  }
+}
+
+@media screen and (max-width: 480px) {
+  .content-area {
+    padding: 0.75rem;
+  }
+}
+
+/* Page header styles */
+.page-header {
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 0.5rem 0;
+}
+
+.page-header p {
+  color: #6b7280;
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+/* Card styles for content */
+.content-card {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid #e5e7eb;
+  padding: 1.5rem;
+}
+
+/* Utility classes */
+.flex {
+  display: flex;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.h-full {
+  height: 100%;
+}
+
+/* Scrollbar styling */
+.main-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.main-content::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+.main-content::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.main-content::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
