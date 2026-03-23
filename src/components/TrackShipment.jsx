@@ -69,7 +69,13 @@ export default function TrackShipment() {
             }
 
         } catch (err) {
-            setError(err.message);
+            console.error('Fetch error:', err);
+            // Help the user diagnose RLS issues
+            if (err.message.includes('No record found')) {
+                setError('Invalid Link or Access Denied. (Tip: Ensure Supabase RLS policies allow "anon" access to shipment_updates)');
+            } else {
+                setError(err.message);
+            }
         } finally {
             setLoading(false);
         }
