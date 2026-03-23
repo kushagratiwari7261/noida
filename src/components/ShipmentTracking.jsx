@@ -2,180 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import './ShipmentTracking.css';
 
-/* ─── Status config ─────────────────────────────────── */
-const STATUS_STEPS = [
-    { key: 'Booked', label: 'Booked', icon: '📋' },
-    { key: 'In Transit', label: 'In Transit', icon: '🚢' },
-    { key: 'At Port', label: 'At Port', icon: '⚓' },
-    { key: 'Customs', label: 'Customs Clearance', icon: '🛃' },
-    { key: 'Out for Delivery', label: 'Out for Delivery', icon: '🚛' },
-    { key: 'Delivered', label: 'Delivered', icon: '✅' },
-];
-
-const STATUS_COLORS = {
-    'Booked': '#6366f1',
-    'In Transit': '#0ea5e9',
-    'At Port': '#f59e0b',
-    'Customs': '#f97316',
-    'Out for Delivery': '#8b5cf6',
-    'Delivered': '#22c55e',
-    'Cancelled': '#ef4444',
-};
-
-/* Port → approximate coordinates for geo marker */
-const PORT_COORDS = {
-    'DELHI': [28.6139, 77.2090], 'DEL': [28.6139, 77.2090],
-    'MUMBAI': [18.9388, 72.8354], 'BOM': [18.9388, 72.8354],
-    'CHENNAI': [13.0827, 80.2707], 'MAA': [13.0827, 80.2707],
-    'KOLKATA': [22.5726, 88.3639], 'CCU': [22.5726, 88.3639],
-    'NHAVA SHEVA': [18.9388, 72.9354], 'JNPT': [18.9388, 72.9354],
-    'SINGAPORE': [1.3521, 103.8198], 'SIN': [1.3521, 103.8198],
-    'DUBAI': [25.2048, 55.2708], 'DXB': [25.2048, 55.2708],
-    'SHANGHAI': [31.2304, 121.4737], 'SHA': [31.2304, 121.4737],
-    'HONG KONG': [22.3193, 114.1694], 'HKG': [22.3193, 114.1694],
-    'NEW YORK': [40.7128, -74.0060], 'JFK': [40.7128, -74.0060],
-    'LOS ANGELES': [33.9425, -118.4081], 'LAX': [33.9425, -118.4081],
-    'LONDON': [51.5074, -0.1278], 'LHR': [51.5074, -0.1278],
-    'HAMBURG': [53.5488, 9.9872], 'HAM': [53.5488, 9.9872],
-};
-
-function getCoords(portName) {
-    if (!portName) return null;
-    const upper = portName.toUpperCase().trim();
-    for (const [key, coords] of Object.entries(PORT_COORDS)) {
-        if (upper.includes(key)) return coords;
-    }
-    return null;
-}
-
-/* ─── Map component (Leaflet via CDN, no npm) ────────── */
-function ShipmentMap({ origin, destination, status }) {
-    const mapRef = useRef(null);
-    const mapInstanceRef = useRef(null);
-
-    const originCoords = getCoords(origin);
-    const destCoords = getCoords(destination);
-
-    useEffect(() => {
-        if (!window.L) return; // Leaflet not loaded yet
-        if (mapInstanceRef.current) {
-            mapInstanceRef.current.remove();
-            mapInstanceRef.current = null;
-        }
-        if (!mapRef.current) return;
-
-        const center = originCoords || destCoords || [20.5937, 78.9629];
-        const map = window.L.map(mapRef.current, { zoomControl: true }).setView(center, 4);
-        mapInstanceRef.current = map;
-
-        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>',
-            maxZoom: 18,
-        }).addTo(map);
-
-        const makeIcon = (emoji, color) => window.L.divIcon({
-            html: `<div style="font-size:22px;display:flex;align-items:center;justify-content:center;
-             width:36px;height:36px;background:${color};border-radius:50%;border:3px solid #fff;
-             box-shadow:0 2px 8px rgba(0,0,0,.4)">${emoji}</div>`,
-            iconSize: [36, 36],
-            iconAnchor: [18, 18],
-            className: '',
-        });
-
-        if (originCoords) {
-            window.L.marker(originCoords, { icon: makeIcon('🔵', '#3b82f6') })
-                .addTo(map)
-                .bindPopup(`<b>Origin</b><br>${origin}`)
-                .openPopup();
-        }
-
-        if (destCoords) {
-            const destColor = STATUS_COLORS[status] || '#6366f1';
-            window.L.marker(destCoords, { icon: makeIcon('📍', destColor) })
-                .addTo(map)
-                .bindPopup(`<b>Destination</b><br>${destination}`);
-        }
-
-        if (originCoords && destCoords) {
-            window.L.polyline([originCoords, destCoords], {
-                color: STATUS_COLORS[status] || '#6366f1',
-                weight: 2.5,
-                dashArray: '6 4',
-                opacity: 0.8,
-            }).addTo(map);
-
-            const bounds = window.L.latLngBounds([originCoords, destCoords]);
-            map.fitBounds(bounds, { padding: [40, 40] });
-        }
-
-        return () => {
-            if (mapInstanceRef.current) {
-                mapInstanceRef.current.remove();
-                mapInstanceRef.current = null;
-            }
-        };
-    }, [origin, destination, status, originCoords, destCoords]);
-
-    if (!originCoords && !destCoords) {
-        return (
-            <div className="st-map-placeholder">
-                <div className="st-map-placeholder-content">
-                    <span className="st-map-placeholder-icon">🗺️</span>
-                    <p>Port coordinates not available for this route</p>
-                    <small>{origin} → {destination}</small>
-                </div>
-            </div>
-        );
-    }
-
-    return <div ref={mapRef} className="st-map-container" />;
-}
-
-/* ─── Status Timeline ────────────────────────────────── */
-function StatusTimeline({ currentStatus, updates }) {
-    const currentIdx = STATUS_STEPS.findIndex(s => s.key === currentStatus);
-
-    return (
-        <div className="st-timeline">
-            {STATUS_STEPS.map((step, idx) => {
-                const isCompleted = idx < currentIdx;
-                const isCurrent = idx === currentIdx;
-                const isPending = idx > currentIdx;
-                return (
-                    <div key={step.key} className={`st-timeline-step ${isCompleted ? 'completed' : ''} ${isCurrent ? 'current' : ''} ${isPending ? 'pending' : ''}`}>
-                        <div className="st-timeline-icon">
-                            <span>{step.icon}</span>
-                        </div>
-                        <div className="st-timeline-content">
-                            <span className="st-timeline-label">{step.label}</span>
-                            {isCurrent && <span className="st-timeline-badge">Current</span>}
-                        </div>
-                        {idx < STATUS_STEPS.length - 1 && (
-                            <div className={`st-timeline-connector ${isCompleted || isCurrent ? 'active' : ''}`} />
-                        )}
-                    </div>
-                );
-            })}
-
-            {/* Actual DB updates */}
-            {updates && updates.length > 0 && (
-                <div className="st-update-log">
-                    <h4>Update History</h4>
-                    {updates.map((u, i) => (
-                        <div key={i} className="st-update-entry">
-                            <span className="st-update-dot" style={{ background: STATUS_COLORS[u.status] || '#6366f1' }} />
-                            <div>
-                                <strong>{u.status}</strong>
-                                <p>{u.remarks}</p>
-                                <small>{new Date(u.created_at).toLocaleString()}</small>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-}
+import { STATUS_STEPS, STATUS_COLORS } from '../constants/shipment';
+import ShipmentMap from './ShipmentMap';
+import StatusTimeline from './StatusTimeline';
+import './ShipmentTracking.css';
 
 /* ─── Status Update Form ─────────────────────────────── */
 function StatusUpdateForm({ shipment, onUpdated }) {
@@ -310,6 +140,12 @@ function ShipmentDetail({ shipment, onBack, onRefresh }) {
         ['Location Now', shipment.current_location],
     ].filter(([, v]) => v);
 
+    const handleShare = () => {
+        const url = `${window.location.origin}/track/${shipment.id}`;
+        const text = `Track your shipment ${shipment.shipment_no || shipment.id} update here: ${url}`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    };
+
     return (
         <div className="st-detail">
             {/* Header */}
@@ -321,7 +157,12 @@ function ShipmentDetail({ shipment, onBack, onRefresh }) {
                         {shipment.status || 'Booked'}
                     </span>
                 </div>
-                <button className="st-refresh-btn" onClick={() => { fetchUpdates(); onRefresh(); }}>↻ Refresh</button>
+                <div className="st-header-actions" style={{ display: 'flex', gap: '8px' }}>
+                    <button className="st-refresh-btn" style={{ background: '#25D366', color: '#fff', border: 'none' }} onClick={handleShare}>
+                        🟢 Share WhatsApp
+                    </button>
+                    <button className="st-refresh-btn" onClick={() => { fetchUpdates(); onRefresh(); }}>↻ Refresh</button>
+                </div>
             </div>
 
             {/* Map */}
@@ -330,6 +171,7 @@ function ShipmentDetail({ shipment, onBack, onRefresh }) {
                 <ShipmentMap
                     origin={shipment.por || shipment.pol}
                     destination={shipment.pod || shipment.destination}
+                    currentLocation={shipment.current_location}
                     status={shipment.status}
                 />
             </div>

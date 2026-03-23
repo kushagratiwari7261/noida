@@ -85,6 +85,7 @@ import sealLogo from './seal.png'
 import { supabase } from './lib/supabaseClient'
 import ForgotPassword from './components/ForgotPassword'
 import ResetPassword from './components/ResetPassword'
+import TrackShipment from './components/TrackShipment'
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -850,6 +851,10 @@ function App() {
       <Route
         path="/reset-password"
         element={<ResetPassword onUpdatePassword={handleResetPassword} />}
+      />
+      <Route
+        path="/track/:id"
+        element={<TrackShipment />}
       />
       <Route
         path="/"
