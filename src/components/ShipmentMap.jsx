@@ -54,9 +54,15 @@ export default function ShipmentMap({ origin, destination, currentLocation, stat
         }
 
         if (currentCoords) {
-            const isAnimated = status === 'At Port';
-            // Use different emoji for current status if it's "At Port"
-            const emoji = isAnimated ? '⚓' : '🚢';
+            const isAnimated = true; // Always animate current location
+            
+            // Select emoji based on status
+            let emoji = '🚢';
+            if (status === 'At Port') emoji = '⚓';
+            if (status === 'Out for Delivery' || status === 'Customs') emoji = '🚛';
+            if (status === 'Delivered') emoji = '✅';
+            if (status === 'Booked') emoji = '📋';
+
             const color = STATUS_COLORS[status] || '#f59e0b';
             
             window.L.marker(currentCoords, { icon: makeIcon(emoji, color, isAnimated) })

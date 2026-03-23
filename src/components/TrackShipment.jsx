@@ -17,24 +17,52 @@ export default function TrackShipment() {
         setLoading(true);
         setError(null);
         try {
-            // 1. Fetch Shipment
+            // 1. Find token in shipment_updates to get shipment_id
+            const { data: linkData, error: linkErr } = await supabase
+                .from('shipment_updates')
+                .select('shipment_id')
+                .eq('remarks', id) // 'id' URL param is the token
+                .eq('status', 'Link Generated')
+                .maybeSingle();
+
+            if (linkErr || !linkData) throw new Error('Invalid or Expired Tracking Link');
+
+            const shipId = linkData.shipment_id;
+
+            // 2. Check if link was revoked
+            const { data: revokeData } = await supabase
+                .from('shipment_updates')
+                .select('id')
+                .eq('remarks', id)
+                .eq('status', 'Link Revoked')
+                .maybeSingle();
+
+            if (revokeData) throw new Error('This tracking link has been deactivated');
+
+            // 3. Fetch Shipment
             const { data: shipData, error: shipErr } = await supabase
                 .from('shipments')
                 .select('*')
-                .eq('id', id)
+                .eq('id', shipId)
                 .single();
 
-            if (shipErr) throw new Error('Shipment not found');
+            if (shipErr) throw new Error('Shipment details not found');
             setShipment(shipData);
 
-            // 2. Fetch Updates
+            // 4. Fetch Updates
             const { data: updData, error: updErr } = await supabase
                 .from('shipment_updates')
                 .select('*')
-                .eq('shipment_id', id)
+                .eq('shipment_id', shipId)
                 .order('created_at', { ascending: false });
 
-            if (!updErr) setUpdates(updData || []);
+            if (!updErr) {
+                // Filter out link-management rows for public display
+                const publicUpdates = (updData || []).filter(u => 
+                    u.status !== 'Link Generated' && u.status !== 'Link Revoked'
+                );
+                setUpdates(publicUpdates);
+            }
 
         } catch (err) {
             setError(err.message);

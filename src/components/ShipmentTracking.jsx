@@ -140,10 +140,59 @@ function ShipmentDetail({ shipment, onBack, onRefresh }) {
         ['Location Now', shipment.current_location],
     ].filter(([, v]) => v);
 
+    const [activeToken, setActiveToken] = useState(null);
+
+    useEffect(() => {
+        const gen = updates.find(u => u.status === 'Link Generated');
+        if (gen) {
+            const isRevoked = updates.some(u => u.status === 'Link Revoked' && u.remarks === gen.remarks);
+            setActiveToken(isRevoked ? null : gen.remarks);
+        } else {
+            setActiveToken(null);
+        }
+    }, [updates]);
+
     const handleShare = () => {
-        const url = `${window.location.origin}/track/${shipment.id}`;
+        if (!activeToken) return;
+        const url = `${window.location.origin}/track/${activeToken}`;
         const text = `Track your shipment ${shipment.shipment_no || shipment.id} update here: ${url}`;
         window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    };
+
+    const handleGenerateLink = async () => {
+        const token = crypto.randomUUID();
+        try {
+            const { error } = await supabase
+                .from('shipment_updates')
+                .insert([{
+                    shipment_id: shipment.id,
+                    status: 'Link Generated',
+                    remarks: token,
+                    created_at: new Date().toISOString()
+                }]);
+            if (error) throw error;
+            fetchUpdates();
+        } catch (err) {
+            alert('Error generating link: ' + err.message);
+        }
+    };
+
+    const handleDestroyLink = async () => {
+        if (!activeToken) return;
+        try {
+            const { error } = await supabase
+                .from('shipment_updates')
+                .insert([{
+                    shipment_id: shipment.id,
+                    status: 'Link Revoked',
+                    remarks: activeToken,
+                    created_at: new Date().toISOString()
+                }]);
+            if (error) throw error;
+            fetchUpdates();
+        } catch (err) {
+             alert('Error destroying link: ' + err.message);
+        }
     };
 
     return (
@@ -158,9 +207,20 @@ function ShipmentDetail({ shipment, onBack, onRefresh }) {
                     </span>
                 </div>
                 <div className="st-header-actions" style={{ display: 'flex', gap: '8px' }}>
-                    <button className="st-refresh-btn" style={{ background: '#25D366', color: '#fff', border: 'none' }} onClick={handleShare}>
-                        🟢 Share WhatsApp
-                    </button>
+                    {activeToken ? (
+                        <>
+                            <button className="st-refresh-btn" style={{ background: '#25D366', color: '#fff', border: 'none' }} onClick={handleShare}>
+                                🟢 Share WhatsApp
+                            </button>
+                            <button className="st-refresh-btn" style={{ background: '#ef4444', color: '#fff', border: 'none' }} onClick={handleDestroyLink}>
+                                🔴 Destroy Link
+                            </button>
+                        </>
+                    ) : (
+                        <button className="st-refresh-btn" style={{ background: '#6366f1', color: '#fff', border: 'none' }} onClick={handleGenerateLink}>
+                            🔗 Generate Share Link
+                        </button>
+                    )}
                     <button className="st-refresh-btn" onClick={() => { fetchUpdates(); onRefresh(); }}>↻ Refresh</button>
                 </div>
             </div>
