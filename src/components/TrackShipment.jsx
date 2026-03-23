@@ -17,15 +17,19 @@ export default function TrackShipment() {
         setLoading(true);
         setError(null);
         try {
+            const tokenId = id ? id.trim() : '';
+            console.log('Attempting to fetch token:', tokenId);
             // 1. Find token in shipment_updates to get shipment_id
             const { data: linkData, error: linkErr } = await supabase
                 .from('shipment_updates')
-                .select('shipment_id')
-                .eq('remarks', id) // 'id' URL param is the token
+                .select('shipment_id, status, remarks')
+                .eq('remarks', tokenId) // 'id' URL param is the token
                 .eq('status', 'Link Generated')
                 .maybeSingle();
 
-            if (linkErr || !linkData) throw new Error('Invalid or Expired Tracking Link');
+            console.log('Link lookup result:', { linkData, linkErr });
+            if (linkErr) throw new Error(`Database Error: ${linkErr.message} (${linkErr.code})`);
+            if (!linkData) throw new Error('Invalid or Expired Tracking Link (No record found for token)');
 
             const shipId = linkData.shipment_id;
 
