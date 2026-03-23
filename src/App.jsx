@@ -173,11 +173,12 @@ function App() {
           setIsAuthenticated(false);
           setUser(null);
 
-          // Only redirect if not already on auth pages
+          // Only redirect if not already on auth pages or public tracking pages
           const currentPath = window.location.pathname;
           if (!currentPath.includes('/login') &&
             !currentPath.includes('/forgot-password') &&
-            !currentPath.includes('/reset-password')) {
+            !currentPath.includes('/reset-password') &&
+            !currentPath.startsWith('/track')) {
             if (shouldRedirect('/login')) {
               navigate('/login', { replace: true });
             }
@@ -202,11 +203,12 @@ function App() {
           setIsAuthenticated(false);
           setUser(null);
 
-          // Only redirect to login if not on auth pages
+          // Only redirect to login if not on auth pages or public tracking pages
           const currentPath = window.location.pathname;
           if (!currentPath.includes('/login') &&
             !currentPath.includes('/forgot-password') &&
-            !currentPath.includes('/reset-password')) {
+            !currentPath.includes('/reset-password') &&
+            !currentPath.startsWith('/track')) {
             if (shouldRedirect('/login')) {
               navigate('/login', { replace: true });
             }
@@ -278,6 +280,7 @@ function App() {
                   if (!signOutPath.includes('/login') &&
                     !signOutPath.includes('/forgot-password') &&
                     !signOutPath.includes('/reset-password') &&
+                    !signOutPath.startsWith('/track') &&
                     shouldRedirect('/login')) {
                     navigate('/login', { replace: true });
                   }
@@ -794,7 +797,7 @@ function App() {
       return children;
     }
 
-    if (!isAuthenticated && !authPages.includes(currentPath)) {
+    if (!isAuthenticated && !authPages.includes(currentPath) && !currentPath.startsWith('/track')) {
       return <Navigate to="/login" replace />;
     }
 
